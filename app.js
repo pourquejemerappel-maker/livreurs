@@ -463,18 +463,19 @@ async function refuseReq(s) {
 
 // ---------- Stock (propriétaire et dispatchs) ----------
 const give = { to: null, from: null, L: 0, XL: 0 };
+const livreursIds = () => Object.keys(team).filter((id) => team[id].actif && team[id].role === 'livreur');
 function giveSources() {
-  if (isOwner()) return [RESERVE];
+  if (isOwner()) return [RESERVE].concat(Object.keys(team).filter((id) => team[id].actif && team[id].role === 'complet').map(DEP));
   if (me.role === 'complet') return [me.mid, DEP(me.mid)];
   return [me.mid];
 }
 function giveTargets(from) {
   const disp = Object.keys(team).filter((id) => team[id].actif && (team[id].role === 'complet' || team[id].role === 'limite'));
   const complets = disp.filter((id) => team[id].role === 'complet');
-  if (isOwner()) return disp.concat(complets.map(DEP));                                      // propriétaire → MOUSSE, son dépôt, ou lost
+  if (isOwner()) return from === RESERVE ? disp.concat(complets.map(DEP)).concat(livreursIds()) : disp.filter((id) => team[id].role === 'limite').concat(livreursIds()); // propriétaire → MOUSSE, son dépôt, lost, ou un livreur (de la réserve ou du dépôt)
   if (me.role === 'complet') {                                                               // MOUSSE : entre lui et son dépôt, ou à lost
     const other = from === DEP(me.mid) ? me.mid : DEP(me.mid);
-    return [other].concat(disp.filter((id) => id !== me.mid));
+    return [other].concat(disp.filter((id) => id !== me.mid)).concat(livreursIds());    // + n'importe quel livreur (il accepte)
   }
   return complets.concat(complets.map(DEP));                                                // lost : seulement retourner à MOUSSE ou à son dépôt
 }
@@ -493,8 +494,8 @@ function renderStock() {
   if (give.to && tg.indexOf(give.to) < 0) give.to = null;
   if (!give.to && tg.length === 1) give.to = tg[0];
   const lbl = (id) => (me.role === 'complet' && id === me.mid ? 'Sur moi' : me.role === 'complet' && id === DEP(me.mid) ? 'Mon dépôt' : nomDe(id));
-  $('giveTitle').textContent = isOwner() ? 'Donner du stock (de la réserve)' : me.role === 'complet' ? 'Déplacer / donner du stock' : 'Retourner du stock';
-  $('giveWho').innerHTML = (srcs.length > 1 ? '<div class="small" style="margin-bottom:6px">De :</div><div class="who" id="giveFrom">' + srcs.map((id) => '<button data-id="' + id + '" class="' + (give.from === id ? 'on' : '') + '">' + esc(lbl(id)) + ' (' + qty(st(id)) + ')</button>').join('') + '</div><div class="small" style="margin-bottom:6px">Vers :</div>' : '') +
+  $('giveTitle').textContent = isOwner() ? 'Donner du stock' : me.role === 'complet' ? 'Déplacer / donner du stock' : 'Retourner du stock';
+  $('giveWho').innerHTML = (srcs.length > 1 ? '<div class="small" style="margin-bottom:6px">De :</div><div class="who" id="giveFrom">' + srcs.map((id) => '<button data-id="' + id + '" class="' + (give.from === id ? 'on' : '') + '">' + esc(id === RESERVE ? 'Réserve' : lbl(id)) + (id === RESERVE ? '' : ' (' + qty(st(id)) + ')') + '</button>').join('') + '</div><div class="small" style="margin-bottom:6px">Vers :</div>' : '') +
     '<div class="who" id="giveTo">' + tg.map((id) => '<button data-id="' + id + '" class="' + (give.to === id ? 'on' : '') + '">' + esc(lbl(id)) + '</button>').join('') + '</div>';
   document.querySelectorAll('#giveFrom button').forEach((b) => { b.onclick = () => { give.from = b.dataset.id; give.to = null; renderStock(); }; });
   document.querySelectorAll('#giveTo button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
@@ -511,6 +512,15 @@ $('gGo').onclick = async () => {
   if (src !== RESERVE && (give.L > (st(src).L || 0) || give.XL > (st(src).XL || 0))) return ($('gErr').textContent = 'Tu n’as que ' + qty(st(src)) + '.');
   $('gGo').disabled = true;
   try {
+    // v24 : à un livreur → il doit accepter. Le stock sort tout de suite de la source (il y retourne s'il refuse).
+    if (team[give.to] && team[give.to].role === 'livreur') {
+      const w = writeBatch(db);
+      w.set(doc(collection(db, 'dons')), { de: src, vers: give.to, L: give.L, XL: give.XL, par: me.mid, statut: 'attente', le: serverTimestamp() });
+      if (src !== RESERVE) w.set(doc(db, 'stocks', src), { L: increment(-give.L), XL: increment(-give.XL) }, { merge: true });
+      await w.commit();
+      notifyMsg(give.to, '📦 ' + nomDe(me.mid) + ' te donne ' + qty(give) + ' — accepte dans Gotham');
+      give.L = 0; give.XL = 0; renderStock(); $('gGo').disabled = false; return;
+    }
     // v23 : ce que le propriétaire donne à MOUSSE (sur lui ou au dépôt) attend que MOUSSE l'accepte.
     const toComplet = isOwner() && (isDep(give.to) || (team[give.to] && team[give.to].role === 'complet'));
     if (toComplet) {
@@ -566,7 +576,8 @@ function renderSoiree() {
   }
   const keepFocus = document.activeElement && document.activeElement.id === 'ciAdr';
   const pos = keepFocus ? document.activeElement.selectionStart : null;
-  $('soiree').innerHTML = notifCard() + h;
+  $('soiree').innerHTML = notifCard() + donsLivreur() + h;
+  bindDonsLivreur();
   if ($('notifGo')) $('notifGo').onclick = () => { if (notifBusy) return; notifBusy = true; saveToken(true).finally(() => { notifBusy = false; }); };
   document.querySelectorAll('#ciMode button').forEach((b) => { b.onclick = () => { ci.mode = b.dataset.m; renderSoiree(); }; });
   if ($('ciEnd')) $('ciEnd').onclick = () => { if (!ci.endAsk) { ci.endAsk = true; renderSoiree(); return; } ci.endAsk = false; soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'terminee', finLe: serverTimestamp() }).commit()); };
@@ -2489,7 +2500,10 @@ document.addEventListener('click', (ev) => {
 // =====================================================================
 const dons = { list: [], busy: false };
 function startDons() {
-  if (!(isOwner() || (me && me.role === 'complet'))) return;
+  if (me && !isOwner() && me.role !== 'complet') {
+    stops.push(onSnapshot(query(collection(db, 'dons'), where('vers', '==', me.mid), where('statut', '==', 'attente')), (qs) => { dons.list = []; qs.forEach((d) => dons.list.push(Object.assign({ id: d.id }, d.data()))); renderSoiree(); }, () => {}));
+    return;
+  }
   stops.push(onSnapshot(query(collection(db, 'dons'), where('statut', '==', 'attente')), (qs) => { dons.list = []; qs.forEach((d) => dons.list.push(Object.assign({ id: d.id }, d.data()))); drawDons(); }, () => {}));
 }
 function drawDons() {
@@ -2498,7 +2512,7 @@ function drawDons() {
   if (!mine.length) { box.innerHTML = ''; if ($('donWait')) $('donWait').innerHTML = ''; return; }
   if (isOwner()) {
     box.innerHTML = '';
-    if ($('donWait')) $('donWait').innerHTML = '<div class="small" style="margin:6px 0">⏳ En attente que MOUSSE accepte : ' + mine.map((d) => qty(d) + ' → ' + esc(nomDe(d.vers))).join(' · ') + '</div>';
+    if ($('donWait')) $('donWait').innerHTML = '<div class="small" style="margin:6px 0">⏳ En attente d’être accepté : ' + mine.map((d) => qty(d) + ' → ' + esc(nomDe(d.vers))).join(' · ') + '</div>';
     return;
   }
   box.innerHTML = mine.map((d) => '<div class="card alert"><div class="label">📦 Le propriétaire te donne du stock</div><p style="margin:0 0 6px"><b>' + qty(d) + '</b>' + (isDep(d.vers) ? ' au dépôt' : ' sur toi') + '</p><p class="small" style="margin-top:0">Compte avant d’accepter.</p>' +
@@ -2515,6 +2529,30 @@ function drawDons() {
       }
       await w.commit();
     } catch (e) { if ($('donErr' + id)) $('donErr' + id).textContent = msg(e); }
+    dons.busy = false;
+  }; });
+}
+
+// v24 : stock donné à un livreur (par le propriétaire ou MOUSSE) → il accepte ou refuse, même hors soirée.
+function donsLivreur() {
+  if (!me || isOwner() || me.role === 'complet') return '';
+  return dons.list.filter((d) => d.vers === me.mid).map((d) => '<div class="card alert"><div class="label">📦 ' + (d.par === 'proprietaire' ? 'Le propriétaire' : esc(nomDe(d.par))) + ' te donne du stock</div><p style="margin:0 0 6px"><b>' + qty(d) + '</b></p><p class="small" style="margin-top:0">Compte avant d’accepter. Tu auras ' + ((d.L || 0) + (st(me.mid).L || 0)) + ' L · ' + ((d.XL || 0) + (st(me.mid).XL || 0)) + ' XL.</p>' +
+    '<div class="err" id="dlErr' + d.id + '"></div><div class="two"><button class="btn red" data-dl="' + d.id + '|non">Pas reçu</button><button class="btn ok" data-dl="' + d.id + '|ok">J’accepte</button></div></div>').join('');
+}
+function bindDonsLivreur() {
+  document.querySelectorAll('[data-dl]').forEach((b) => { b.onclick = async () => {
+    const [id, rep] = b.dataset.dl.split('|'), d = dons.list.find((x) => x.id === id);
+    if (!d || dons.busy) return; dons.busy = true;
+    try {
+      const w = writeBatch(db);
+      w.update(doc(db, 'dons', id), { statut: rep, repLe: serverTimestamp() });
+      if (rep === 'ok') {
+        w.set(doc(db, 'stocks', me.mid), { L: increment(d.L || 0), XL: increment(d.XL || 0), via: id }, { merge: true });
+        w.set(doc(collection(db, 'mouvements')), { de: d.de, vers: me.mid, L: d.L || 0, XL: d.XL || 0, type: 'don', par: me.mid, le: serverTimestamp() });
+      } else if (d.de !== RESERVE) w.set(doc(db, 'stocks', d.de), { L: increment(d.L || 0), XL: increment(d.XL || 0), via: id }, { merge: true });
+      await w.commit();
+      notifyDispatch(rep === 'ok' ? '📦 ' + me.nom + ' a accepté ' + qty(d) : '📦 ' + me.nom + ' : stock pas reçu (' + qty(d) + ')', d.par !== 'proprietaire' ? d.par : undefined);
+    } catch (e) { if ($('dlErr' + id)) $('dlErr' + id).textContent = msg(e); }
     dons.busy = false;
   }; });
 }
