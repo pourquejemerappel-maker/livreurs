@@ -220,6 +220,11 @@
       </div>
     </div>
 
+    <!-- Historique (propriétaire et MOUSSE) -->
+    <div id="tabHisto" class="tab hide">
+      <div id="histo"></div>
+    </div>
+
     <div id="tabEquipe" class="tab hide">
       <button class="btn ok" id="addBtn" style="margin-bottom:12px">＋ Ajouter quelqu'un</button>
       <div class="card"><div class="label">Dispatchs</div><div id="lDisp"></div></div>
@@ -238,7 +243,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=14"></script>
+<script type="module" src="app.js?v=15"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
