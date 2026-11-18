@@ -172,7 +172,7 @@ function renderTeam() {
   let d = '', l = '';
   ids.forEach((id) => {
     const p = team[id];
-    const sub = p.role === 'livreur' ? paieTxt(paies[id]) : (p.livre ? 'Fait aussi des livraisons · ' + paieTxt(paies[id]) : 'Ne livre pas');
+    const sub = p.role === 'livreur' ? (p.uber ? '🚕 Uber / pick-up · ' : '') + paieTxt(paies[id]) : (p.livre ? 'Fait aussi des livraisons · ' + paieTxt(paies[id]) : 'Ne livre pas');
     const h = '<div class="row' + (p.actif ? '' : ' off') + '" data-id="' + esc(id) + '"><div><div class="n">' + esc(p.nom) +
       '<span class="pill p-' + (p.actif ? p.role : 'off') + '">' + (p.actif ? ROLES[p.role] : 'Désactivé') + '</span></div><div class="s">' + sub + '</div></div><span class="small">›</span></div>';
     if (p.role === 'livreur') l += h; else d += h;
@@ -188,7 +188,7 @@ $('sheet').onclick = (e) => { if (e.target.id === 'sheet') closeSheet(); };
 $('addBtn').onclick = () => { F = { mode: 'add', nom: '', role: 'livreur', livre: false, paie: null, pwd: '' }; drawSheet(); $('sheet').classList.remove('hide'); };
 function openMember(id) {
   const p = team[id]; if (!p) return;
-  F = { mode: 'edit', id, nom: p.nom, role: p.role, livre: !!p.livre, paie: paies[id] == null ? null : paies[id], pwd: '' };
+  F = { mode: 'edit', id, nom: p.nom, role: p.role, livre: !!p.livre, uber: !!p.uber, paie: paies[id] == null ? null : paies[id], pwd: '' };
   drawSheet(); $('sheet').classList.remove('hide');
 }
 const needPaie = () => F.role === 'livreur' || F.livre;
@@ -198,6 +198,8 @@ function roleBlock() {
     '<button data-r="' + r + '" class="' + (F.role === r ? 'on' : '') + '">' + ROLES[r] + '</button>').join('') + '</div>' +
     '<p class="small" style="margin-top:0">' + DESC[F.role] + '</p>' +
     (F.role !== 'livreur' ? '<label class="chk"><input type="checkbox" id="fLivre" ' + (F.livre ? 'checked' : '') + '> Fait aussi des livraisons</label>' : '') +
+    (F.role === 'livreur' ? '<label class="chk"><input type="checkbox" id="fUber" ' + (F.uber ? 'checked' : '') + '> 🚕 Fait seulement Uber et pick-up</label>' +
+      (F.uber ? '<p class="small" style="margin-top:0">Il ne reçoit jamais de commande automatique : le dispatch lui envoie avec « 🚕 Uber » ou « 📍 Pick-up ».</p>' : '') : '') +
     (needPaie() ? '<div class="label">Paie par livraison ($)</div><input id="fPaie" type="number" inputmode="numeric" min="0" value="' + (F.paie == null ? '' : F.paie) + '">' : '');
 }
 function drawSheet() {
@@ -233,6 +235,7 @@ function drawSheet() {
   on('fPwd', 'oninput', (e) => { F.pwd = e.target.value; });
   on('fPaie', 'oninput', (e) => { F.paie = e.target.value === '' ? null : Number(e.target.value); });
   on('fLivre', 'onchange', (e) => { F.livre = e.target.checked; drawSheet(); });
+  on('fUber', 'onchange', (e) => { F.uber = e.target.checked; if (F.uber && F.paie == null) F.paie = 25; drawSheet(); });
   document.querySelectorAll('#sheetBody .seg button').forEach((b) => { b.onclick = () => { F.role = b.dataset.r; drawSheet(); }; });
   on('fCancel', 'onclick', closeSheet);
   on('fBack', 'onclick', () => { F.mode = 'edit'; drawSheet(); });
@@ -267,11 +270,11 @@ async function addMember() {
   if (ex.exists()) return err('Ce nom existe déjà.');
   const email = id + DOMAINE;
   const uid = await newLogin(email, F.pwd);
-  const livre = F.role !== 'livreur' && F.livre;
+  const livre = F.role !== 'livreur' && F.livre, uber = F.role === 'livreur' && !!F.uber;
   const b = writeBatch(db);
-  b.set(doc(db, 'members', id), { nom, role: F.role, livre, actif: true, uid, creeLe: serverTimestamp() });
+  b.set(doc(db, 'members', id), { nom, role: F.role, livre, uber, actif: true, uid, creeLe: serverTimestamp() });
   b.set(doc(db, 'paies', id), { paie: needPaie() ? Number(F.paie) : 0 });
-  b.set(doc(db, 'users', uid), { nom, mid: id, role: F.role, livre, actif: true });
+  b.set(doc(db, 'users', uid), { nom, mid: id, role: F.role, livre, uber, actif: true });
   b.set(doc(db, 'logins', id), { email });
   await b.commit();
   F.nom = nom; F.mode = 'give'; drawSheet();
@@ -280,11 +283,11 @@ async function addMember() {
 async function saveMember() {
   if (needPaie() && (F.paie == null || isNaN(F.paie) || F.paie < 0)) return err('Écris la paie par livraison.');
   const p = team[F.id];
-  const livre = F.role !== 'livreur' && F.livre;
+  const livre = F.role !== 'livreur' && F.livre, uber = F.role === 'livreur' && !!F.uber;
   const b = writeBatch(db);
-  b.update(doc(db, 'members', F.id), { role: F.role, livre });
+  b.update(doc(db, 'members', F.id), { role: F.role, livre, uber });
   b.set(doc(db, 'paies', F.id), { paie: needPaie() ? Number(F.paie) : 0 });
-  if (p.uid) b.update(doc(db, 'users', p.uid), { role: F.role, livre });
+  if (p.uid) b.update(doc(db, 'users', p.uid), { role: F.role, livre, uber });
   await b.commit();
   closeSheet();
 }
@@ -307,7 +310,7 @@ async function changePwd() {
   const email = F.id + '.' + Date.now().toString(36) + DOMAINE;
   const uid = await newLogin(email, F.pwd);
   const b = writeBatch(db);
-  b.set(doc(db, 'users', uid), { nom: p.nom, mid: F.id, role: p.role, livre: !!p.livre, actif: !!p.actif });
+  b.set(doc(db, 'users', uid), { nom: p.nom, mid: F.id, role: p.role, livre: !!p.livre, uber: !!p.uber, actif: !!p.actif });
   if (p.uid) b.delete(doc(db, 'users', p.uid));
   b.update(doc(db, 'members', F.id), { uid });
   b.set(doc(db, 'logins', F.id), { email });
@@ -557,7 +560,7 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
-  if (document.activeElement && ['mcCash', 'chatTxt', 'dtAmt', 'dtNote'].includes(document.activeElement.id)) return;
+  if (document.activeElement && (['mcCash', 'chatTxt', 'dtAmt', 'dtNote', 'lvMix'].includes(document.activeElement.id) || (document.activeElement.tagName === 'INPUT' && /^ub/.test(document.activeElement.id || '')))) return;
   if (typeof ret !== 'undefined' && ret.busy) return; // ne pas effacer ce qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
@@ -586,7 +589,7 @@ function renderSoiree() {
     h = '<div class="card"><div class="label">🧭 Tu fais le dispatch ce soir</div><p class="small" style="margin-top:0">Va dans En direct. Tu ne reçois pas de commandes à livrer.</p>' +
       '<div class="err" id="ciErr"></div><button class="btn ghost" id="ciEnd">' + (ci.endAsk ? 'Appuie encore pour confirmer' : 'Terminer mon dispatch') + '</button></div>';
   } else if (s.statut === 'ouverte') {
-    h = rcLivreur(s) + myOrdersHtml(s);
+    h = rcLivreur(s) + (me.uber ? uberHtml(s) : myOrdersHtml(s));
   }
   const keepFocus = document.activeElement && document.activeElement.id === 'ciAdr';
   const pos = keepFocus ? document.activeElement.selectionStart : null;
@@ -605,7 +608,7 @@ function renderSoiree() {
   if ($('ciCancel')) $('ciCancel').onclick = () => soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'annulee', finLe: serverTimestamp() }).commit());
   if ($('ciAccept')) $('ciAccept').onclick = () => soirAct(() => acceptLoad(s));
   if ($('ciRefuse')) $('ciRefuse').onclick = () => soirAct(() => refuseLoad(s));
-  if (s && s.statut === 'ouverte') { bindMyOrders(s); bindFinCard(s); bindRcLivreur(s); }
+  if (s && s.statut === 'ouverte') { if (me.uber) bindUber(s); else bindMyOrders(s); bindFinCard(s); bindRcLivreur(s); }
 }
 async function soirAct(fn) {
   document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; });
@@ -677,10 +680,12 @@ function startOrders() {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('statut', 'in', ['attente', 'assignee', 'ici'])), (qs) => {
       cmds = {}; qs.forEach((d) => { cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll();
     }, (e) => console.warn(e)));
+    stops.push(onSnapshot(collection(db, 'reglages'), (qs) => { regs = {}; qs.forEach((d) => { regs[d.id] = d.data(); }); }, () => {}));
     stops.push(onSnapshot(query(collection(db, 'cmdPrive'), where('actif', '==', true)), (qs) => {
       prive = {}; qs.forEach((d) => { prive[d.id] = d.data(); }); renderAll();
     }, (e) => console.warn(e)));
   }
+  if (delivers() && me.uber) stops.push(onSnapshot(doc(db, 'reglages', me.mid), (s) => { myReg = s.exists() ? s.data() : {}; renderSoiree(); }, () => {}));
   if (delivers()) {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', 'in', ['assignee', 'ici'])), (qs) => {
       myCmds = []; qs.forEach((d) => myCmds.push(Object.assign({ id: d.id }, d.data()))); myCmds.sort((a, b) => a.ordre - b.ordre); renderSoiree();
@@ -859,7 +864,7 @@ function drawNfSugs() {
 function stockLeft(mid) { const s = st(mid); const q = queueOf(mid); return { L: (s.L || 0) - q.reduce((a, c) => a + (c.L || 0), 0), XL: (s.XL || 0) - q.reduce((a, c) => a + (c.XL || 0), 0) }; }
 async function optionsFor(o, skipId) {
   const X = pos(o);
-  const people = Object.values(soirees).filter(working);
+  const people = Object.values(soirees).filter((s) => working(s) && !isUberMid(s.mid));
   const cand = [];
   people.forEach((s) => {
     const q = queueOf(s.mid).filter((c) => c.id !== skipId), plan = planOf(q);
@@ -901,6 +906,9 @@ function optLine(c, best, i) {
 function drawAssign() {
   const box = $('nfAssign'); if (!box || !NF) return;
   const f = NF;
+  const ubH = uberBtns({ L: f.L, XL: f.XL, int: f.meth === 'int', adr: !!f.q.trim() });
+  if (ubH) { let a = $('nfUber'); if (!a) { a = document.createElement('div'); a.id = 'nfUber'; box.parentNode.insertBefore(a, box); } a.innerHTML = ubH; a.querySelectorAll('[data-ub]').forEach((el) => { el.onclick = () => saveOrder(uberOpt(el.dataset.ub)); }); }
+  else if ($('nfUber')) $('nfUber').remove();
   if (!f.pick) { box.innerHTML = '<div class="small" style="margin-bottom:8px">Choisis une adresse dans la liste : l’app trouve le livreur qui arrive le plus vite.</div>'; return; }
   if (f.opts === 'calc') { box.innerHTML = '<div class="small" style="margin-bottom:8px">Calcul des temps de route…</div>'; return; }
   const o = f.opts || [];
@@ -920,7 +928,7 @@ function drawAssign() {
 async function saveOrder(opt) {
   const f = NF; if (!f || f.busy) return;
   $('nfErr').textContent = '';
-  if (!f.q.trim()) return ($('nfErr').textContent = 'Écris l’adresse.');
+  if (!f.q.trim() && !(opt && opt.type === 'pickup')) return ($('nfErr').textContent = 'Écris l’adresse.');
   if (!f.L && !f.XL) return ($('nfErr').textContent = 'Mets au moins 1 L ou 1 XL.');
   f.busy = true;
   try {
@@ -929,13 +937,13 @@ async function saveOrder(opt) {
     const encaisser = mode === 'cash' ? tot : mode === 'mix' ? f.cashPart : 0;
     const ref = doc(collection(db, 'commandes'));
     const code = newCode();
-    const data = { suivi: code, client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim(), L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
+    const data = { suivi: code, client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim() || 'Pick-up', L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
       encaisser, paye: mode !== 'cash' && recu && mode === 'int', bloque: !recu, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: me.mid };
     if (f.pick && f.pick.lat != null) { data.lat = f.pick.lat; data.lon = f.pick.lon; }
     const b = writeBatch(db);
     if (opt) Object.assign(data, await assignFields(opt, data));
     b.set(ref, data);
-    b.set(doc(db, 'suivi', code), { actif: true, statut: opt ? 'assignee' : 'attente', eta: opt ? Math.round(opt.arr) : null, luid: opt ? uidOf(opt.mid) : null, prenom: prenom(data.client), le: serverTimestamp() });
+    b.set(doc(db, 'suivi', code), { actif: true, statut: opt ? 'assignee' : 'attente', eta: opt && !opt.type ? Math.round(opt.arr) : null, luid: opt ? uidOf(opt.mid) : null, prenom: prenom(data.client), le: serverTimestamp() });
     b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: tot, mode, cash: encaisser, interac: tot - encaisser, recu, prixL: cfg.prixL, prixXL: cfg.prixXL, le: serverTimestamp() });
     if (opt) await nextFix(b, opt, data);
     await b.commit();
@@ -949,6 +957,7 @@ async function assignFields(opt, c) {
   const ordre = opt.kind === 'chemin' ? (opt.prevOrdre + opt.nextOrdre) / 2 : (q.length ? q[q.length - 1].ordre + 1 : 1);
   const out = { livreur: opt.mid, livreurNom: opt.nom, statut: 'assignee', ordre, trajet: opt.trajet, assigneLe: serverTimestamp(), assignePar: me.mid };
   if (!q.length) out.depart = Date.now();
+  if (opt.type) { out.type = opt.type; out.accepte = false; out.uberLien = null; out.uberEta = null; out.pickAdr = opt.type === 'pickup' ? ((regs[opt.mid] && regs[opt.mid].pickAdr) || '') : null; }
   return out;
 }
 // Quand on insère « sur le chemin », la commande d'après part maintenant du nouvel arrêt.
@@ -977,7 +986,8 @@ function pillOf(s) {
     nx = '<div style="margin-top:3px">→ ' + esc(q0.client) + ' ~' + hm(plan[0]) + (m <= 3 && m >= 0 ? ' <span style="color:#fcd34d">● proche</span>' : '') + (m < -10 ? ' <span style="color:var(--danger)">+' + (-m) + '</span>' : '') + '</div>';
   }
   if (s.recharge) nx += '<div style="margin-top:3px">📦 recharge en attente</div>';
-  return '<div class="lvp' + (svcSel === s.mid ? ' on' : '') + '" data-pill="' + s.mid + '"><b>' + esc(s.nom) + '</b><span class="dt" style="background:' + dot + '"></span>' + esc(st) + nx +
+  if (isUberMid(s.mid)) { nx = ''; st = s.pause ? '⏸ en pause' : q.length ? q.length + ' en cours' : 'dispo'; dot = s.pause ? '#8b8b94' : q.some((c) => !c.accepte || attendPaie(c)) ? '#f5b301' : 'var(--cash)'; if (q.some((c) => !c.accepte)) nx = '<div style="margin-top:3px">⏳ doit accepter</div>'; }
+  return '<div class="lvp' + (svcSel === s.mid ? ' on' : '') + '" data-pill="' + s.mid + '"><b>' + (isUberMid(s.mid) ? '🚕 ' : '') + esc(s.nom) + '</b><span class="dt" style="background:' + dot + '"></span>' + esc(st) + nx +
     '<div class="small" style="margin-top:3px">' + q.length + ' cmd' + ((isOwner() || me.role === 'complet') ? ' · reste ' + left.L + ' L ' + left.XL + ' XL' : '') + '</div></div>';
 }
 function cardsWithMore(list, more, key) {
@@ -1004,7 +1014,7 @@ function renderQueues() {
     if (!q.length) h += '<div class="small">Libre · ' + esc(s.adresse || '') + '</div>';
     q.forEach((c, i) => {
       h += '<div class="q"><span class="qtap" data-focus="' + c.id + '"><span class="num">' + (i + 1) + '</span><b>' + esc(c.client) + '</b>' + payTag(c) + (i === 0 ? urgChip(c) : '') + ' <span class="small">⤢</span></span>' +
-        '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL · ' + (c.statut === 'ici' ? '<b style="color:var(--cash)">sur place</b>' : 'arrivée ~' + hm(plan[i])) + (c.retard ? ' ' + lateTag(c.retard) : '') + (c.note ? '<br>📝 ' + esc(c.note) : '') + '</div>' +
+        '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL · ' + (c.statut === 'ici' ? '<b style="color:var(--cash)">sur place</b>' : c.type ? '' : 'arrivée ~' + hm(plan[i])) + (c.retard ? ' ' + lateTag(c.retard) : '') + (c.note ? '<br>📝 ' + esc(c.note) : '') + '</div>' + (c.type ? uberInfo(c) : '') +
         '<div class="seg" style="margin:0">' + (c.bloque ? '<button class="on" data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') +
         '<button data-a="msg" data-id="' + c.id + '">💬 Client</button>' +
         (menuOpen === c.id ? (!c.dette && canDette() ? '<button data-a="dette" data-id="' + c.id + '">📒 Dette</button>' : '') + '<button data-a="unassign" data-id="' + c.id + '">Retirer</button><button data-a="cancel" data-id="' + c.id + '">Annuler</button>' : '<button data-a="menu" data-id="' + c.id + '" style="flex:0 0 46px">⋯</button>') + '</div>' +
@@ -1023,6 +1033,7 @@ function renderQueues() {
     if (dp) now.push({ red: 1, t, s: nom + ' · ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' · ' + esc(c.client) + ' : paiement à confirmer</b><small>' + esc(demPaieTxt(dp, c)) + '</small></div>' });
     else if (c.bloque) now.push({ red: 1, t, s: nom + ' chez ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>Interac pas reçu — il attend</small></div>' });
     else if (m >= 8) now.push({ red: 1, t, s: nom + ' chez ' + c.client + ' ' + m + ' min', h: '<div class="dc red" data-focus="' + c.id + '"><b>⏳ ' + esc(nom) + ' chez ' + esc(c.client) + ' depuis ' + m + ' min</b><small>Ça prend du temps</small></div>' });
+    else if (c.type) now.push({ red: 0, t, s: c.client + ' chez ' + nom, h: '<div class="dc grn" data-focus="' + c.id + '"><b>📍 ' + esc(c.client) + ' est chez ' + esc(nom) + '</b>' + (c.type === 'uber' ? ' (Uber)' : ' (pick-up)') + '<small>' + (c.encaisser > 0 ? 'encaisse ' + c.encaisser + ' $ cash' : 'déjà payé ✓') + '</small></div>' });
     else now.push({ red: 0, t, s: nom + ' chez ' + c.client, h: '<div class="dc grn" data-focus="' + c.id + '"><b>📍 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>' + (c.encaisser > 0 ? 'encaisse ' + c.encaisser + ' $ cash' : 'déjà payé ✓') + '</small></div>' });
   });
   now.sort((a, b) => (b.red - a.red) || (a.t - b.t));
@@ -1049,12 +1060,15 @@ function renderQueues() {
   document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
   document.querySelectorAll('#service [data-focus], #nowBox [data-focus], #freeList [data-focus]').forEach((el) => { el.onclick = () => openFocus(el.dataset.focus); });
   renderFocus();
+  if (NF && $('nfAssign')) drawAssign(); // v27 : les boutons Uber / pick-up suivent la pause
 }
 const qtyTxt = (c) => [c.L ? c.L + ' L' : '', c.XL ? c.XL + ' XL' : ''].filter(Boolean).join(' · ');
 let livreesSoir = 0;
 setInterval(() => { if (me && (isOwner() || isStaff()) && curTab === 'direct' && !fx.id) renderQueues(); }, 30000);
 function msgBox(c, eta) {
-  const t = 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison ici : ' + SUIVI + c.suivi : '');
+  if (c.type === 'uber' && c.uberLien) eta = c.uberEta || eta;
+  const t = c.type === 'pickup' ? 'Salut ' + prenom(c.client) + ' ! Tu peux venir chercher ta commande ici : ' + (c.pickAdr || '(adresse pas encore entrée)') + '. Écris-moi quand tu arrives.'
+    : c.type === 'uber' ? (c.uberLien ? 'Salut ' + prenom(c.client) + ' ! Ta commande est en route en Uber, arrivée vers ' + hm(eta) + '. Suis-la ici : ' + c.uberLien : 'Salut ' + prenom(c.client) + ' ! On commande ton Uber dès que l’Interac est confirmé.') : 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison ici : ' + SUIVI + c.suivi : '');
   return '<div class="msgc">' + esc(t) + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-copy="' + esc(t) + '">Copier</button>' +
     (c.tel ? '<a class="btn ok sm" style="text-align:center;text-decoration:none" href="sms:' + encodeURIComponent(c.tel) + '?&body=' + encodeURIComponent(t) + '">Texto à ' + esc(c.tel) + '</a>' : '<span class="small" style="align-self:center">Pas de téléphone : copie-le où tu parles au client.</span>') + '</div></div>';
 }
@@ -1068,7 +1082,9 @@ async function qAct(a, id) {
       const b = writeBatch(db);
       b.update(doc(db, 'commandes', id), { bloque: false, paye: !(c.encaisser > 0), confirmePar: me.mid, confirmeLe: serverTimestamp() });
       b.update(doc(db, 'cmdPrive', id), { recu: true });
-      return await b.commit();
+      await b.commit();
+      if (c.type === 'uber' && c.livreur) notifyMsg(c.livreur, '✓ Interac reçu pour ' + c.client + ' — tu peux commander le Uber');
+      return;
     }
     if (a === 'unassign') {
       menuOpen = null;
@@ -1991,12 +2007,13 @@ function renderFocus() {
       h += b.ok ? '<button class="btn ok big" data-fo="0">Assigner à ' + esc(b.nom) + ' · arrivée ~' + hm(b.arr) + '</button>' : '<div class="small">Personne n’a assez de stock.</div>';
       h += fx.alt ? fx.opts.slice(1).map((o, i) => optLine(o, false, i + 1)).join('') : (fx.opts.length > 1 ? '<button class="linkbtn" id="fxAlt">Autre livreur ▾</button>' : '');
     }
+    h += uberBtns({ L: c.L, XL: c.XL, int: !(c.encaisser > 0), adr: c.adresse && c.adresse !== 'Pick-up' });
     h += (c.bloque ? fBtn('paid', '✓ Interac reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
   } else {
     const q = queueOf(c.livreur), plan = planOf(q), nx = q[1];
-    h += '<div class="small">🚗 <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' +
+    h += '<div class="small">' + (c.type === 'uber' ? '🚕' : c.type === 'pickup' ? '📍' : '🚗') + ' <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (c.type === 'uber' ? 'envoie un Uber à' : c.type === 'pickup' ? 'attend au pick-up' : u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' +
       '<div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
-      '<div class="fban ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + (u.k === 'ici' ? 'Sur place depuis ' + u.min + ' min' : u.k === 'proche' ? 'Arrive dans ~' + u.eta + ' min' : 'En route · arrivée ~' + hm(plan[0])) + (c.retard ? ' · ' + lateTag(c.retard) : '') + '</div>' +
+      (c.type ? uberInfo(c) : '<div class="fban ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + (u.k === 'ici' ? 'Sur place depuis ' + u.min + ' min' : u.k === 'proche' ? 'Arrive dans ~' + u.eta + ' min' : 'En route · arrivée ~' + hm(plan[0])) + (c.retard ? ' · ' + lateTag(c.retard) : '') + '</div>') +
       '<div style="margin:6px 0">Paiement : ' + payTag(c) + (c.note ? '<div class="small">📝 ' + esc(c.note) + '</div>' : '') + '</div>';
     if (false && fx.cl.length) h += '<div class="fchat"><div class="small">Livreur ↔ client</div>' + fx.cl.slice(-3).map((m) => '<div><b>' + (m.de === 'client' ? esc(prenom(c.client)) : esc(c.livreurNom || '')) + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') + '</div>';
     // Chat avec le livreur, directement ici
@@ -2018,6 +2035,7 @@ function renderFocus() {
   $('fxBack').onclick = closeFocus;
   if ($('fxAlt')) $('fxAlt').onclick = () => { fx.alt = true; renderFocus(); };
   v.querySelectorAll('[data-fo]').forEach((el) => { el.onclick = () => focusAssign(c, fx.opts[+el.dataset.fo]); });
+  v.querySelectorAll('[data-ub]').forEach((el) => { el.onclick = () => focusAssign(c, uberOpt(el.dataset.ub)); });
   v.querySelectorAll('[data-o]').forEach((el) => { el.onclick = () => focusAssign(c, fx.opts[+el.dataset.o]); });
   v.querySelectorAll('[data-fa]').forEach((el) => { el.onclick = () => focusAct(c, el.dataset.fa); });
   v.querySelectorAll('[data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
@@ -2037,7 +2055,7 @@ async function focusAssign(c, opt) {
   try {
     const b = writeBatch(db);
     b.update(doc(db, 'commandes', c.id), await assignFields(opt, c));
-    if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'assignee', eta: Math.round(opt.arr), luid: uidOf(opt.mid) });
+    if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'assignee', eta: opt.type ? null : Math.round(opt.arr), luid: uidOf(opt.mid) });
     await nextFix(b, opt, c);
     await b.commit(); notifyOrder(c.id); focusNext();
   } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); }
@@ -2569,4 +2587,180 @@ function bindDonsLivreur() {
     } catch (e) { if ($('dlErr' + id)) $('dlErr' + id).textContent = msg(e); }
     dons.busy = false;
   }; });
+}
+
+// =====================================================================
+// v27 : Samuel — seulement Uber et pick-up
+// =====================================================================
+// members.uber / users.uber : ce livreur ne reçoit jamais de commande automatique.
+// commandes : type 'uber' | 'pickup', accepte, uberLien, uberEta (ms), pickAdr.
+// soirees.pause : il est en pause (le dispatch le voit). reglages/{mid}.pickAdr : son adresse de pick-up habituelle.
+// Uber : il commande le Uber seulement quand l'Interac est confirmé. Pick-up : le paiement marche comme chez un livreur.
+let regs = {}, myReg = null;
+const isUberMid = (mid) => !!(team[mid] && team[mid].uber);
+function uberOpt(v) { const [type, mid] = v.split(':'); const s = Object.values(soirees).find((x) => x.mid === mid && working(x)); return { mid, nom: (s && s.nom) || nomDe(mid), kind: 'fin', type, trajet: 0, arr: Date.now(), ok: true }; }
+function uberBtns(o) {
+  const list = Object.values(soirees).filter((s) => working(s) && isUberMid(s.mid));
+  if (!list.length) return '';
+  return list.map((s) => {
+    const nom = esc(s.nom);
+    if (s.pause) return '<div class="small" style="margin:6px 0">⏸ ' + nom + ' est en pause (pas d’Uber ni de pick-up).</div>';
+    const seeSt = isOwner() || me.role === 'complet', left = stockLeft(s.mid), ok = ((o.L || 0) + (o.XL || 0) > 0) && (!seeSt || (left.L >= (o.L || 0) && left.XL >= (o.XL || 0)));
+    const uOk = ok && o.int && o.adr;
+    const why = !ok ? 'pas assez de stock (' + left.L + ' L, ' + left.XL + ' XL)' : !o.int ? 'Uber : seulement si tout est payé en Interac' : !o.adr ? 'Uber : écris l’adresse du client' : '';
+    return '<div class="two" style="margin:6px 0 2px"><button class="btn ghost sm" data-ub="uber:' + esc(s.mid) + '"' + (uOk ? '' : ' disabled') + '>🚕 Uber avec ' + nom + '</button><button class="btn ghost sm" data-ub="pickup:' + esc(s.mid) + '"' + (ok ? '' : ' disabled') + '>📍 Pick-up chez ' + nom + '</button></div>' +
+      (why ? '<div class="small" style="margin-bottom:6px">' + why + '</div>' : '');
+  }).join('');
+}
+// Ce que le dispatch voit d'une commande Uber / pick-up.
+function uberInfo(c) {
+  const n = esc(c.livreurNom || nomDe(c.livreur));
+  if (!c.accepte) return '<div class="fban s-proche">⏳ En attente que ' + n + ' accepte</div>';
+  if (c.type === 'pickup') {
+    const a = c.pickAdr || '';
+    return '<div class="fban s-new">📍 Le client va chez ' + n + (c.statut === 'ici' ? ' · il est arrivé' : '') + '</div>' +
+      (a ? '<div class="small" style="margin:4px 0">' + esc(a) + ' <button class="linkbtn" data-copy="' + esc(a) + '">📋 Copier</button></div>' : '<div class="small">' + n + ' n’a pas encore entré son adresse.</div>');
+  }
+  if (c.bloque) return '<div class="fban s-ici">🔒 ' + n + ' attend ton « ✓ Interac reçu » pour commander le Uber</div>';
+  if (!c.uberLien) return '<div class="fban s-proche">🚕 ' + n + ' commande le Uber…</div>';
+  const m = Math.round(((c.uberEta || Date.now()) - Date.now()) / 60000);
+  return '<div class="fban s-new">🚕 Uber en route · arrivée ~' + hm(c.uberEta) + (m >= 0 ? ' (' + m + ' min)' : '') + '</div><div class="small" style="margin:4px 0;word-break:break-all"><a href="' + esc(c.uberLien) + '" target="_blank" rel="noopener" style="color:#7fa8ff">' + esc(c.uberLien) + '</a></div>';
+}
+// ---------- Écran de Samuel ----------
+const ub = { adrFor: null, adr: '', defOpen: false, def: '', lien: {}, eta: {}, cash: {}, pay: null, mix: '', ask: null };
+const pickDef = () => (myReg && myReg.pickAdr) || '';
+function bandOf(c) {
+  const dp = c.demandePaie;
+  return dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
+    : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
+    : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
+    : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
+}
+function ubCard(c) {
+  const up = c.type === 'pickup';
+  let h = '<div class="card now"><div class="small">' + (up ? '📍 Pick-up' : '🚕 Uber') + '</div><div class="client">' + esc(c.client) + '</div><div class="small">' + esc(qtyTxt(c)) + '</div>' + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '');
+  if (!c.accepte) {
+    return h + '<div class="banner" style="background:#3a2a05;color:#fcd34d">Nouveau ' + (up ? 'pick-up : le client vient chez toi' : 'Uber') + '</div><div class="two"><button class="btn red" data-ua="no:' + c.id + '">Refuser</button><button class="btn ok" data-ua="ok:' + c.id + '">✓ Accepter</button></div></div>';
+  }
+  if (!up) {
+    h += '<div class="label" style="margin-top:10px">Adresse pour Uber</div><div style="font-size:17px;font-weight:700;line-height:1.35">' + esc(c.adresse) + '</div>' +
+      '<button class="btn ghost sm" data-ucopy="' + esc(c.adresse) + '" style="margin:8px 0">📋 Copier l’adresse</button>';
+    if (c.bloque) h += '<div class="banner b-no">🔒 Attends que le dispatch confirme l’Interac.<br>Ne commande pas le Uber encore.</div>';
+    else if (!c.uberLien) h += '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Payé — tu peux commander le Uber</div>' +
+      '<input id="ubLien_' + c.id + '" placeholder="Colle le lien de suivi Uber" value="' + esc(ub.lien[c.id] || '') + '" autocomplete="off">' +
+      '<input id="ubEta_' + c.id + '" type="number" inputmode="numeric" placeholder="Arrive dans combien de minutes ? (ex. 18)" value="' + esc(ub.eta[c.id] || '') + '">' +
+      '<button class="btn ok" data-ug="' + c.id + '">🚕 Uber commandé</button>';
+    else {
+      const m = Math.round(((c.uberEta || Date.now()) - Date.now()) / 60000);
+      h += '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:10px 0 2px"><span class="small">Uber arrive</span><span style="font-size:26px;font-weight:800">' + hm(c.uberEta) + '</span><span class="small">' + (m >= 0 ? 'dans ' + m + ' min' : 'en retard') + '</span></div>' +
+        '<div class="small" style="word-break:break-all;margin-bottom:6px"><a href="' + esc(c.uberLien) + '" target="_blank" rel="noopener" style="color:#7fa8ff">' + esc(c.uberLien) + '</a></div>' +
+        '<div style="display:flex;gap:6px;margin:8px 0"><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" data-ue="' + c.id + ':-5">−5 min</button><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" data-ue="' + c.id + ':5">+5 min</button><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" data-up="' + c.id + '">⚠️ Problème</button></div>' +
+        '<button class="btn ok" data-ud="' + c.id + '" style="padding:18px;font-size:18px">' + (ub.ask === c.id ? 'Appuie encore : livré ✓' : '✓ Livré') + '</button>';
+    }
+    return h + '<div class="err" id="ubErr_' + c.id + '"></div></div>';
+  }
+  // Pick-up
+  const adr = c.pickAdr || pickDef();
+  if (ub.adrFor === c.id) h += '<div class="label" style="margin-top:10px">Adresse pour ce pick-up</div><input id="ubAdr" value="' + esc(ub.adr) + '"><div class="two"><button class="btn ghost sm" data-uaa="x">Annuler</button><button class="btn sm" data-uaa="' + c.id + '">Envoyer au dispatch</button></div>';
+  else h += '<div class="label" style="margin-top:10px">Le client vient ici</div><div style="font-size:17px;font-weight:700;line-height:1.35">' + (adr ? esc(adr) : '<span style="color:var(--danger)">Pas d’adresse — appuie sur ✏️</span>') + '</div>' +
+    '<div class="two" style="margin:8px 0">' + (adr ? '<button class="btn ghost sm" data-ucopy="' + esc(adr) + '">📋 Copier</button>' : '') + '<button class="btn ghost sm" data-uce="' + c.id + '">✏️ Changer cette fois</button></div>' +
+    (c.pickAdr ? '<div class="small">✓ Envoyée au dispatch</div>' : '');
+  if (c.statut !== 'ici') return h + '<button class="btn ok" data-uh="' + c.id + '" style="padding:18px;font-size:18px;margin-top:8px">👋 Le client est arrivé</button><div class="err" id="ubErr_' + c.id + '"></div></div>';
+  const bloque = c.bloque || !!c.demandePaie;
+  h += '<div style="margin:10px 0 2px;font-size:16px">👋 Le client est là depuis ' + minDe(c.iciLe) + ' min</div>' + bandOf(c) +
+    '<button class="btn ghost" data-upay="' + c.id + '" style="margin:10px 0 8px">💳 Paiement</button>';
+  if (ub.pay === c.id) h += lvPanel(c).replace('<a class="btn ghost sm"', '<a class="hide"');
+  if (bloque) h += '<button class="btn" disabled style="padding:18px;font-size:17px">🔒 Remis au client (attends le paiement)</button>';
+  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="ubCash_' + c.id + '" type="number" inputmode="numeric" value="' + esc(ub.cash[c.id] != null ? ub.cash[c.id] : Math.max(0, c.encaisser - detteSur(c))) + '">' : '') +
+    '<button class="btn ok" data-ud="' + c.id + '" style="padding:18px;font-size:18px">✓ Remis au client</button>';
+  return h + '<div class="err" id="ubErr_' + c.id + '"></div></div>';
+}
+function uberHtml(s) {
+  const mine = st(me.mid);
+  let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:17px">' + (s.pause ? '⏸ En pause' : '🟢 Disponible') + '</b><button class="btn ghost sm" id="ubPause" style="width:auto;padding:10px 16px;margin:0">' + (s.pause ? '▶ Reprendre' : '⏸ Pause') + '</button></div>' +
+    '<div class="small" style="margin-top:6px">' + (s.pause ? 'Le dispatch voit que tu es en pause. Il ne peut pas t’envoyer de commande.' : 'Le dispatch peut t’envoyer des Uber et des pick-up.') + '</div></div>';
+  if (!myCmds.length) h += '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🚕</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’enverra un Uber ou un pick-up ici.</div></div>';
+  else h += myCmds.slice().sort((a, b) => (a.accepte ? 1 : 0) - (b.accepte ? 1 : 0) || a.ordre - b.ordre).map(ubCard).join('');
+  h += '<details class="card" style="margin-top:4px"' + (ub.defOpen || !pickDef() ? ' open' : '') + '><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' faite' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
+    '<div class="label" style="margin-top:10px">Mon adresse de pick-up habituelle</div>' +
+    (ub.defOpen ? '<input id="ubDef" placeholder="Ex. 4500 rue Saint-Denis, Montréal, QC H2J 2L3" value="' + esc(ub.def) + '"><div class="two"><button class="btn ghost sm" id="ubDefX">Annuler</button><button class="btn sm" id="ubDefGo">Enregistrer</button></div>'
+      : '<div>' + (pickDef() ? esc(pickDef()) : '<span class="small">Pas encore entrée</span>') + '</div><button class="linkbtn" id="ubDefOpen">✏️ ' + (pickDef() ? 'Modifier' : 'Entrer mon adresse') + '</button>') +
+    '<div class="err" id="ubDefErr"></div></details>';
+  if (!myCmds.length) h += finCard(s);
+  return h;
+}
+function bindUber(s) {
+  watchChat(null);
+  const ubAct = async (id, fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { const el = $('ubErr_' + id) || $('ubDefErr'); if (el) el.textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
+  const C = (id) => myCmds.find((x) => x.id === id);
+  const upd = (id, d) => writeBatch(db).update(doc(db, 'commandes', id), d).commit();
+  const qa = (sel, fn) => document.querySelectorAll('#soiree [' + sel + ']').forEach((el) => { el.onclick = () => fn(el.getAttribute(sel), el); });
+  if ($('ubPause')) $('ubPause').onclick = () => ubAct('', async () => { const p = !s.pause; await writeBatch(db).update(doc(db, 'soirees', s.id), { pause: p }).commit(); notifyDispatch(p ? '⏸ ' + me.nom + ' est en pause' : '▶ ' + me.nom + ' est disponible'); });
+  qa('data-ucopy', (t, el) => { try { navigator.clipboard.writeText(t).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; });
+  qa('data-ua', (v) => { const [k, id] = v.split(':'), c = C(id); if (!c) return;
+    ubAct(id, async () => {
+      if (k === 'ok') { await upd(id, Object.assign({ accepte: true }, c.type === 'pickup' && !c.pickAdr && pickDef() ? { pickAdr: pickDef() } : {})); notifyDispatch('✓ ' + me.nom + ' accepte ' + (c.type === 'uber' ? 'le Uber' : 'le pick-up') + ' de ' + c.client); }
+      else { const b = writeBatch(db); b.update(doc(db, 'commandes', id), { statut: 'attente', livreur: null, livreurNom: null, accepte: false, type: null, pickAdr: null, refusPar: me.mid });
+        if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'attente', eta: null }); await b.commit(); notifyDispatch('✗ ' + me.nom + ' refuse ' + c.client + ' — à réassigner'); }
+    }); });
+  document.querySelectorAll('#soiree [id^="ubLien_"]').forEach((el) => { el.oninput = () => { ub.lien[el.id.slice(7)] = el.value; }; });
+  document.querySelectorAll('#soiree [id^="ubEta_"]').forEach((el) => { el.oninput = () => { ub.eta[el.id.slice(6)] = el.value; }; });
+  document.querySelectorAll('#soiree [id^="ubCash_"]').forEach((el) => { el.oninput = () => { ub.cash[el.id.slice(7)] = el.value; }; });
+  qa('data-ug', (id) => { const c = C(id); if (!c) return;
+    const l = String(ub.lien[id] || '').trim(), m = Math.round(Number(ub.eta[id]) || 0), e = $('ubErr_' + id);
+    if (!/^https?:\/\/\S+$/i.test(l)) { e.textContent = 'Colle le lien de suivi Uber (commence par https://).'; return; }
+    if (m < 1 || m > 180) { e.textContent = 'Écris dans combien de minutes le Uber arrive.'; return; }
+    ubAct(id, async () => { const eta = Date.now() + m * 60000, b = writeBatch(db);
+      b.update(doc(db, 'commandes', id), { uberLien: l.slice(0, 500), uberEta: eta, uberLe: Date.now() });
+      if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { eta, statut: 'assignee' });
+      await b.commit(); delete ub.lien[id]; delete ub.eta[id];
+      notifyDispatch('🚕 ' + me.nom + ' a commandé le Uber pour ' + c.client + ' · arrivée ~' + hm(eta)); }); });
+  qa('data-ue', (v) => { const [id, d] = v.split(':'), c = C(id); if (!c) return;
+    ubAct(id, async () => { const eta = Math.max(Date.now() + 60000, (c.uberEta || Date.now()) + Number(d) * 60000), b = writeBatch(db);
+      b.update(doc(db, 'commandes', id), { uberEta: eta }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { eta, statut: 'assignee' });
+      await b.commit(); notifyDispatch('⏱ Uber de ' + c.client + ' : maintenant ~' + hm(eta)); }); });
+  qa('data-up', (id) => { const c = C(id); if (!c) return; ubAct(id, () => sendMsg(me.mid, 'livreur', '⚠️ Problème avec le Uber de ' + c.client)); });
+  qa('data-uce', (id) => { const c = C(id); ub.adrFor = id; ub.adr = (c && c.pickAdr) || pickDef(); renderSoiree(); });
+  if ($('ubAdr')) $('ubAdr').oninput = (e) => { ub.adr = e.target.value; };
+  qa('data-uaa', (id) => { if (id === 'x') { ub.adrFor = null; return renderSoiree(); }
+    const a = String(ub.adr || '').trim(); if (a.length < 6) { $('ubErr_' + id).textContent = 'Écris l’adresse.'; return; }
+    const c = C(id); ub.adrFor = null;
+    ubAct(id, async () => { await upd(id, { pickAdr: a.slice(0, 200) }); notifyDispatch('📍 ' + me.nom + ' : nouvelle adresse de pick-up pour ' + (c ? c.client : '') + ' : ' + a); }); });
+  qa('data-uh', (id) => { const c = C(id); if (!c) return;
+    ubAct(id, async () => { const b = writeBatch(db); b.update(doc(db, 'commandes', id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' });
+      await b.commit(); notifyDispatch('👋 ' + c.client + ' est arrivé chez ' + me.nom + (c.bloque ? ' · pas payé' : '')); }); });
+  // Paiement du pick-up : pareil qu'un livreur
+  qa('data-upay', (id) => { ub.pay = ub.pay === id ? null : id; lv.panel = ub.pay ? 'pay' : null; if (!ub.pay) delete dt.door[id]; renderSoiree(); });
+  const pc = ub.pay && C(ub.pay);
+  if (pc) {
+    document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => {
+      const k = b.dataset.lp;
+      if (k === 'x') { lv.panel = null; ub.pay = null; delete dt.door[pc.id]; return renderSoiree(); }
+      if (k === 'mix') { lv.panel = 'mix'; return renderSoiree(); }
+      if (k === 'dette') { lv.panel = 'dette'; dt.door[pc.id] = { resp: 'moi', amt: pc.encaisser || '', note: '' }; return renderSoiree(); }
+      lv.panel = null; ub.pay = null; ubAct(pc.id, () => askPaie(pc, { mode: k }));
+    }; });
+    if ($('lvMix')) $('lvMix').oninput = (e) => { lv.mix = e.target.value; };
+    if ($('lvMixGo')) $('lvMixGo').onclick = () => { const x = Math.round(Number(lv.mix) || 0); if (x <= 0) { $('ubErr_' + pc.id).textContent = 'Écris le cash reçu.'; return; } lv.panel = null; ub.pay = null; lv.mix = ''; ubAct(pc.id, () => askPaie(pc, { mode: 'mix', cash: x })); };
+    bindDetteDoor(pc);
+  }
+  qa('data-ud', (id) => { const c = C(id); if (!c) return;
+    if (c.type === 'uber' && ub.ask !== id) { ub.ask = id; renderSoiree(); setTimeout(() => { if (ub.ask === id) { ub.ask = null; renderSoiree(); } }, 4000); return; }
+    ub.ask = null;
+    const ce = $('ubCash_' + id), cash = ce ? Math.max(0, Number(ce.value) || 0) : 0;
+    ubAct(id, async () => {
+      if (c.statut !== 'ici') await upd(id, { statut: 'ici', iciLe: serverTimestamp() });
+      const b = writeBatch(db);
+      b.update(doc(db, 'commandes', id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null ? { paie: paies[me.mid] } : {}) });
+      b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: id }, { merge: true });
+      b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+      await b.commit(); delete ub.cash[id];
+      closeSuivi(c.suivi, 'livree');
+      notifyDispatch('✓ ' + me.nom + ' : ' + c.client + (c.type === 'uber' ? ' livré (Uber)' : ' remis (pick-up)') + (cash ? ' · ' + cash + ' $ cash' : ''));
+    }); });
+  if ($('ubDefOpen')) $('ubDefOpen').onclick = () => { ub.defOpen = true; ub.def = pickDef(); renderSoiree(); };
+  if ($('ubDef')) $('ubDef').oninput = (e) => { ub.def = e.target.value; };
+  if ($('ubDefX')) $('ubDefX').onclick = () => { ub.defOpen = false; renderSoiree(); };
+  if ($('ubDefGo')) $('ubDefGo').onclick = () => { const a = String(ub.def || '').trim(); if (a.length < 6) { $('ubDefErr').textContent = 'Écris l’adresse complète.'; return; }
+    ub.defOpen = false; ubAct('', async () => { await setDoc(doc(db, 'reglages', me.mid), { pickAdr: a.slice(0, 200) }); renderSoiree(); }).then(() => { if ($('ubDefErr') && $('ubDefErr').textContent) { ub.defOpen = true; } }); };
 }
