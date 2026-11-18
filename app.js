@@ -1,9 +1,10 @@
-// Version 3 : connexion, équipe, stock des dispatchs et check-in (Firebase).
+// Version 6 : connexion, équipe, stock, check-in, commandes, notifications (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { getMessaging, getToken, isSupported as msgSupported } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyAn12YxRVuAgkyQDx056TVErnKyYzVIOLI',
@@ -337,6 +338,7 @@ function startLive() {
   }
   startOrders();
   renderAll(); renderSoiree();
+  if (delivers()) saveToken(false);
 }
 function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } }
 const st = (id) => stocks[id] || { L: 0, XL: 0 };
@@ -512,7 +514,8 @@ function renderSoiree() {
   }
   const keepFocus = document.activeElement && document.activeElement.id === 'ciAdr';
   const pos = keepFocus ? document.activeElement.selectionStart : null;
-  $('soiree').innerHTML = h;
+  $('soiree').innerHTML = notifCard() + h;
+  if ($('notifGo')) $('notifGo').onclick = () => { if (notifBusy) return; notifBusy = true; saveToken(true).finally(() => { notifBusy = false; }); };
   if ($('ciAdr')) {
     $('ciAdr').oninput = (e) => { ci.q = e.target.value; ci.pick = null; lookup(); };
     if (keepFocus) { $('ciAdr').focus(); try { $('ciAdr').setSelectionRange(pos, pos); } catch (e) {} }
@@ -820,6 +823,7 @@ async function saveOrder(opt) {
     b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: tot, mode, cash: encaisser, interac: tot - encaisser, recu, prixL: cfg.prixL, prixXL: cfg.prixXL, le: serverTimestamp() });
     if (opt) await nextFix(b, opt, data);
     await b.commit();
+    if (opt) notifyOrder(ref.id);
     NF = null; nf.sugs = []; renderNew();
   } catch (e) { $('nfErr').textContent = msg(e); f.busy = false; }
 }
@@ -909,6 +913,7 @@ async function assignExisting(id, opt) {
     b.update(doc(db, 'commandes', id), await assignFields(opt, c));
     await nextFix(b, opt, c);
     await b.commit(); reassign = null;
+    notifyOrder(id);
   } catch (e) { alertBar(msg(e)); }
 }
 function alertBar(t) { const el = $('dErr'); if (el) { el.textContent = t; setTimeout(() => { el.textContent = ''; }, 6000); } }
@@ -968,3 +973,47 @@ if ($('cfgSave')) $('cfgSave').onclick = async () => {
   const k = $('cfgKey').value.trim(); if (k) d.mapsKey = k;
   try { await setDoc(doc(db, 'config', 'app'), d, { merge: true }); $('cfgKey').value = ''; $('cfgErr').textContent = 'Enregistré ✓'; } catch (e) { $('cfgErr').textContent = msg(e); }
 };
+
+// =====================================================================
+// Version 6 : notifications (livreurs : nouvelle commande ; plus tard : messages du dispatch)
+// =====================================================================
+// tokens/{jeton} : un par téléphone ({ mid }). Le programme « notifier » (Google Cloud Run, Montréal)
+// vérifie que l'appel vient d'un dispatch / du propriétaire connecté, puis envoie la notification.
+const NOTIFIER = 'https://notifier-279678565038.northamerica-northeast1.run.app';
+const VAPID = 'BKNZDBuUNQgPklKK0vtk_AlQH7eapf1NSdowusdoSsYW1frQp8_Q0pYNk_iGkgedZG3zSFn2gGgmUVVT0cy2YTo';
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+let notifState = 'inconnu', notifBusy = false;
+
+async function pushOk() { try { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && (await msgSupported()); } catch (e) { return false; } }
+async function saveToken(ask) {
+  if (!me || !delivers()) return;
+  if (!(await pushOk())) { notifState = isIOS() && !isStandalone() ? 'installer' : 'impossible'; return renderSoiree(); }
+  if (Notification.permission === 'denied') { notifState = 'refuse'; return renderSoiree(); }
+  if (Notification.permission !== 'granted') {
+    if (!ask) { notifState = 'a-activer'; return renderSoiree(); }
+    const p = await Notification.requestPermission();
+    if (p !== 'granted') { notifState = p === 'denied' ? 'refuse' : 'a-activer'; return renderSoiree(); }
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const tok = await getToken(getMessaging(app), { vapidKey: VAPID, serviceWorkerRegistration: reg });
+    if (tok) { await setDoc(doc(db, 'tokens', tok), { mid: me.mid, le: serverTimestamp(), appareil: isIOS() ? 'iphone' : 'autre' }, { merge: true }); notifState = 'ok'; }
+  } catch (e) { console.warn('notif', e); notifState = 'erreur'; }
+  renderSoiree();
+}
+function notifCard() {
+  if (!delivers()) return '';
+  if (notifState === 'ok' || notifState === 'inconnu') return '';
+  if (notifState === 'installer') return '<div class="card notif"><b>🔔 Pour recevoir les notifications sur iPhone</b><p class="small" style="margin:6px 0 0">1. Dans Safari, touche Partager → « Sur l’écran d’accueil ».<br>2. Ouvre l’app avec la nouvelle icône, puis active les notifications ici.</p></div>';
+  if (notifState === 'refuse') return '<div class="card notif"><b>🔕 Notifications bloquées</b><p class="small" style="margin:6px 0 0">Va dans Réglages du téléphone → Notifications → Livreurs, et autorise-les.</p></div>';
+  if (notifState === 'impossible') return '<div class="card notif"><b>🔕 Ce téléphone ne peut pas recevoir les notifications de l’app.</b><p class="small" style="margin:6px 0 0">Mets à jour le téléphone (iPhone : iOS 16.4 ou plus).</p></div>';
+  return '<div class="card notif"><b>🔔 Reçois tes nouvelles commandes même téléphone verrouillé</b><button class="btn ok" id="notifGo" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
+}
+// Prévenir le livreur qu'une commande vient de lui être assignée.
+async function notifyOrder(cid) {
+  try {
+    const t = await auth.currentUser.getIdToken();
+    fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'commande', cid }) }).catch(() => {});
+  } catch (e) {}
+}
