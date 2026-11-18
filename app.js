@@ -79,6 +79,11 @@ onAuthStateChanged(auth, async (user) => {
   me = Object.assign({ uid: user.uid }, data);
   me.mid = data.mid || 'proprietaire';
   $('who').textContent = data.nom;
+  // lost (dispatch limité) : on lit sa soirée avant tout, pour savoir s'il fait le dispatch ce soir (les règles le vérifient aussi).
+  if (me.role === 'limite') {
+    mySoiree = null;
+    try { const qs = await getDocs(query(collection(db, 'soirees'), where('mid', '==', me.mid), where('statut', 'in', ACTIVES))); qs.forEach((d) => { mySoiree = Object.assign({ id: d.id }, d.data()); }); } catch (e) {}
+  }
   buildTabs();
   show('home');
   // Si le compte est désactivé ou son mot de passe changé, il est déconnecté tout de suite.
@@ -127,7 +132,8 @@ $('logout').onclick = () => signOut(auth);
 
 // ---------- Onglets (selon le rôle) ----------
 const isOwner = () => me && me.role === 'proprio';
-const isStaff = () => me && (me.role === 'complet' || me.role === 'limite');
+// lost (limité) compte comme dispatch seulement quand MOUSSE ou le propriétaire a ouvert sa soirée « Dispatch » ou « Les deux ».
+const isStaff = () => me && (me.role === 'complet' || (me.role === 'limite' && !locked()));
 const delivers = () => me && (me.role === 'livreur' || me.livre || me.role === 'limite');
 // Le dispatch limité doit être autorisé (par MOUSSE ou le propriétaire) avant de pouvoir travailler.
 const isDispMode = (s) => !!(s && s.mode === 'dispatch');
@@ -328,7 +334,7 @@ const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 
 function startLive() {
   finState.team = null; finState.me = null; setTimeout(initFin, 0);
-  dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; setTimeout(startDm, 0);
+  dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; dm.ready = false; setTimeout(startDm, 0);
   rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
   dt.all = []; dt.mine = []; dt.okRappel = false; setTimeout(startDettes, 0);
   ret.toMe = []; ret.mine = []; ret.f = null; setTimeout(startRetours, 0);
@@ -350,6 +356,8 @@ function startLive() {
     stops.push(onSnapshot(query(collection(db, 'soirees'), where('mid', '==', me.mid), where('statut', 'in', ACTIVES)), (qs) => {
       const wasLocked = locked();
       mySoiree = null; qs.forEach((d) => { mySoiree = Object.assign({ id: d.id }, d.data()); }); renderSoiree();
+      // lost : quand il commence ou arrête le dispatch, on recharge pour ouvrir (ou fermer) l'accès aux données du dispatch.
+      if (me.role === 'limite' && wasLocked !== locked()) { setTimeout(() => location.reload(), 300); return; }
       document.querySelectorAll('#tabs button').forEach((b) => { b.disabled = locked() && (b.dataset.t === 'direct' || b.dataset.t === 'stock'); });
       if (locked()) setTab('soiree'); else if (wasLocked) setTab('direct');
       drawDm(); drawMine(); drawCashBtn(); syncDispo();
@@ -442,6 +450,8 @@ async function authorize(s, d) {
     b.update(ref, { statut: 'load', adresse: d.adr, autorisePar: me.mid, autoriseLe: serverTimestamp(), load: { L: d.L, XL: d.XL, de: src } });
     if (src !== RESERVE && (d.L || d.XL)) b.set(doc(db, 'stocks', src), { L: increment(-d.L), XL: increment(-d.XL) }, { merge: true });
   }
+  // lost fait le dispatch ce soir : la permission (vérifiée par les règles) pointe vers cette soirée.
+  if (team[s.mid] && team[s.mid].role === 'limite' && doesDisp(s)) b.set(doc(db, 'dispatchOk', s.mid), { sid: s.id, par: me.mid, le: serverTimestamp() });
   await b.commit();
   delete drafts[s.id];
 }
@@ -712,7 +722,7 @@ const nf = { timer: null, seq: 0, sugs: [] };
 function newOrder() { NF = { client: '', tel: '', q: '', pick: null, L: 1, XL: 0, frais: 0, meth: 'cash', recu: false, cashPart: 0, note: '', plus: false, more: false, opts: null, busy: false }; renderNew(); }
 function renderNew() {
   const box = $('cmdNew'); if (!box) return;
-  if (!NF) { box.innerHTML = '<button class="btn ok" id="nfOpen" style="margin-bottom:12px">＋ Créer une commande</button>'; $('nfOpen').onclick = newOrder; return; }
+  if (!NF) { box.innerHTML = '<button class="fab" id="nfOpen" aria-label="Créer une commande">＋</button>'; $('nfOpen').onclick = () => { newOrder(); setTimeout(() => { const el = $('cmdNew'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50); }; return; }
   const f = NF, tot = totalOf(f);
   const focusId = document.activeElement && document.activeElement.id;
   box.innerHTML = '<div class="card"><div class="label">Nouvelle commande</div>' +
@@ -916,13 +926,43 @@ async function nextFix(b, opt, c) {
 
 // ---------- Files des livreurs (dispatch) ----------
 let menuOpen = null, msgOpen = null, reassign = null;
+// v22 : en haut les livreurs en pastilles (toucher = sa file), « Maintenant » = ce qui se passe chez les livreurs,
+// « À assigner » = nouvelles commandes. Au plus 2 cartes visibles dans chaque bloc ; le reste attend derrière.
+// Couleurs : rouge = urgent, orange = à assigner, vert = ça va, gris = le reste.
+let svcSel = null, nowMore = false, freeMore = false;
+const minDe = (t) => Math.max(0, Math.floor((Date.now() - tsMs(t)) / 60000));
+const attendPaie = (c) => !!(c.bloque || c.demandePaie);
+function pillOf(s) {
+  const q = queueOf(s.mid), q0 = q[0], plan = planOf(q), left = stockLeft(s.mid);
+  let dot = '#8b8b94', st = 'en route';
+  if (!q0) { dot = 'var(--cash)'; st = 'libre'; }
+  else if (q0.statut === 'ici') { st = 'chez ' + q0.client; dot = attendPaie(q0) || minDe(q0.iciLe) >= 8 ? 'var(--danger)' : 'var(--cash)'; }
+  let nx = '';
+  if (q0 && q0.statut !== 'ici') {
+    const m = Math.round((plan[0] - Date.now()) / 60000);
+    nx = '<div style="margin-top:3px">→ ' + esc(q0.client) + ' ~' + hm(plan[0]) + (m <= 3 && m >= 0 ? ' <span style="color:#fcd34d">● proche</span>' : '') + (m < -10 ? ' <span style="color:var(--danger)">+' + (-m) + '</span>' : '') + '</div>';
+  }
+  return '<div class="lvp' + (svcSel === s.mid ? ' on' : '') + '" data-pill="' + s.mid + '"><b>' + esc(s.nom) + '</b><span class="dt" style="background:' + dot + '"></span>' + esc(st) + nx +
+    '<div class="small" style="margin-top:3px">' + q.length + ' cmd' + ((isOwner() || me.role === 'complet') ? ' · reste ' + left.L + ' L ' + left.XL + ' XL' : '') + '</div></div>';
+}
+function cardsWithMore(list, more, key) {
+  let h = list.slice(0, 2).map((x) => x.h).join('');
+  const rest = list.slice(2);
+  if (rest.length) {
+    h += '<div class="dc more" data-more="' + key + '"><b>+ ' + rest.length + ' en attente</b><span class="small">' + (more ? '▴ cacher' : '▾ voir') + '</span></div>';
+    h += more ? rest.map((x) => x.h).join('') : '<div class="small" style="margin:-2px 4px 8px">' + rest.map((x) => esc(x.s)).join(' · ') + '</div>';
+  }
+  return h;
+}
 function renderQueues() {
   const box = $('service'); if (!box) return;
   const rk = (s) => { const q0 = queueOf(s.mid)[0]; return q0 ? urgOf(q0).r : 9; };
   const people = Object.values(soirees).filter(working).sort((a, b) => rk(a) - rk(b) || a.nom.localeCompare(b.nom, 'fr'));
+  if (svcSel && !people.some((s) => s.mid === svcSel)) svcSel = null;
   const seeStock = isOwner() || me.role === 'complet';
+  if ($('pills')) $('pills').innerHTML = people.map(pillOf).join('') || '<div class="small">Personne en service pour l’instant.</div>';
   let h = '';
-  people.forEach((s) => {
+  people.filter((s) => s.mid === svcSel).forEach((s) => {
     const q = queueOf(s.mid), plan = planOf(q), left = stockLeft(s.mid);
     const low = seeStock && (left.L <= 2 && left.XL <= 1);
     h += '<div class="item"><div class="qhead"><b>' + esc(s.nom) + '</b><span class="small">' + (seeStock ? qty(st(s.mid)) + ' sur lui' : '') + (low ? ' <span class="pay p-int">stock bas</span>' : '') + '</span></div>';
@@ -937,22 +977,47 @@ function renderQueues() {
     });
     h += '</div>';
   });
-  box.innerHTML = h || '<div class="small">Personne en service pour l’instant.</div>';
-  // Commandes pas assignées
-  const free = Object.values(cmds).filter((c) => c.statut === 'attente');
-  $('freeCard').classList.toggle('hide', !free.length);
-  $('freeList').innerHTML = free.map((c) => '<div class="q"><span class="qtap" data-focus="' + c.id + '"><b>' + esc(c.client) + '</b>' + payTag(c) + ' <span class="small">⤢</span></span>' + '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
-    (reassign && reassign.id === c.id ? (reassign.opts === 'calc' ? '<div class="small">Calcul…</div>' : (reassign.opts || []).map((o, i) => optLine(o, i === 0 && o.ok, i)).join('') || '<div class="small">Aucun livreur en service.</div>') :
-      '<div class="seg" style="margin:0"><button class="on" data-a="assign" data-id="' + c.id + '">Assigner</button>' + (c.bloque ? '<button data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') + '<button data-a="cancel" data-id="' + c.id + '">Annuler</button></div>') + '</div>').join('');
-  document.querySelectorAll('#service [data-a], #freeList [data-a]').forEach((el) => { el.onclick = () => qAct(el.dataset.a, el.dataset.id); });
+  box.innerHTML = h;
+  // Maintenant : chez les livreurs
+  const now = [];
+  Object.values(cmds).filter((c) => c.statut === 'ici' || (c.statut === 'assignee' && c.demandePaie)).forEach((c) => {
+    const nom = c.livreurNom || nomDe(c.livreur), m = c.statut === 'ici' ? minDe(c.iciLe) : 0, dp = c.demandePaie;
+    const t = c.statut === 'ici' ? tsMs(c.iciLe) : tsMs(dp && dp.le);
+    if (dp) now.push({ red: 1, t, s: nom + ' · ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' · ' + esc(c.client) + ' : paiement à confirmer</b><small>' + esc(demPaieTxt(dp, c)) + '</small></div>' });
+    else if (c.bloque) now.push({ red: 1, t, s: nom + ' chez ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>Interac pas reçu — il attend</small></div>' });
+    else if (m >= 8) now.push({ red: 1, t, s: nom + ' chez ' + c.client + ' ' + m + ' min', h: '<div class="dc red" data-focus="' + c.id + '"><b>⏳ ' + esc(nom) + ' chez ' + esc(c.client) + ' depuis ' + m + ' min</b><small>Ça prend du temps</small></div>' });
+    else now.push({ red: 0, t, s: nom + ' chez ' + c.client, h: '<div class="dc grn" data-focus="' + c.id + '"><b>📍 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>' + (c.encaisser > 0 ? 'encaisse ' + c.encaisser + ' $ cash' : 'déjà payé ✓') + '</small></div>' });
+  });
+  now.sort((a, b) => (b.red - a.red) || (a.t - b.t));
+  if ($('nowBox')) $('nowBox').innerHTML = now.length ? cardsWithMore(now, nowMore, 'now') : '<div class="small" style="margin:0 2px 8px">Aucun livreur ne t’attend 👌</div>';
+  // À assigner : nouvelles commandes (orange ; rouge après 5 min d'attente)
+  const free = Object.values(cmds).filter((c) => c.statut === 'attente').map((c) => {
+    const w = minDe(c.creeLe), old = w >= 5;
+    return { red: old ? 1 : 0, t: tsMs(c.creeLe), s: c.client + ' · ' + qtyTxt(c) + (old ? ' · ' + w + ' min' : ''),
+      h: '<div class="dc ' + (old ? 'red' : 'org') + '" data-focus="' + c.id + '"><b>' + (old ? '⚠️ ' : '') + 'Nouvelle : ' + esc(c.client) + '</b> · ' + esc(qtyTxt(c)) + (old ? ' · attend depuis ' + w + ' min' : '') +
+        '<small>' + esc(c.adresse) + ' · ' + esc(c.bloque ? 'Interac pas reçu' : c.encaisser > 0 ? 'cash ' + c.encaisser + ' $' : 'Interac reçu ✓') + '</small></div>' };
+  }).sort((a, b) => (b.red - a.red) || (a.t - b.t));
+  if ($('freeLbl')) $('freeLbl').textContent = 'À assigner' + (free.length ? ' (' + free.length + ')' : '');
+  $('freeList').innerHTML = free.length ? cardsWithMore(free, freeMore, 'free') : '<div class="small" style="margin:0 2px 8px">Tout est assigné ✓</div>';
+  // Rond rouge sur l'onglet En direct = ce qui est urgent
+  const nRed = now.filter((x) => x.red).length + free.filter((x) => x.red).length;
+  const tb = document.querySelector('#tabs button[data-t="direct"]');
+  if (tb) tb.dataset.n = nRed ? String(nRed) : '';
+  livreesSoir = Object.values(soirees).reduce((a, x) => a + (x.livrees || 0), 0);
+  if ($('doneLine')) $('doneLine').textContent = livreesSoir ? '✓ ' + livreesSoir + ' livrée' + (livreesSoir > 1 ? 's' : '') + ' ce soir' : '';
+  document.querySelectorAll('#pills [data-pill]').forEach((el) => { el.onclick = () => { svcSel = svcSel === el.dataset.pill ? null : el.dataset.pill; renderQueues(); }; });
+  document.querySelectorAll('[data-more]').forEach((el) => { el.onclick = () => { if (el.dataset.more === 'now') nowMore = !nowMore; else freeMore = !freeMore; renderQueues(); }; });
+  document.querySelectorAll('#service [data-a]').forEach((el) => { el.onclick = () => qAct(el.dataset.a, el.dataset.id); });
   bindDetteDisp();
-  document.querySelectorAll('#freeList [data-o]').forEach((el) => { el.onclick = () => assignExisting(reassign.id, reassign.opts[+el.dataset.o]); });
   document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
-  document.querySelectorAll('#service [data-focus], #freeList [data-focus]').forEach((el) => { el.onclick = () => openFocus(el.dataset.focus); });
+  document.querySelectorAll('#service [data-focus], #nowBox [data-focus], #freeList [data-focus]').forEach((el) => { el.onclick = () => openFocus(el.dataset.focus); });
   renderFocus();
 }
+const qtyTxt = (c) => [c.L ? c.L + ' L' : '', c.XL ? c.XL + ' XL' : ''].filter(Boolean).join(' · ');
+let livreesSoir = 0;
+setInterval(() => { if (me && (isOwner() || isStaff()) && curTab === 'direct' && !fx.id) renderQueues(); }, 30000);
 function msgBox(c, eta) {
-  const t = 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison et écris-lui ici : ' + SUIVI + c.suivi : '');
+  const t = 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison ici : ' + SUIVI + c.suivi : '');
   return '<div class="msgc">' + esc(t) + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-copy="' + esc(t) + '">Copier</button>' +
     (c.tel ? '<a class="btn ok sm" style="text-align:center;text-decoration:none" href="sms:' + encodeURIComponent(c.tel) + '?&body=' + encodeURIComponent(t) + '">Texto à ' + esc(c.tel) + '</a>' : '<span class="small" style="align-self:center">Pas de téléphone : copie-le où tu parles au client.</span>') + '</div></div>';
 }
@@ -1005,37 +1070,69 @@ function alertBar(t) { const el = $('dErr'); if (el) { el.textContent = t; setTi
 
 // ---------- Ma file (livreur) ----------
 const mapsUrl = (c) => 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + encodeURIComponent(c.lat != null ? c.lat + ',' + c.lon : c.adresse);
+// v22 : une commande en grand, l'heure d'arrivée suggérée, 3 boutons (Paiement · +5 min · Autre) et un seul gros bouton.
+// Le reste (stock, livraisons, la suite de la file) est sous « Ma soirée ▾ ». Plus de chat avec le client ici.
+const lv = { panel: null, mix: '' };
 function myOrdersHtml(s) {
   const mine = st(me.mid);
-  let h = '<div class="card"><div class="stock"><div><b>' + (mine.L || 0) + '</b>L sur toi</div><div><b>' + (mine.XL || 0) + '</b>XL sur toi</div><div><b>' + (s.livrees || 0) + '</b>livraisons</div></div></div>';
-  if (!myCmds.length) return h + '<div class="card"><div class="small">Aucune commande pour l’instant. Elles apparaissent ici toutes seules.</div><p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse) + '</p></div>' + finCard(s);
-  const plan = planOf(myCmds), c = myCmds[0];
-  const banner = c.bloque ? '<div class="banner b-no">🔴 PAS ENCORE PAYÉ — ne livre pas, attends que le dispatch confirme</div>'
-    : c.encaisser > 0 ? '<div class="banner b-cash">🔵 À ENCAISSER : <b>' + c.encaisser + ' $</b> cash' + (c.paye === false && c.encaisser && !c.paye ? '' : '') + '</div>'
-    : '<div class="banner b-int">🟡 DÉJÀ PAYÉ — rien à encaisser</div>';
-  h += '<div class="card now"><div class="label">Maintenant · commande 1 sur ' + myCmds.length + '</div><div class="client">' + esc(c.client) + '</div>' +
-    '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b><br><u>Ouvrir dans Google Maps</u></span></a>' +
-    '<div class="chips"><span class="chip">' + c.L + ' × L</span><span class="chip">' + c.XL + ' × XL</span><span class="chip eta">' + (c.statut === 'ici' ? 'Sur place' : 'Arrivée ~' + hm(plan[0]) + (c.retard ? ' (+' + c.retard + ' min)' : ' si tu pars maintenant')) + '</span></div>' +
-    banner + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') + chatHtml(c) + '<div class="err" id="mcErr"></div>';
-  if (c.statut !== 'ici') h += '<div class="two"><button class="btn ghost" id="mcLate" style="color:var(--danger);border-color:var(--danger)">⏱ +5 min</button><button class="btn" id="mcHere">Je suis arrivé</button></div>';
-  else if (c.bloque) h += '<button class="btn" disabled>🔒 Attends l’Interac</button>' + detteDoor(c);
-  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + Math.max(0, c.encaisser - detteSur(c)) + '">' : '') + '<button class="btn ok big" id="mcDone">✓ Livrée</button>' + (c.encaisser > 0 ? detteDoor(c) : '');
-  h += '</div>';
-  if (myCmds.length > 1) {
-    h += '<div class="card"><div class="label">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + '</span>' +
-      (d.bloque ? '<span class="pay p-no">Pas payé</span>' : d.encaisser > 0 ? '<span class="pay p-cash">Cash ' + d.encaisser + ' $</span>' : '<span class="pay p-int">Payé</span>') +
-      '<div class="small" style="margin-top:3px"><a href="' + mapsUrl(d) + '" target="_blank" rel="noopener" style="color:var(--blue)">📍 ' + esc(d.adresse) + '</a> · ' + d.L + ' L · ' + d.XL + ' XL</div></div>').join('') + '</div>';
-  }
+  const plan = myCmds.length ? planOf(myCmds) : [];
+  const soir = '<details class="card" style="margin-top:4px"><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' livraison' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
+    (myCmds.length > 1 ? '<div class="label" style="margin-top:10px">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + ' · ' + esc(qtyTxt(d)) + '</span><div class="small" style="margin-top:3px">📍 ' + esc(d.adresse) + '</div></div>').join('') : '<div class="small" style="margin-top:8px">Pas d’autre commande dans ta file.</div>') +
+    '<p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse || '') + '</p></details>';
+  if (!myCmds.length) return '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🌙</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’en enverra une ici.</div></div>' + soir + finCard(s);
+  const c = myCmds[0], dp = c.demandePaie, bloque = c.bloque || !!dp;
+  const late = c.retard ? ' <span style="color:var(--danger);font-size:14px">+' + c.retard + ' min</span>' : '';
+  const when = c.statut === 'ici' ? '<div style="margin:10px 0 2px;font-size:16px">📍 Sur place depuis ' + minDe(c.iciLe) + ' min</div>'
+    : '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:10px 0 2px"><span class="small">Arrivée suggérée</span><span style="font-size:26px;font-weight:800">' + hm(plan[0]) + '</span>' + late + '</div>';
+  const band = dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
+    : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
+    : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
+    : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
+  let h = '<div class="card now"><div class="small">Commande 1 sur ' + myCmds.length + (myCmds[1] ? ' · ensuite : ' + esc(myCmds[1].client) : '') + '</div><div class="client">' + esc(c.client) + '</div>' +
+    '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b></span></a>' +
+    '<div class="small">' + esc(qtyTxt(c)) + '</div>' + when + band + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') +
+    '<div class="err" id="mcErr"></div>' +
+    '<div style="display:flex;gap:6px;margin:12px 0 8px"><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvPay">💳 Paiement</button>' +
+    (c.statut !== 'ici' ? '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="mcLate">⏱ +5 min</button>' : '') +
+    '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvMore">⋯ Autre</button></div>' + lvPanel(c);
+  if (c.statut !== 'ici') h += '<button class="btn ok" id="mcHere" style="padding:18px;font-size:18px">Je suis arrivé</button>';
+  else if (bloque) h += '<button class="btn" disabled style="padding:18px;font-size:17px">🔒 Livrée (attends le paiement)</button>';
+  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + Math.max(0, c.encaisser - detteSur(c)) + '">' : '') + '<button class="btn ok" id="mcDone" style="padding:18px;font-size:18px">✓ Livrée</button>';
+  h += '</div>' + soir;
   return h;
+}
+function lvPanel(c) {
+  if (lv.panel === 'pay') return '<div class="msgc" style="margin-bottom:8px"><div class="small" style="margin-bottom:6px">' + esc(c.client) + ' paie comment ?</div>' +
+    '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="cash">💵 Tout en cash</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="int">📲 Tout en Interac</button>' +
+    '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="mix">💵📲 Une partie cash + le reste Interac</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="dette">📒 Il paie plus tard (dette)</button>' +
+    '<button class="linkbtn" data-lp="x">Fermer</button></div>';
+  if (lv.panel === 'mix') return '<div class="msgc" style="margin-bottom:8px"><div class="small">Tape le cash qu’il te donne. Le reste, il l’envoie en Interac et le dispatch confirme.</div>' +
+    '<input id="lvMix" type="number" inputmode="numeric" placeholder="Cash reçu ($)" value="' + esc(lv.mix) + '"><div class="two"><button class="btn ghost sm" data-lp="x">Annuler</button><button class="btn sm" id="lvMixGo">Envoyer au dispatch</button></div></div>';
+  if (lv.panel === 'dette') return detteDoor(c);
+  if (lv.panel === 'more') return '<div class="msgc" style="margin-bottom:8px"><a class="btn ghost sm" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px" href="' + mapsUrl(c) + '" target="_blank" rel="noopener">🗺️ Ouvrir dans Google Maps</a>' +
+    '<button class="btn ghost sm" style="margin-bottom:6px" data-lm="rep">📞 Le client répond pas</button><button class="btn ghost sm" style="margin-bottom:6px" data-lm="no">↩️ Je ne peux pas livrer</button><button class="linkbtn" data-lp="x">Fermer</button></div>';
+  return '';
 }
 function bindMyOrders(s) {
   const c = myCmds[0];
-  watchChat(c); syncEtas();
+  watchChat(null); syncEtas();
   if (!c) return;
-  bindChat();
+  if (lv.for !== c.id) { lv.for = c.id; lv.panel = null; lv.mix = ''; }
   const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
-  if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
-  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client)); });
+  if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit().then(() => notifyDispatch('⏱ ' + me.nom + ' +5 min (' + c.client + ')')));
+  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client + (c.bloque ? ' · pas payé' : ''))); });
+  if ($('lvPay')) $('lvPay').onclick = () => { lv.panel = lv.panel ? null : 'pay'; if (lv.panel === null) delete dt.door[c.id]; renderSoiree(); };
+  if ($('lvMore')) $('lvMore').onclick = () => { lv.panel = lv.panel === 'more' ? null : 'more'; renderSoiree(); };
+  document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => {
+    const k = b.dataset.lp;
+    if (k === 'x') { lv.panel = null; delete dt.door[c.id]; return renderSoiree(); }
+    if (k === 'mix') { lv.panel = 'mix'; return renderSoiree(); }
+    if (k === 'dette') { lv.panel = 'dette'; dt.door[c.id] = { resp: 'moi', amt: c.encaisser || '', note: '' }; return renderSoiree(); }
+    lv.panel = null; act(() => askPaie(c, { mode: k }));
+  }; });
+  if ($('lvMix')) $('lvMix').oninput = (e) => { lv.mix = e.target.value; };
+  if ($('lvMixGo')) $('lvMixGo').onclick = () => { const x = Math.round(Number(lv.mix) || 0); if (x <= 0) { $('mcErr').textContent = 'Écris le cash reçu.'; return; } lv.panel = null; act(() => askPaie(c, { mode: 'mix', cash: x })); };
+  document.querySelectorAll('#soiree [data-lm]').forEach((b) => { b.onclick = () => { lv.panel = null; const t = b.dataset.lm === 'rep' ? c.client + ' répond pas à la porte' : 'Je ne peux pas livrer ' + c.client; act(() => sendMsg(me.mid, 'livreur', t)); }; });
   bindDetteDoor(c);
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
@@ -1049,7 +1146,11 @@ function bindMyOrders(s) {
     closeSuivi(c.suivi, 'livree');
   });
 }
-
+// Le livreur dit comment le client paie vraiment ; le dispatch confirme (carte rouge chez lui).
+async function askPaie(c, d) {
+  await writeBatch(db).update(doc(db, 'commandes', c.id), { demandePaie: Object.assign({ le: Date.now() }, d) }).commit();
+  notifyDispatch('💳 ' + me.nom + ' · ' + c.client + ' : ' + (d.mode === 'cash' ? 'tout en cash' : d.mode === 'int' ? 'tout en Interac' : d.cash + ' $ cash + reste Interac') + ' — à confirmer');
+}
 // ---------- Réglages (propriétaire) : prix + clé Google Maps ----------
 function renderCfg() {
   if (!isOwner() || !$('cfgCard')) return;
@@ -1338,7 +1439,11 @@ function startDm() {
   if (!me) return;
   if (isOwner() || isStaff()) {
     stops.push(onSnapshot(query(collection(db, 'messages'), orderBy('le', 'desc'), limit(400)), (qs) => {
+      const seen = new Set(dm.all.map((m) => m.id)), had = dm.all.length > 0 || dm.ready;
       dm.all = []; qs.forEach((d) => dm.all.push(Object.assign({ id: d.id }, d.data()))); dm.all.reverse(); drawDm();
+      const nw = dm.all.filter((m) => !seen.has(m.id) && m.de === 'livreur');
+      if (had && nw.length) { const m = nw[nw.length - 1]; bulle(nomDe(m.mid), m.txt, () => { dm.open = m.mid; setTab('direct'); drawDm(); const el = $('dmCard'); if (el) el.scrollIntoView({ behavior: 'smooth' }); setTimeout(() => $('dmTxt') && $('dmTxt').focus(), 400); }); }
+      dm.ready = true;
     }, () => {}));
     stops.push(onSnapshot(collection(db, 'lus'), (qs) => { dm.lus = {}; qs.forEach((d) => { dm.lus[d.id] = d.data(); }); drawDm(); }, () => {}));
   }
@@ -1349,6 +1454,7 @@ function startDm() {
       qs.forEach((d) => dm.mine.push(Object.assign({ id: d.id }, d.data())));
       dm.mine.sort((a, b) => tsMs(a.le) - tsMs(b.le));
       if (!first && dm.mine.length > before && dm.mine[dm.mine.length - 1].de === 'dispatch' && chatsDriver()) bip();
+      if (!first && dm.mine.length > before && dm.mine[dm.mine.length - 1].de === 'dispatch' && chatsDriver()) { const m = dm.mine[dm.mine.length - 1]; bulle(m.tous ? '📣 Dispatch' : 'Dispatch', m.txt, () => { setTab('soiree'); const el = $('dmMe'); if (el) el.scrollIntoView({ behavior: 'smooth' }); setTimeout(() => $('lmTxt') && $('lmTxt').focus(), 400); }); }
       first = false; drawMine();
     }, () => {}));
     stops.push(onSnapshot(doc(db, 'lus', me.mid), (s) => { dm.myLu = s.exists() ? s.data() : {}; drawMine(); }, () => {}));
@@ -1371,7 +1477,8 @@ async function notifyMsg(mid, texte) {
   try { const t = await auth.currentUser.getIdToken();
     fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'message', mid, texte }) }).catch(() => {}); } catch (e) {}
 }
-function markRead(mid, side) { setDoc(doc(db, 'lus', mid), { [side]: Date.now() }, { merge: true }).catch(() => {}); }
+const luMem = {};
+function markRead(mid, side) { const k = mid + side; if (Date.now() - (luMem[k] || 0) < 3000) return; luMem[k] = Date.now(); setDoc(doc(db, 'lus', mid), { [side]: Date.now() }, { merge: true }).catch(() => {}); }
 function unreadFor(mid) { const lu = (dm.lus[mid] && dm.lus[mid].dispatch) || 0; return dm.all.filter((m) => m.mid === mid && m.de === 'livreur' && tsMs(m.le) > lu).length; }
 const typing = (box) => document.activeElement && document.activeElement.closest && document.activeElement.closest('#' + box) && document.activeElement.tagName === 'INPUT';
 
@@ -1396,7 +1503,7 @@ function drawDm() {
     $('dmBack2').onclick = () => { dm.open = null; drawDm(); };
     const go = (t, img) => sendMsg(mid, 'dispatch', t, img).catch((e) => { $('dmErr').textContent = msg(e); });
     $('dmBack').onclick = () => { dm.open = null; drawDm(); };
-    box.querySelectorAll('[data-dq]').forEach((b) => { b.onclick = () => go(b.dataset.dq); });
+    box.querySelectorAll('[data-dq]').forEach((b) => { b.onclick = () => { $('dmTxt').value = b.dataset.dq; $('dmTxt').focus(); }; });
     $('dmSend').onclick = () => { const v = $('dmTxt').value; $('dmTxt').value = ''; go(v); };
     $('dmTxt').onkeydown = (e) => { if (e.key === 'Enter') $('dmSend').click(); };
     $('dmPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { go('', await shrinkImg(f)); } catch (x) {} } };
@@ -1455,7 +1562,7 @@ function drawMine() {
     '<div class="crow"><input id="lmTxt" maxlength="300" placeholder="Écrire au dispatch…"><label class="cpic">📷<input type="file" id="lmPic" accept="image/*" class="hide"></label><button class="btn sm" id="lmSend">➤</button></div><div class="err" id="lmErr"></div></div>';
   $('lmFeed').scrollTop = 1e6;
   const go = (t, img) => sendMsg(me.mid, 'livreur', t, img).catch((e) => { $('lmErr').textContent = msg(e); });
-  box.querySelectorAll('[data-lq]').forEach((b) => { b.onclick = () => go(b.dataset.lq); });
+  box.querySelectorAll('[data-lq]').forEach((b) => { b.onclick = () => { $('lmTxt').value = b.dataset.lq; $('lmTxt').focus(); }; });
   $('lmSend').onclick = () => { const v = $('lmTxt').value; $('lmTxt').value = ''; go(v); };
   $('lmTxt').onkeydown = (e) => { if (e.key === 'Enter') $('lmSend').click(); };
   $('lmPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { go('', await shrinkImg(f)); } catch (x) {} } };
@@ -1660,7 +1767,7 @@ function bindDetteDoor(c) {
   document.querySelectorAll('#dtResp button').forEach((b) => { b.onclick = () => { f.resp = b.dataset.r; renderSoiree(); }; });
   if ($('dtAmt')) $('dtAmt').oninput = (e) => { f.amt = e.target.value; };
   if ($('dtNote')) $('dtNote').oninput = (e) => { f.note = e.target.value; };
-  if ($('dtCancel')) $('dtCancel').onclick = () => { delete dt.door[c.id]; renderSoiree(); };
+  if ($('dtCancel')) $('dtCancel').onclick = () => { delete dt.door[c.id]; lv.panel = null; renderSoiree(); };
   if ($('dtSend')) $('dtSend').onclick = async () => {
     const m = c.bloque ? 0 : Math.round(Number(f.amt) || 0);
     if (!c.bloque && (m <= 0 || m > c.encaisser)) { $('dtErr').textContent = 'Montant entre 1 et ' + c.encaisser + ' $.'; return; }
@@ -1668,7 +1775,7 @@ function bindDetteDoor(c) {
       await setDoc(doc(collection(db, 'dettes')), { client: c.client || 'Client', montant: m, responsable: f.resp === 'moi' ? me.mid : 'dispatch', livreur: me.mid, livreurNom: me.nom,
         cmd: c.id, note: String(f.note || '').slice(0, 120), statut: 'demande', creePar: me.mid, creeParNom: me.nom, creeLe: serverTimestamp() });
       notifyDispatch('📒 ' + me.nom + ' : dette demandée (' + (c.client || 'client') + ')');
-      delete dt.door[c.id]; renderSoiree();
+      delete dt.door[c.id]; lv.panel = null; renderSoiree();
     } catch (e) { $('dtErr').textContent = msg(e); }
   };
 }
@@ -1847,24 +1954,24 @@ function renderFocus() {
       h += b.ok ? '<button class="btn ok big" data-fo="0">Assigner à ' + esc(b.nom) + ' · arrivée ~' + hm(b.arr) + '</button>' : '<div class="small">Personne n’a assez de stock.</div>';
       h += fx.alt ? fx.opts.slice(1).map((o, i) => optLine(o, false, i + 1)).join('') : (fx.opts.length > 1 ? '<button class="linkbtn" id="fxAlt">Autre livreur ▾</button>' : '');
     }
-    h += (c.bloque ? fBtn('paid', '✓ Interac reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Confirmer : annuler' : 'Annuler', 'red') + '</div>';
+    h += (c.bloque ? fBtn('paid', '✓ Interac reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
   } else {
     const q = queueOf(c.livreur), plan = planOf(q), nx = q[1];
-    watchClient(c);
     h += '<div class="small">🚗 <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' +
       '<div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
       '<div class="fban ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + (u.k === 'ici' ? 'Sur place depuis ' + u.min + ' min' : u.k === 'proche' ? 'Arrive dans ~' + u.eta + ' min' : 'En route · arrivée ~' + hm(plan[0])) + (c.retard ? ' · ' + lateTag(c.retard) : '') + '</div>' +
       '<div style="margin:6px 0">Paiement : ' + payTag(c) + (c.note ? '<div class="small">📝 ' + esc(c.note) + '</div>' : '') + '</div>';
-    if (fx.cl.length) h += '<div class="fchat"><div class="small">Livreur ↔ client</div>' + fx.cl.slice(-3).map((m) => '<div><b>' + (m.de === 'client' ? esc(prenom(c.client)) : esc(c.livreurNom || '')) + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') + '</div>';
+    if (false && fx.cl.length) h += '<div class="fchat"><div class="small">Livreur ↔ client</div>' + fx.cl.slice(-3).map((m) => '<div><b>' + (m.de === 'client' ? esc(prenom(c.client)) : esc(c.livreurNom || '')) + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') + '</div>';
     // Chat avec le livreur, directement ici
     const dl = dm.all.filter((m) => m.mid === c.livreur);
     if (unreadFor(c.livreur)) markRead(c.livreur, 'dispatch');
     h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
       '<div class="crow" style="margin-top:6px"><input id="fxTxt" maxlength="300" placeholder="Écrire à ' + esc(c.livreurNom || '') + '…"><button class="btn sm" id="fxSend">➤</button></div></div>';
-    h += (c.bloque ? fBtn('paid', '✓ Interac reçu', 'ok') : '') +
+    if (c.demandePaie) h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(c.demandePaie, c)) + '</div>' + fBtn('dpOk', c.demandePaie.mode === 'cash' ? '✓ OK, il encaisse en cash' : '✓ J’ai reçu l’Interac', 'ok') + fBtn('dpNo', 'Refuser (on garde comme avant)');
+    h += (c.bloque && !c.demandePaie ? fBtn('paid', '✓ Interac reçu', 'ok') : '') +
       '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette ? fBtn('dette', '📒 Dette') : '') + '</div>' +
       (fx.client ? msgBox(c, plan[0]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') +
-      '<div class="two">' + fBtn('unassign', fx.ask === 'unassign' ? 'Confirmer : retirer' : 'Retirer') + fBtn('cancel', fx.ask === 'cancel' ? 'Confirmer : annuler' : 'Annuler', 'red') + '</div>' +
+      '<div class="two">' + fBtn('unassign', fx.ask === 'unassign' ? 'Confirmer : retirer' : 'Retirer') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>' +
       (nx ? '<div class="small" style="margin-top:12px">Ensuite pour ' + esc(c.livreurNom || '') + ' : ' + esc(nx.client) + ' · ~' + hm(plan[1]) + '</div>' : '');
   }
   if (u.k === 'new' && fx.client) h += msgBox(c, Date.now() + 20 * 60000);
@@ -1898,7 +2005,27 @@ async function focusAssign(c, opt) {
     await b.commit(); notifyOrder(c.id); focusNext();
   } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); }
 }
+
+// Demande de paiement du livreur (« le client paie autrement ») : texte pour le dispatch, et confirmation.
+function demPaieTxt(dp, c) {
+  const tot = (prive[c.id] && prive[c.id].total) || 0;
+  if (dp.mode === 'cash') return 'Tout en cash' + (tot ? ' (' + tot + ' $)' : '');
+  if (dp.mode === 'int') return 'Tout en Interac' + (tot ? ' · ' + tot + ' $ à confirmer' : '');
+  return dp.cash + ' $ cash + ' + (tot ? Math.max(0, tot - dp.cash) + ' $ ' : 'le reste en ') + 'Interac à confirmer';
+}
+async function paieOk(c, ok) {
+  const dp = c.demandePaie; if (!dp) return;
+  const b = writeBatch(db);
+  if (!ok) { b.update(doc(db, 'commandes', c.id), { demandePaie: null }); await b.commit(); notifyMsg(c.livreur, 'Paiement refusé pour ' + c.client + ' : on garde comme avant'); return; }
+  const tot = (prive[c.id] && prive[c.id].total) || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
+  const cash = dp.mode === 'cash' ? tot : dp.mode === 'mix' ? Math.min(tot, dp.cash) : 0;
+  b.update(doc(db, 'commandes', c.id), { demandePaie: null, bloque: false, encaisser: cash, paye: cash === 0, confirmePar: me.mid, confirmeLe: serverTimestamp() });
+  b.set(doc(db, 'cmdPrive', c.id), { mode: dp.mode, cash, interac: tot - cash, recu: true }, { merge: true });
+  await b.commit();
+  notifyMsg(c.livreur, '✓ Paiement confirmé pour ' + c.client + (cash ? ' : encaisse ' + cash + ' $ cash' : ' : déjà payé'));
+}
 async function focusAct(c, a) {
+  if (a === 'dpOk' || a === 'dpNo') { try { await paieOk(c, a === 'dpOk'); } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); } return renderFocus(); }
   if (a === 'msg') { fx.client = !fx.client; return renderFocus(); }
   if (a === 'dette') { dt.disp = dt.disp ? null : { id: c.id, resp: c.livreur || myMid(), note: '' }; return renderFocus(); }
   if ((a === 'cancel' || a === 'unassign') && fx.ask !== a) { fx.ask = a; return renderFocus(); }
@@ -2246,3 +2373,14 @@ function drawSess() {
     };
   });
 }
+
+// =====================================================================
+// Version 22 : petite bulle au milieu de l'écran pour un nouveau message (6,5 s). Toucher = ouvrir la conversation ; toucher ailleurs = elle part.
+// =====================================================================
+function bulle(nom, txt, onTap) {
+  const e = $('bulle'); if (!e) return;
+  e.innerHTML = '<span style="font-size:22px">💬</span><div style="min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b>' + esc(nom) + ' :</b> ' + esc(String(txt || '').slice(0, 80)) + '</div><small>touche pour répondre</small></div>';
+  e.onclick = () => { e.classList.remove('on'); clearTimeout(e._t); if (onTap) onTap(); };
+  e.classList.add('on'); e._at = Date.now(); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('on'), 6500);
+}
+document.addEventListener('pointerdown', (ev) => { const e = $('bulle'); if (!e || !e.classList.contains('on') || e.contains(ev.target) || Date.now() - (e._at || 0) < 250) return; e.classList.remove('on'); clearTimeout(e._t); }, true);
