@@ -7,7 +7,15 @@ service cloud.firestore {
     function me() { return get(userDoc(request.auth.uid)).data; }
     function active() { return meExists() && me().actif == true; }
     function isOwner() { return active() && me().role == 'proprio'; }
-    function isStaff() { return active() && (me().role == 'complet' || me().role == 'limite'); }
+    // lost (limité) est dispatch seulement quand MOUSSE ou le propriétaire a ouvert sa soirée « Dispatch » ou « Les deux » :
+    // dispatchOk/{id} pointe vers cette soirée, qui doit être « ouverte ».
+    function okDoc() { return /databases/$(db)/documents/dispatchOk/$(myId()); }
+    function soireeDispatch(sid) {
+      let so = get(/databases/$(db)/documents/soirees/$(sid)).data;
+      return so.mid == myId() && so.statut == 'ouverte' && so.get('mode', 'livreur') in ['dispatch', 'les2'];
+    }
+    function limiteOn() { return exists(okDoc()) && soireeDispatch(get(okDoc()).data.sid); }
+    function isStaff() { return active() && (me().role == 'complet' || (me().role == 'limite' && limiteOn())); }
     function isMember(id) { return active() && me().get('mid', '') == id; }
     function isComplet() { return active() && me().role == 'complet'; }
     function myId() { return me().get('mid', 'proprietaire'); }
@@ -55,7 +63,7 @@ service cloud.firestore {
     // Dispatch limité : il peut seulement baisser son propre stock (quand il donne)
     // et seulement augmenter celui des autres (load à un livreur, retour à MOUSSE). Jamais l'inverse.
     function limiteOk(id) {
-      return active() && me().role == 'limite' && positif() &&
+      return active() && me().role == 'limite' && limiteOn() && positif() &&
         ((id == myId() && nv('L') <= cur('L') && nv('XL') <= cur('XL')) ||
          (id != myId() && nv('L') >= cur('L') && nv('XL') >= cur('XL')));
     }
@@ -86,15 +94,18 @@ service cloud.firestore {
 
     // Historique du stock : on ajoute, on ne modifie jamais.
     match /mouvements/{m} {
+      allow delete: if isOwner(); // nettoyage par le propriétaire
       allow read: if isOwner() || isStaff();
       allow create: if active() && request.resource.data.par == myId();
     }
 
     // ---------- Soirées (check-in) ----------
     match /soirees/{sid} {
+      allow delete: if isOwner();
       allow read: if isOwner() || isStaff() || (active() && resource.data.mid == myId());
       allow create: if active() && request.resource.data.mid == myId() && request.resource.data.statut == 'demande';
-      allow update: if isOwner() || isStaff() ||
+      // lost ne peut jamais autoriser sa propre soirée (même quand il fait le dispatch).
+      allow update: if isOwner() || (isStaff() && !(me().role == 'limite' && resource.data.mid == myId())) ||
         (active() && resource.data.mid == myId() && request.resource.data.mid == resource.data.mid &&
          request.resource.data.get('load', null) == resource.data.get('load', null) &&
          ((resource.data.statut == 'demande' && request.resource.data.statut == 'annulee') ||
@@ -120,7 +131,8 @@ service cloud.firestore {
       allow create, delete: if isOwner() || isStaff();
       allow update: if isOwner() || isStaff() ||
         (active() && resource.data.livreur == myId() && request.resource.data.livreur == myId() &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['retard', 'statut', 'iciLe', 'livreeLe', 'cashRecu', 'soiree', 'depart', 'paie']) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['retard', 'statut', 'iciLe', 'livreeLe', 'cashRecu', 'soiree', 'depart', 'paie', 'demandePaie']) &&
+         (request.resource.data.get('demandePaie', null) == null || request.resource.data.demandePaie.mode in ['cash', 'int', 'mix']) &&
          (!('paie' in request.resource.data.diff(resource.data).affectedKeys()) || request.resource.data.paie == get(/databases/$(db)/documents/paies/$(myId())).data.paie) &&
          request.resource.data.get('retard', 0) >= resource.data.get('retard', 0) &&
          ((resource.data.statut == 'assignee' && request.resource.data.statut in ['assignee', 'ici']) ||
@@ -150,8 +162,8 @@ service cloud.firestore {
           request.resource.data.le == request.time &&
           request.resource.data.txt is string && request.resource.data.txt.size() <= 300 &&
           (!('img' in request.resource.data) || (request.resource.data.img is string && request.resource.data.img.size() < 400000)) &&
-          (request.resource.data.de == 'client' ||
-           (request.resource.data.de == 'livreur' && signed() && suiviDoc(t).luid == request.auth.uid));
+          // v22 : le client ne peut plus écrire (seulement voir son heure d'arrivée).
+          (request.resource.data.de == 'livreur' && signed() && suiviDoc(t).luid == request.auth.uid);
         allow delete: if isOwner() || isStaff() || (signed() && suiviDoc(t).luid == request.auth.uid);
       }
     }
@@ -201,12 +213,13 @@ service cloud.firestore {
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'recueLe']) &&
         request.resource.data.statut in ['recue', 'refusee'];
       // Le livreur peut annuler tant que ce n'est pas confirmé.
-      allow delete: if active() && resource.data.de == myId() && resource.data.statut == 'attente';
+      allow delete: if isOwner() || (active() && resource.data.de == myId() && resource.data.statut == 'attente');
     }
 
     // ---------- Dettes (« le client paie plus tard ») ----------
     // Le propriétaire et MOUSSE (complet) voient tout ; les autres seulement les leurs.
     match /dettes/{id} {
+      allow delete: if isOwner();
       allow read: if isOwner() || isComplet() ||
         (active() && (resource.data.responsable == myId() || resource.data.creePar == myId() || resource.data.livreur == myId()));
       allow create: if active() && request.resource.data.creePar == myId() && request.resource.data.creeLe == request.time &&
@@ -227,6 +240,7 @@ service cloud.firestore {
 
     // ---------- Fin de soirée : stock rendu à MOUSSE ----------
     match /retours/{r} {
+      allow delete: if isOwner();
       allow read: if isOwner() || isStaff() || (active() && resource.data.de == myId());
       allow create: if active() && request.resource.data.de == myId() && request.resource.data.statut == 'attente' &&
         request.resource.data.keys().hasOnly(['de', 'deNom', 'vers', 'versNom', 'L', 'XL', 'statut', 'soiree', 'le']) &&
@@ -238,6 +252,18 @@ service cloud.firestore {
       allow update: if isComplet() && resource.data.vers == myId() && resource.data.statut == 'attente' &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'decideLe']) &&
         request.resource.data.statut in ['recue', 'refusee'];
+    }
+
+    // Permission de dispatch de lost pour ce soir : seuls le propriétaire et MOUSSE (complet) l'écrivent.
+    match /dispatchOk/{id} {
+      allow read: if isOwner() || isComplet() || isMember(id);
+      allow write: if isOwner() || isComplet();
+    }
+
+    // Sessions connectées (nom, IP, appareil) : écrites par le programme « notifier », lues par le propriétaire seulement.
+    match /sessions/{id} {
+      allow read, delete: if isOwner();
+      allow write: if false;
     }
 
     // Un document par téléphone qui accepte les notifications (lu seulement par le programme « notifier »).

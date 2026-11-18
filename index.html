@@ -161,6 +161,24 @@
   #photoView.on{display:flex}
   #photoView img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
   #photoView .pvx{position:absolute;top:calc(env(safe-area-inset-top) + 10px);right:14px;width:44px;height:44px;border-radius:22px;border:0;background:#2a2a30;color:#fff;font-size:20px}
+  /* v22 : écran dispatch simplifié — 3 couleurs : rouge = urgent, orange = à assigner, vert = ça va */
+  .lvps{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:8px;-webkit-overflow-scrolling:touch}
+  .lvp{flex:0 0 auto;min-width:128px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:9px 11px;font-size:12px;cursor:pointer}
+  .lvp.on{border-color:var(--accent)}
+  .lvp b{display:block;font-size:15px;margin-bottom:2px}
+  .lvp .dt{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:1px;background:#8b8b94}
+  .dc{border-radius:14px;padding:12px 13px;margin-bottom:8px;font-size:15px;cursor:pointer;border:1px solid var(--line);background:var(--card)}
+  .dc small{display:block;font-size:12px;margin-top:3px;color:var(--muted)}
+  .dc.red{background:#3a1517;border-color:#7f1d1d}.dc.red small{color:#fca5a5}
+  .dc.grn{background:#0f2a1a;border-color:#166534}.dc.grn small{color:#86efac}
+  .dc.org{background:#3a2a0e;border-color:#78350f}.dc.org small{color:#fcd34d}
+  .dc.more{display:flex;justify-content:space-between;align-items:center;background:var(--card2)}
+  .fab{position:fixed;right:18px;bottom:calc(22px + env(safe-area-inset-bottom));width:60px;height:60px;border-radius:50%;background:var(--cash);color:#04210f;font-size:32px;font-weight:700;z-index:30;box-shadow:0 4px 14px rgba(0,0,0,.5)}
+  body.focusing .fab{display:none}
+  .bulle{position:fixed;left:50%;top:44%;transform:translate(-50%,-50%) scale(.92);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;background:#111827;border:1px solid #4b5563;border-radius:16px;padding:12px 16px;font-size:15px;z-index:60;display:flex;gap:10px;align-items:center;max-width:88vw;cursor:pointer}
+  .bulle.on{opacity:1;transform:translate(-50%,-50%) scale(1);pointer-events:auto}
+  #tabs button{position:relative}#tabs button[data-n]:not([data-n=""])::after{content:attr(data-n);position:absolute;top:-6px;right:-4px;background:var(--danger);color:#fff;border-radius:9px;font-size:11px;padding:1px 6px;font-weight:800}
+  .bulle small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
 </style>
 </head>
 <body>
@@ -188,6 +206,7 @@
     </div>
   </section>
 
+  <div class="bulle" id="bulle"></div>
   <section id="home" class="hide">
     <div class="tabs hide" id="tabs"></div>
 
@@ -199,14 +218,18 @@
       <div id="remCard"></div>
       <div id="retCard"></div>
       <div id="detteCard"></div>
-      <div class="card" id="myStockCard"><div class="label">Sur moi</div><div class="stock"><div><b id="msL">0</b>L</div><div><b id="msXL">0</b>XL</div></div><div class="small hide" id="msDep" style="margin-top:8px"></div></div>
       <div class="card hide" id="todoCard"><div class="label">À faire <span class="badge hide" id="todoN"></span></div><div id="todo"></div></div>
+      <div class="lvps" id="pills"></div>
+      <div id="service"></div>
+      <div class="label" style="margin-top:6px">Maintenant</div>
+      <div id="nowBox"></div>
       <div id="cmdNew"></div>
       <div class="err" id="dErr"></div>
-      <div class="card hide" id="freeCard"><div class="label">À assigner</div><div id="freeList"></div></div>
-      <div class="card"><div class="label">Livreurs en service</div><div id="service"></div></div>
+      <div id="freeCard"><div class="label" id="freeLbl" style="margin-top:14px">À assigner</div><div id="freeList"></div></div>
+      <div id="doneLine" class="small center" style="margin:14px 0"></div>
       <div id="dmCard"></div>
       <div id="finTeam"></div>
+      <div class="card" id="myStockCard"><div class="label">Sur moi</div><div class="stock"><div><b id="msL">0</b>L</div><div><b id="msXL">0</b>XL</div></div><div class="small hide" id="msDep" style="margin-top:8px"></div></div>
     </div>
 
     <!-- Stock : qui a quoi, transferts -->
@@ -260,7 +283,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=21"></script>
+<script type="module" src="app.js?v=22"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>

@@ -82,7 +82,7 @@ function paint(d) {
     else $('done').classList.remove('hide');
     return;
   }
-  $('chat').classList.toggle('hide', d.statut === 'attente');
+  $('chat').classList.add('hide'); // v22 : le client ne peut plus écrire
   if (d.statut === 'ici') { $('eta').textContent = 'Arrivé'; $('stat').textContent = 'Ton livreur est devant. Sors le rejoindre 🙂'; $('prog').style.width = '100%'; }
   else if (d.statut === 'assignee' && d.eta) {
     const min = Math.max(1, Math.round((d.eta - Date.now()) / 60000));
