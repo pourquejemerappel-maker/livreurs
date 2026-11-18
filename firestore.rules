@@ -8,7 +8,9 @@ service cloud.firestore {
     function active() { return meExists() && me().actif == true; }
     function isOwner() { return active() && me().role == 'proprio'; }
     function isStaff() { return active() && (me().role == 'complet' || me().role == 'limite'); }
-    function isMember(id) { return active() && me().mid == id; }
+    function isMember(id) { return active() && me().get('mid', '') == id; }
+    function isComplet() { return active() && me().role == 'complet'; }
+    function myId() { return me().get('mid', 'proprietaire'); }
     function setupDone() { return exists(/databases/$(db)/documents/public/setup); }
 
     // Indique seulement si le compte propriétaire existe déjà.
@@ -44,6 +46,50 @@ service cloud.firestore {
     match /paies/{id} {
       allow read: if isOwner() || isMember(id);
       allow write: if isOwner();
+    }
+
+    // ---------- Stock ----------
+    function cur(f) { return resource == null ? 0 : resource.data.get(f, 0); }
+    function nv(f) { return request.resource.data.get(f, 0); }
+    function positif() { return nv('L') >= 0 && nv('XL') >= 0; }
+    // Dispatch limité : il peut seulement baisser son propre stock (quand il donne)
+    // et seulement augmenter celui des autres (load à un livreur, retour à MOUSSE). Jamais l'inverse.
+    function limiteOk(id) {
+      return active() && me().role == 'limite' && positif() &&
+        ((id == myId() && nv('L') <= cur('L') && nv('XL') <= cur('XL')) ||
+         (id != myId() && nv('L') >= cur('L') && nv('XL') >= cur('XL')));
+    }
+    // Livreur : seulement en acceptant (son stock monte) ou en refusant (le stock retourne au dispatch)
+    // un load qui lui était destiné, et exactement de la quantité du load.
+    function livreurOk(id) {
+      let sid = request.resource.data.get('via', '');
+      let p = /databases/$(db)/documents/soirees/$(sid);
+      let s0 = get(p).data;
+      let s1 = getAfter(p).data;
+      return active() && sid != '' && s0.mid == myId() && s0.statut == 'load' &&
+        ((id == myId() && s1.statut == 'ouverte') || (id == s0.load.de && s1.statut == 'demande')) &&
+        nv('L') == cur('L') + s0.load.L && nv('XL') == cur('XL') + s0.load.XL;
+    }
+    match /stocks/{id} {
+      allow read: if isOwner() || isComplet() || isMember(id);
+      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id);
+    }
+
+    // Historique du stock : on ajoute, on ne modifie jamais.
+    match /mouvements/{m} {
+      allow read: if isOwner() || isStaff();
+      allow create: if active() && request.resource.data.par == myId();
+    }
+
+    // ---------- Soirées (check-in) ----------
+    match /soirees/{sid} {
+      allow read: if isOwner() || isStaff() || (active() && resource.data.mid == myId());
+      allow create: if active() && request.resource.data.mid == myId() && request.resource.data.statut == 'demande';
+      allow update: if isOwner() || isStaff() ||
+        (active() && resource.data.mid == myId() && request.resource.data.mid == resource.data.mid &&
+         request.resource.data.get('load', null) == resource.data.get('load', null) &&
+         ((resource.data.statut == 'demande' && request.resource.data.statut == 'annulee') ||
+          (resource.data.statut == 'load' && request.resource.data.statut in ['ouverte', 'demande'])));
     }
 
     // Test en direct (première version).
