@@ -162,6 +162,7 @@
   #photoView img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
   #photoView .pvx{position:absolute;top:calc(env(safe-area-inset-top) + 10px);right:14px;width:44px;height:44px;border-radius:22px;border:0;background:#2a2a30;color:#fff;font-size:20px}
   /* v22 : écran dispatch simplifié — 3 couleurs : rouge = urgent, orange = à assigner, vert = ça va */
+  .sbar{display:flex;gap:8px;margin-bottom:10px}.sbx{flex:1;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:9px 11px}.sbx b{display:block;font-size:17px;margin-top:2px}
   .lvps{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:8px;-webkit-overflow-scrolling:touch}
   .lvp{flex:0 0 auto;min-width:128px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:9px 11px;font-size:12px;cursor:pointer}
   .lvp.on{border-color:var(--accent)}
@@ -221,6 +222,7 @@
       <div id="retCard"></div>
       <div id="detteCard"></div>
       <div class="card hide" id="todoCard"><div class="label">À faire <span class="badge hide" id="todoN"></span></div><div id="todo"></div></div>
+      <div class="sbar hide" id="stockBar"></div>
       <div class="lvps" id="pills"></div>
       <div id="service"></div>
       <div class="label" style="margin-top:6px">Maintenant</div>
@@ -286,7 +288,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=25"></script>
+<script type="module" src="app.js?v=26"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
