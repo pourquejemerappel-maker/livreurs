@@ -176,6 +176,31 @@ service cloud.firestore {
       allow read, delete: if isOwner();
     }
 
+    // ---------- Cash remis au dispatch pendant la soirée ----------
+    // Dispatchs en ligne (MOUSSE, lost) : chacun écrit seulement sa propre fiche.
+    match /dispos/{id} {
+      allow read: if active();
+      allow write: if isStaff() && id == myId();
+    }
+    match /remises/{r} {
+      allow read: if isOwner() || isStaff() || (active() && resource.data.de == myId());
+      allow create: if active() && request.resource.data.de == myId() && request.resource.data.statut == 'attente' &&
+        request.resource.data.keys().hasOnly(['de', 'deNom', 'vers', 'versNom', 'montant', 'statut', 'le']) &&
+        request.resource.data.montant is int && request.resource.data.montant > 0 && request.resource.data.montant <= 100000 &&
+        request.resource.data.le == request.time && request.resource.data.vers != myId() &&
+        // MOUSSE (complet) → propriétaire seulement ; lost (limité) → un dispatch complet ; livreur → un dispatch en ligne.
+        ((request.resource.data.vers == 'proprietaire' && isComplet()) ||
+         (request.resource.data.vers != 'proprietaire' && !isComplet() &&
+          exists(/databases/$(db)/documents/dispos/$(request.resource.data.vers)) &&
+          (!isStaff() || get(/databases/$(db)/documents/dispos/$(request.resource.data.vers)).data.role == 'complet')));
+      // Seul celui qui reçoit (dispatch ou propriétaire) confirme (Reçu / Pas reçu).
+      allow update: if (isStaff() || isOwner()) && resource.data.vers == myId() && resource.data.statut == 'attente' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'recueLe']) &&
+        request.resource.data.statut in ['recue', 'refusee'];
+      // Le livreur peut annuler tant que ce n'est pas confirmé.
+      allow delete: if active() && resource.data.de == myId() && resource.data.statut == 'attente';
+    }
+
     // Un document par téléphone qui accepte les notifications (lu seulement par le programme « notifier »).
     match /tokens/{t} {
       allow create, update: if active() && request.resource.data.mid == myId();
