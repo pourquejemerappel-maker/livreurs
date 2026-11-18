@@ -1,8 +1,8 @@
-// Version 10 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages (Firebase).
+// Version 11 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocs, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit }
+import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocs, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit, deleteDoc }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getMessaging, getToken, isSupported as msgSupported } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
 
@@ -321,6 +321,7 @@ const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 function startLive() {
   finState.team = null; finState.me = null; setTimeout(initFin, 0);
   dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; setTimeout(startDm, 0);
+  rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
@@ -340,7 +341,7 @@ function startLive() {
       mySoiree = null; qs.forEach((d) => { mySoiree = Object.assign({ id: d.id }, d.data()); }); renderSoiree();
       document.querySelectorAll('#tabs button').forEach((b) => { b.disabled = locked() && (b.dataset.t === 'direct' || b.dataset.t === 'stock'); });
       if (locked()) setTab('soiree'); else if (wasLocked) setTab('direct');
-      drawDm(); drawMine(); drawCashBtn();
+      drawDm(); drawMine(); drawCashBtn(); syncDispo();
     }, (e) => console.warn(e)));
   }
   startOrders();
@@ -1202,7 +1203,7 @@ async function closeSuivi(code, statut) {
 // reste = cash − livraisons × salaire − frais − pourboires. Pourboire = cash reçu − à encaisser (si plus) ; un manque est seulement noté.
 function soirStart() { const d = new Date(); if (d.getHours() < 6) d.setDate(d.getDate() - 1); d.setHours(6, 0, 0, 0); return d; }
 const money = (n) => Math.round(n).toLocaleString('fr-CA').replace(/\u202f|\u00a0/g, ' ') + ' $';
-function sumUp(list) {
+function sumUp(list, remis) {
   const by = {};
   list.forEach((c) => {
     const k = c.livreur || '?';
@@ -1213,7 +1214,8 @@ function sumUp(list) {
     if (cash > enc) r.tips += cash - enc; else if (cash < enc) r.manque += enc - cash;
     if (p == null) r.paieOk = false; else r.paie += Number(p);
   });
-  return Object.values(by).map((r) => Object.assign(r, { reste: r.cash - r.paie - r.frais - r.tips })).sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
+  remis = remis || {};
+  return Object.values(by).map((r) => Object.assign(r, { remis: remis[r.mid] || 0, reste: r.cash - r.paie - r.frais - r.tips - (remis[r.mid] || 0) })).sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
 }
 const jourTxt = (d) => d.toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'short' });
 function teamText(rows, d) {
@@ -1239,11 +1241,11 @@ async function loadFin(which) {
     if (which === 'team') {
       const qs = await getDocs(query(collection(db, 'commandes'), where('livreeLe', '>=', d)));
       qs.forEach((x) => { const c = x.data(); if (c.statut === 'livree') list.push(c); });
-      finState.team = teamText(sumUp(list), d);
+      finState.team = teamText(sumUp(list, await remisDepuis(d)), d);
     } else {
       const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', '==', 'livree')));
       qs.forEach((x) => { const c = x.data(); const t = c.livreeLe && c.livreeLe.toDate ? c.livreeLe.toDate() : null; if (t && t >= d) list.push(c); });
-      finState.me = myText(sumUp(list)[0], d);
+      finState.me = myText(sumUp(list, await remisDepuis(d, me.mid))[0], d);
     }
   } catch (e) { finState[which] = 'Erreur : ' + msg(e); }
   drawFin(which);
@@ -1432,18 +1434,113 @@ async function drawArch() {
 // ----- Bouton 💰 discret (livreur) : cash sur lui + livraisons de la soirée -----
 function drawCashBtn() {
   const b = $('cashBtn'); if (!b) return;
-  b.classList.toggle('hide', !(delivers() && mySoiree && working(mySoiree)));
-  b.onclick = async () => {
-    const pop = $('cashPop');
-    if (!pop.classList.contains('hide')) { pop.classList.add('hide'); return; }
-    pop.textContent = '…'; pop.classList.remove('hide');
+  b.classList.toggle('hide', !((delivers() && mySoiree && working(mySoiree)) || isDispatcher()));
+  b.onclick = () => { const pop = $('cashPop'); if (!pop.classList.contains('hide')) { pop.classList.add('hide'); rm.open = false; return; } pop.classList.remove('hide'); rm.open = false; rm.form = false; drawPop(); };
+}
+
+// =====================================================================
+// Version 11 : remettre du cash au dispatch pendant la soirée (💰 → « Donner au dispatch »)
+// =====================================================================
+// remises/{id} : { de, deNom, vers, versNom, montant, statut: 'attente' | 'recue' | 'refusee', le, recueLe? }
+// Le dispatch confirme « Reçu ✓ » : alors c'est enlevé du cash du livreur et ajouté à celui du dispatch.
+// dispos/{mid} : les dispatchs qui ont l'app ouverte ce soir (pour que le livreur choisisse à qui donner).
+const myMid = () => (me && me.mid) || 'proprietaire';
+const rm = { mine: [], toMe: [], dispos: {}, open: false, form: false, to: null, err: '' };
+async function remisDepuis(d, mid) {
+  const out = {};
+  try {
+    const qs = await getDocs(mid ? query(collection(db, 'remises'), where('de', '==', mid)) : query(collection(db, 'remises'), where('le', '>=', d)));
+    qs.forEach((x) => { const r = x.data(); const t = r.le && r.le.toDate ? r.le.toDate() : null; if (r.statut === 'recue' && t && t >= d) out[r.de] = (out[r.de] || 0) + (Number(r.montant) || 0); });
+  } catch (e) {}
+  return out;
+}
+const tonight = (r) => { const t = r.le && r.le.toDate ? r.le.toDate() : null; return !t || t >= soirStart(); };
+function startRemises() {
+  if (!me) return;
+  stops.push(onSnapshot(query(collection(db, 'remises'), where('de', '==', myMid())), (qs) => { rm.mine = []; qs.forEach((d) => rm.mine.push(Object.assign({ id: d.id }, d.data()))); rm.mine = rm.mine.filter(tonight); drawPop(); }, () => {}));
+  if (isOwner() || isStaff()) {
+    let n0 = -1;
+    stops.push(onSnapshot(query(collection(db, 'remises'), where('vers', '==', myMid())), (qs) => {
+      rm.toMe = []; qs.forEach((d) => rm.toMe.push(Object.assign({ id: d.id }, d.data()))); rm.toMe = rm.toMe.filter(tonight);
+      const n = rm.toMe.filter((r) => r.statut === 'attente').length; if (n0 >= 0 && n > n0) bip(); n0 = n;
+      drawRemCard(); drawPop();
+    }, () => {}));
+  }
+  stops.push(onSnapshot(collection(db, 'dispos'), (qs) => { rm.dispos = {}; qs.forEach((d) => { rm.dispos[d.id] = d.data(); }); drawPop(); }, () => {}));
+  syncDispo();
+}
+// Le dispatch s'annonce (pour apparaître dans la liste « Donner à… » des livreurs).
+let dispoOn = null;
+function syncDispo() {
+  if (!me || !isStaff()) return; // le propriétaire ne reçoit pas de cash ici : seulement MOUSSE et lost
+  const on = isDispatcher();
+  if (on === dispoOn) return; dispoOn = on;
+  setDoc(doc(db, 'dispos', myMid()), { nom: me.nom, role: me.role, actif: on, le: serverTimestamp() }).catch(() => {});
+}
+function cashNow() {
+  const remis = rm.mine.filter((r) => r.statut === 'recue').reduce((a, r) => a + r.montant, 0);
+  const recu = rm.toMe.filter((r) => r.statut === 'recue').reduce((a, r) => a + r.montant, 0);
+  return { remis, recu };
+}
+async function drawPop() {
+  const pop = $('cashPop'); if (!pop || pop.classList.contains('hide')) return;
+  if (pop.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  const livre = delivers() && mySoiree && working(mySoiree);
+  let base = { cash: 0, n: 0 };
+  if (livre) {
     try {
       const d = soirStart(), list = [];
       const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', '==', 'livree')));
       qs.forEach((x) => { const c = x.data(); const t = c.livreeLe && c.livreeLe.toDate ? c.livreeLe.toDate() : null; if (t && t >= d) list.push(c); });
-      const r = sumUp(list)[0] || { cash: 0, n: 0 };
-      pop.innerHTML = '💰 <b>' + money(r.cash) + '</b> cash · <b>' + r.n + '</b> livraison' + (r.n > 1 ? 's' : '');
-    } catch (e) { pop.textContent = msg(e); }
-    clearTimeout(drawCashBtn.t); drawCashBtn.t = setTimeout(() => pop.classList.add('hide'), 8000);
+      base = sumUp(list)[0] || base;
+    } catch (e) {}
+  }
+  const k = cashNow(), sur = base.cash - k.remis + k.recu;
+  if (isOwner()) {
+    pop.innerHTML = '💰 <b>' + money(k.recu) + '</b> reçus de MOUSSE ce soir' + rm.toMe.filter((r) => r.statut === 'recue').slice(-4).map((r) => '<div class="small">✓ ' + money(r.montant) + ' de ' + esc(r.deNom) + '</div>').join('');
+    return;
+  }
+  const att = rm.mine.filter((r) => r.statut === 'attente');
+  let h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> sur toi' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') : '') + '</div>';
+  if (k.recu) h += '<div class="small">dont ' + money(k.recu) + ' reçus des livreurs</div>';
+  att.forEach((r) => { h += '<div class="small" style="margin-top:4px">⏳ ' + money(r.montant) + ' → ' + esc(r.versNom) + ' : en attente <button class="linkbtn" data-ann="' + r.id + '">Annuler</button></div>'; });
+  rm.mine.filter((r) => r.statut !== 'attente').slice(-3).forEach((r) => { h += '<div class="small">' + (r.statut === 'recue' ? '✓ ' : '✗ ') + money(r.montant) + ' → ' + esc(r.versNom) + (r.statut === 'recue' ? ' (reçu)' : ' (pas reçu)') + '</div>'; });
+  if (!rm.form) h += '<button class="linkbtn" id="popGive" style="margin-top:6px">↗ Donner du cash ' + (me.role === 'complet' ? 'au propriétaire' : me.role === 'limite' ? 'à MOUSSE' : 'au dispatch') + '</button>';
+  else {
+    // MOUSSE donne seulement au propriétaire ; lost seulement à MOUSSE ; un livreur à MOUSSE d'abord, puis lost.
+    const on = Object.entries(rm.dispos).filter(([id, d]) => d.actif && id !== myMid() && id !== 'proprietaire');
+    const ds = me.role === 'complet' ? [['proprietaire', { nom: 'Propriétaire' }]]
+      : me.role === 'limite' ? on.filter(([id, d]) => d.role === 'complet')
+      : on.sort((a, b) => (a[1].role === 'complet' ? 0 : 1) - (b[1].role === 'complet' ? 0 : 1));
+    h += '<div style="margin-top:8px;min-width:230px"><div class="small">À qui :</div><div class="seg" style="margin:4px 0">' +
+      (ds.map(([id, d]) => '<button data-to="' + id + '" class="' + (rm.to === id ? 'on' : '') + '">' + esc(d.nom) + '</button>').join('') || '<span class="small">Aucun dispatch en ligne.</span>') + '</div>' +
+      '<div class="crow"><input id="popAmt" type="number" inputmode="numeric" placeholder="Montant $"><button class="btn sm" id="popSend">Donner</button></div>' +
+      '<div class="err" id="popErr">' + esc(rm.err) + '</div><button class="linkbtn" id="popX">Fermer</button></div>';
+  }
+  pop.innerHTML = h;
+  if ($('popGive')) $('popGive').onclick = (e) => { e.stopPropagation(); rm.form = true; rm.err = ''; drawPop(); };
+  if ($('popTop')) $('popTop').onclick = () => { if (!rm.form) { rm.form = true; drawPop(); } };
+  if ($('popX')) $('popX').onclick = () => { rm.form = false; drawPop(); };
+  pop.querySelectorAll('[data-to]').forEach((b) => { b.onclick = () => { const v = $('popAmt') && $('popAmt').value; rm.to = b.dataset.to; drawPop().then(() => { if (v && $('popAmt')) $('popAmt').value = v; }); }; });
+  pop.querySelectorAll('[data-ann]').forEach((b) => { b.onclick = () => deleteDoc(doc(db, 'remises', b.dataset.ann)).catch(() => {}); });
+  if ($('popSend')) $('popSend').onclick = async () => {
+    const m = Math.round(Number($('popAmt').value) || 0);
+    if (!rm.to || (!rm.dispos[rm.to] && rm.to !== 'proprietaire')) { rm.err = 'Choisis à qui.'; return drawPop(); }
+    if (m <= 0) { rm.err = 'Écris le montant.'; return drawPop(); }
+    if (m > sur) { rm.err = 'Tu as seulement ' + money(sur) + ' sur toi.'; return drawPop(); }
+    try {
+      await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || 'Propriétaire', vers: rm.to, versNom: rm.to === 'proprietaire' ? 'Propriétaire' : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
+      rm.form = false; rm.err = ''; drawPop();
+    } catch (e) { rm.err = msg(e); drawPop(); }
   };
 }
+// Côté dispatch : « Fmj te donne 500 $ » → Reçu ✓ / Pas reçu
+function drawRemCard() {
+  const box = $('remCard'); if (!box) return;
+  const att = rm.toMe.filter((r) => r.statut === 'attente');
+  box.innerHTML = att.length ? '<div class="card alert"><div class="label">💵 Cash qu’on te donne</div>' + att.map((r) =>
+    '<div class="item"><b>' + esc(r.deNom) + '</b> te donne <b>' + money(r.montant) + '</b> cash<div class="two" style="margin-top:8px"><button class="btn red sm" data-rno="' + r.id + '">Pas reçu</button><button class="btn ok sm" data-ryes="' + r.id + '">Reçu ✓</button></div></div>').join('') + '</div>' : '';
+  box.querySelectorAll('[data-ryes]').forEach((b) => { b.onclick = () => updRemise(b.dataset.ryes, 'recue'); });
+  box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => updRemise(b.dataset.rno, 'refusee'); });
+}
+function updRemise(id, statut) { writeBatch(db).update(doc(db, 'remises', id), { statut, recueLe: serverTimestamp() }).commit().catch((e) => alertBar(msg(e))); }
