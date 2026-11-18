@@ -130,6 +130,21 @@
   .notif{border-color:#3d3a1a;background:#1a1910}
   pre.fin { white-space: pre-wrap; font: 14px/1.45 inherit; font-family: inherit; background: rgba(127,127,127,.08); border-radius: 10px; padding: 10px; margin: 0 0 10px; }
   .cm.call { align-self: center; background: #3a2f0b; color: #ffd866; }
+  /* Mode focus (dispatch) */
+  .qtap { cursor: pointer; }
+  .st { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 8px; margin-left: 4px; }
+  .s-ici { background: #3a1414; color: #ff9b9b; } .s-proche { background: #3a2a0b; color: #ffc46b; } .s-new { background: #123322; color: #7ee2a8; } .s-route { background: #0f2a45; color: #9cc8ff; }
+  #focusView { display: none; }
+  body.focusing #focusView { display: flex; flex-direction: column; position: fixed; inset: 0; z-index: 40; background: var(--bg, #0e1116); }
+  #focusView .fhead { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 4px; }
+  #focusView .fbody { flex: 1; overflow-y: auto; padding: 0 16px 16px; max-width: 640px; width: 100%; margin: 0 auto; }
+  .fclient { font-size: 30px; font-weight: 800; margin: 2px 0; }
+  .faddr { font-size: 17px; margin-bottom: 4px; }
+  .fban { border-radius: 12px; padding: 12px; font-weight: 700; margin: 10px 0; font-size: 16px; }
+  .fchat { background: #11151c; border: 1px solid #262c36; border-radius: 12px; padding: 8px 10px; font-size: 14px; margin: 8px 0; }
+  .fdock { border-top: 1px solid #262c36; background: #0b0e13; padding: 8px 10px 16px; }
+  .fchips { display: flex; gap: 6px; overflow-x: auto; }
+  .fchip { flex: 0 0 auto; border-radius: 12px; padding: 7px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -162,6 +177,7 @@
 
     <!-- Dispatch : demandes de check-in, loads en attente, livreurs en service -->
     <div id="tabDirect" class="tab hide">
+      <div id="focusView"></div>
       <div id="detteRappelD"></div>
       <div id="remCard"></div>
       <div id="detteCard"></div>
@@ -220,7 +236,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=12"></script>
+<script type="module" src="app.js?v=13"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
