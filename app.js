@@ -1,4 +1,4 @@
-// Version 18 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
+// Version 19 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -351,7 +351,7 @@ function startLive() {
   }
   startOrders();
   renderAll(); renderSoiree();
-  if (delivers()) saveToken(false);
+  if (delivers() || isStaff()) saveToken(false);
 }
 function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } if (typeof drawDm === 'function') drawDm(); }
 const st = (id) => stocks[id] || { L: 0, XL: 0 };
@@ -594,6 +594,7 @@ async function requestStart() {
   const data = { mid: me.mid, nom: me.nom, statut: 'demande', mode, adresse: adr, demandeLe: serverTimestamp() };
   if (ci.pick && ci.pick.lat) { data.lat = ci.pick.lat; data.lon = ci.pick.lon; }
   await setDoc(doc(collection(db, 'soirees')), data);
+  notifyDispatch('🙋 ' + me.nom + ' veut commencer' + (mode === 'dispatch' ? ' (dispatch)' : mode === 'les2' ? ' (livrer + dispatch)' : ' sa soirée'));
   ci.q = ''; ci.pick = null; ci.sugs = [];
 }
 async function acceptLoad(s) {
@@ -996,7 +997,7 @@ function bindMyOrders(s) {
   bindChat();
   const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
   if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
-  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit(); });
+  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client)); });
   bindDetteDoor(c);
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
@@ -1038,27 +1039,29 @@ let notifState = 'inconnu', notifBusy = false;
 
 async function pushOk() { try { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && (await msgSupported()); } catch (e) { return false; } }
 async function saveToken(ask) {
-  if (!me || !delivers()) return;
-  if (!(await pushOk())) { notifState = isIOS() && !isStandalone() ? 'installer' : 'impossible'; return renderSoiree(); }
-  if (Notification.permission === 'denied') { notifState = 'refuse'; return renderSoiree(); }
+  if (!me || !(delivers() || isStaff())) return;
+  if (!(await pushOk())) { notifState = isIOS() && !isStandalone() ? 'installer' : 'impossible'; return notifRedraw(); }
+  if (Notification.permission === 'denied') { notifState = 'refuse'; return notifRedraw(); }
   if (Notification.permission !== 'granted') {
-    if (!ask) { notifState = 'a-activer'; return renderSoiree(); }
+    if (!ask) { notifState = 'a-activer'; return notifRedraw(); }
     const p = await Notification.requestPermission();
-    if (p !== 'granted') { notifState = p === 'denied' ? 'refuse' : 'a-activer'; return renderSoiree(); }
+    if (p !== 'granted') { notifState = p === 'denied' ? 'refuse' : 'a-activer'; return notifRedraw(); }
   }
   try {
     const reg = await navigator.serviceWorker.ready;
     const tok = await getToken(getMessaging(app), { vapidKey: VAPID, serviceWorkerRegistration: reg });
     if (tok) { await setDoc(doc(db, 'tokens', tok), { mid: me.mid, le: serverTimestamp(), appareil: isIOS() ? 'iphone' : 'autre' }, { merge: true }); notifState = 'ok'; }
   } catch (e) { console.warn('notif', e); notifState = 'erreur'; }
-  renderSoiree();
+  notifRedraw();
 }
-function notifCard() {
-  if (!delivers()) return '';
+function notifRedraw() { renderSoiree(); if (typeof drawNotifD === 'function') drawNotifD(); }
+function notifCard(forDisp) {
+  if (!delivers() && !isStaff()) return '';
   if (notifState === 'ok' || notifState === 'inconnu') return '';
   if (notifState === 'installer') return '<div class="card notif"><b>🔔 Pour recevoir les notifications sur iPhone</b><p class="small" style="margin:6px 0 0">1. Dans Safari, touche Partager → « Sur l’écran d’accueil ».<br>2. Ouvre l’app avec la nouvelle icône, puis active les notifications ici.</p></div>';
   if (notifState === 'refuse') return '<div class="card notif"><b>🔕 Notifications bloquées</b><p class="small" style="margin:6px 0 0">Va dans Réglages du téléphone → Notifications → Gotham, et autorise-les.</p></div>';
   if (notifState === 'impossible') return '<div class="card notif"><b>🔕 Ce téléphone ne peut pas recevoir les notifications de l’app.</b><p class="small" style="margin:6px 0 0">Mets à jour le téléphone (iPhone : iOS 16.4 ou plus).</p></div>';
+  if (forDisp) return '<div class="card notif"><b>🔔 Reçois les messages des livreurs, les check-ins et les « arrivé » même téléphone verrouillé</b><button class="btn ok" id="notifGoD" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
   return '<div class="card notif"><b>🔔 Reçois tes nouvelles commandes même téléphone verrouillé</b><button class="btn ok" id="notifGo" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
 }
 // Prévenir le livreur qu'une commande vient de lui être assignée.
@@ -1324,7 +1327,7 @@ async function sendMsg(mid, de, txt, img, tous) {
   const d = { mid, de, par: me.mid, nom: me.nom || 'Dispatch', txt: txt || '📷 Photo', le: serverTimestamp() };
   if (img) d.img = img; if (tous) d.tous = true;
   await setDoc(doc(collection(db, 'messages')), d);
-  if (de === 'dispatch') notifyMsg(mid, d.txt);
+  if (de === 'dispatch') notifyMsg(mid, d.txt); else notifyDispatch('💬 ' + me.nom + ' : ' + d.txt);
 }
 async function notifyMsg(mid, texte) {
   try { const t = await auth.currentUser.getIdToken();
@@ -1546,6 +1549,7 @@ async function drawPop() {
     if (m > sur) { rm.err = 'Tu as seulement ' + money(sur) + ' sur toi.'; return drawPop(); }
     try {
       await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || 'Propriétaire', vers: rm.to, versNom: rm.to === 'proprietaire' ? 'Propriétaire' : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
+      if (rm.to !== 'proprietaire') notifyDispatch('💵 ' + me.nom + ' te donne ' + money(m) + ' cash', rm.to);
       rm.form = false; rm.err = ''; drawPop();
     } catch (e) { rm.err = msg(e); drawPop(); }
   };
@@ -1625,6 +1629,7 @@ function bindDetteDoor(c) {
     try {
       await setDoc(doc(collection(db, 'dettes')), { client: c.client || 'Client', montant: m, responsable: f.resp === 'moi' ? me.mid : 'dispatch', livreur: me.mid, livreurNom: me.nom,
         cmd: c.id, note: String(f.note || '').slice(0, 120), statut: 'demande', creePar: me.mid, creeParNom: me.nom, creeLe: serverTimestamp() });
+      notifyDispatch('📒 ' + me.nom + ' : dette demandée (' + (c.client || 'client') + ')');
       delete dt.door[c.id]; renderSoiree();
     } catch (e) { $('dtErr').textContent = msg(e); }
   };
@@ -1914,6 +1919,7 @@ function bindFinCard(s) {
       if (to && f.mode === 'rends' && (f.L || f.XL)) b.set(doc(collection(db, 'retours')), { de: me.mid, deNom: me.nom, vers: to.id, versNom: to.nom, L: f.L, XL: f.XL, statut: 'attente', soiree: s.id, le: serverTimestamp() });
       b.update(doc(db, 'soirees', s.id), { statut: 'terminee', finLe: serverTimestamp() });
       await b.commit();
+      if (to && f.mode === 'rends' && (f.L || f.XL)) notifyDispatch('📦 ' + me.nom + ' te rend ' + f.L + ' L · ' + f.XL + ' XL', to.id);
       ret.f = null; ret.busy = false; finState.me = null; renderSoiree(); initFin(); loadFin('me');
     } catch (e) { ret.busy = false; if ($('finErr')) $('finErr').textContent = msg(e); if ($('finGo')) $('finGo').disabled = false; }
   };
@@ -2070,3 +2076,22 @@ document.addEventListener('click', (e) => {
   const im = e.target && e.target.closest && e.target.closest('.cm img, .fchat img, .cfeed img');
   if (im && !im.closest('#photoView')) { e.preventDefault(); openPhoto(im.getAttribute('src')); }
 });
+
+// =====================================================================
+// Version 19 : notifications pour le dispatch (MOUSSE, et lost quand il fait le dispatch)
+// =====================================================================
+// Message d'un livreur, check-in, « arrivé chez le client », cash / stock / dette à confirmer → à tous les dispatchs en ligne.
+async function notifyDispatch(texte, pour) {
+  try {
+    const t = await auth.currentUser.getIdToken();
+    fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify(Object.assign({ type: 'dispatch', texte: String(texte || '').slice(0, 140) }, pour ? { pour } : {})) }).catch(() => {});
+  } catch (e) {}
+}
+// Carte « Activer les notifications » en haut d'En direct pour MOUSSE et lost.
+function drawNotifD() {
+  const box = $('notifD'); if (!box) return;
+  if (!me || !isStaff() || !isDispatcher()) { box.innerHTML = ''; return; }
+  box.innerHTML = notifCard(true);
+  if ($('notifGoD')) $('notifGoD').onclick = () => { if (notifBusy) return; notifBusy = true; saveToken(true).finally(() => { notifBusy = false; }); };
+}
+setTimeout(() => { try { drawNotifD(); } catch (e) {} }, 3000);
