@@ -117,7 +117,8 @@ service cloud.firestore {
       allow create, delete: if isOwner() || isStaff();
       allow update: if isOwner() || isStaff() ||
         (active() && resource.data.livreur == myId() && request.resource.data.livreur == myId() &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['retard', 'statut', 'iciLe', 'livreeLe', 'cashRecu', 'soiree', 'depart']) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['retard', 'statut', 'iciLe', 'livreeLe', 'cashRecu', 'soiree', 'depart', 'paie']) &&
+         (!('paie' in request.resource.data.diff(resource.data).affectedKeys()) || request.resource.data.paie == get(/databases/$(db)/documents/paies/$(myId())).data.paie) &&
          request.resource.data.get('retard', 0) >= resource.data.get('retard', 0) &&
          ((resource.data.statut == 'assignee' && request.resource.data.statut in ['assignee', 'ici']) ||
           (resource.data.statut == 'ici' && request.resource.data.statut == 'ici') ||

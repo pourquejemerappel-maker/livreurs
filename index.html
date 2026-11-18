@@ -128,6 +128,7 @@
   .crow input{margin:0;flex:1}
   .cpic{display:flex;align-items:center;justify-content:center;padding:0 12px;background:var(--card);border:1px solid var(--line);border-radius:10px;font-size:18px;cursor:pointer}
   .notif{border-color:#3d3a1a;background:#1a1910}
+  pre.fin { white-space: pre-wrap; font: 14px/1.45 inherit; font-family: inherit; background: rgba(127,127,127,.08); border-radius: 10px; padding: 10px; margin: 0 0 10px; }
 </style>
 </head>
 <body>
@@ -165,6 +166,7 @@
       <div class="err" id="dErr"></div>
       <div class="card hide" id="freeCard"><div class="label">À assigner</div><div id="freeList"></div></div>
       <div class="card"><div class="label">Livreurs en service</div><div id="service"></div></div>
+      <div id="finTeam"></div>
     </div>
 
     <!-- Stock : qui a quoi, transferts -->
@@ -183,6 +185,7 @@
     <!-- Ma soirée (livreur, ou dispatch qui livre aussi) -->
     <div id="tabSoiree" class="tab hide">
       <div id="soiree"></div>
+      <div id="finMe"></div>
       <div class="card small">
         <b style="color:var(--text)">Installer sur iPhone :</b> dans Safari, Partager → « Sur l'écran d'accueil ».<br>
         <b style="color:var(--text)">Sur Android :</b> menu ⋮ → « Installer l'application ».
@@ -206,7 +209,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=8"></script>
+<script type="module" src="app.js?v=9"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
