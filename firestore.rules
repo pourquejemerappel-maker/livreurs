@@ -201,6 +201,27 @@ service cloud.firestore {
       allow delete: if active() && resource.data.de == myId() && resource.data.statut == 'attente';
     }
 
+    // ---------- Dettes (« le client paie plus tard ») ----------
+    // Le propriétaire et MOUSSE (complet) voient tout ; les autres seulement les leurs.
+    match /dettes/{id} {
+      allow read: if isOwner() || isComplet() ||
+        (active() && (resource.data.responsable == myId() || resource.data.creePar == myId() || resource.data.livreur == myId()));
+      allow create: if active() && request.resource.data.creePar == myId() && request.resource.data.creeLe == request.time &&
+        request.resource.data.keys().hasOnly(['client', 'montant', 'responsable', 'livreur', 'livreurNom', 'cmd', 'note', 'statut', 'creePar', 'creeParNom', 'creeLe']) &&
+        request.resource.data.montant is int && request.resource.data.montant >= 0 && request.resource.data.montant <= 100000 &&
+        request.resource.data.note is string && request.resource.data.note.size() <= 120 &&
+        (((isOwner() || isComplet()) && request.resource.data.statut in ['ouverte', 'attente_livreur']) ||
+         (request.resource.data.statut == 'demande' && request.resource.data.livreur == myId() && request.resource.data.responsable in [myId(), 'dispatch']));
+      // Propriétaire / MOUSSE : accepter, refuser, régler.
+      // Livreur nommé responsable : confirmer, ou « pas moi » (ça revient à celui qui l'a créée).
+      allow update: if isOwner() || isComplet() ||
+        (active() && resource.data.responsable == myId() && resource.data.statut == 'attente_livreur' &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'responsable', 'note', 'confirmeLe']) &&
+         request.resource.data.statut == 'ouverte' &&
+         (request.resource.data.responsable == myId() || request.resource.data.responsable == resource.data.creePar) &&
+         request.resource.data.note is string && request.resource.data.note.size() <= 160);
+    }
+
     // Un document par téléphone qui accepte les notifications (lu seulement par le programme « notifier »).
     match /tokens/{t} {
       allow create, update: if active() && request.resource.data.mid == myId();

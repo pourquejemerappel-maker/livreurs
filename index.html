@@ -162,7 +162,9 @@
 
     <!-- Dispatch : demandes de check-in, loads en attente, livreurs en service -->
     <div id="tabDirect" class="tab hide">
+      <div id="detteRappelD"></div>
       <div id="remCard"></div>
+      <div id="detteCard"></div>
       <div class="card" id="myStockCard"><div class="label">Sur moi</div><div class="stock"><div><b id="msL">0</b>L</div><div><b id="msXL">0</b>XL</div></div><div class="small hide" id="msDep" style="margin-top:8px"></div></div>
       <div class="card"><div class="label">À faire <span class="badge hide" id="todoN"></span></div><div id="todo"></div></div>
       <div id="cmdNew"></div>
@@ -184,13 +186,16 @@
         <button class="btn ok" id="gGo">Donner</button>
       </div>
       <div class="card"><div class="label">Derniers mouvements</div><div class="log" id="mvts"></div></div>
+      <div id="dettePage" style="text-align:center;margin-bottom:16px"></div>
     </div>
 
     <!-- Ma soirée (livreur, ou dispatch qui livre aussi) -->
     <div id="tabSoiree" class="tab hide">
+      <div id="detteRappel"></div>
       <div id="soiree"></div>
       <div id="dmMe"></div>
       <div id="finMe"></div>
+      <div id="dettePageMe" style="text-align:center;margin-bottom:16px"></div>
       <div class="card small">
         <b style="color:var(--text)">Installer sur iPhone :</b> dans Safari, Partager → « Sur l'écran d'accueil ».<br>
         <b style="color:var(--text)">Sur Android :</b> menu ⋮ → « Installer l'application ».
@@ -215,7 +220,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=11"></script>
+<script type="module" src="app.js?v=12"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
