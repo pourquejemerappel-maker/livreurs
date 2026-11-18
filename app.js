@@ -1,4 +1,4 @@
-// Version 19 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
+// Version 20 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -466,7 +466,9 @@ function renderStock() {
   const ids = all ? [].concat(...Object.keys(team).filter((id) => team[id].actif || (stocks[id] && (stocks[id].L || stocks[id].XL)))
     .sort((a, b) => ({ complet: 0, limite: 1, livreur: 2 }[team[a].role] - { complet: 0, limite: 1, livreur: 2 }[team[b].role]) || team[a].nom.localeCompare(team[b].nom, 'fr'))
     .map((id) => (team[id].role === 'complet' ? [id, DEP(id)] : [id]))) : [me.mid];
-  $('stockList').innerHTML = ids.map((id) => '<div class="srow"><span>' + (isDep(id) ? '&nbsp;&nbsp;↳ ' : '') + esc(isDep(id) ? 'au dépôt' : nomDe(id) + (team[id] && team[id].role === 'complet' ? ' (sur lui)' : '')) + (id === me.mid ? ' · moi' : '') + '</span><b>' + qty(st(id)) + '</b></div>').join('');
+  $('stockList').innerHTML = ids.map((id) => '<div class="srow"><span>' + (isDep(id) ? '&nbsp;&nbsp;↳ ' : '') + esc(isDep(id) ? 'au dépôt' : nomDe(id) + (team[id] && team[id].role === 'complet' ? ' (sur lui)' : '')) + (id === me.mid ? ' · moi' : '') + '</span><b>' + qty(st(id)) + (isOwner() ? ' <button class="linkbtn" data-fix="' + id + '" style="padding:0 0 0 8px">✏️</button>' : '') + '</b></div>' + (isOwner() && fixS.id === id ? fixForm(id) : '')).join('') +
+    (isOwner() ? '<button class="linkbtn" id="fixAll" style="margin-top:8px;color:var(--danger)">' + (fixS.all ? 'Appuie encore : tout le monde à 0 L · 0 XL' : '🔄 Remettre tout le monde à 0') + '</button><div class="err" id="fixErr"></div>' : '');
+  bindFix(ids);
   const srcs = giveSources();
   if (srcs.indexOf(give.from) < 0) give.from = srcs[0];
   const tg = giveTargets(give.from);
@@ -481,7 +483,7 @@ function renderStock() {
   document.querySelectorAll('#giveTo button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
   $('gL').textContent = give.L; $('gXL').textContent = give.XL;
   $('gGo').textContent = (me.role === 'limite' ? 'Retourner' : me.role === 'complet' && (give.to === me.mid || give.to === DEP(me.mid)) ? 'Déplacer' : 'Donner') + (give.to ? ' → ' + lbl(give.to) : '');
-  $('mvts').innerHTML = mvts.map((m) => hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
+  $('mvts').innerHTML = mvts.map((m) => m.type === 'correction' ? hhmm(m.le) + ' · ✏️ ' + esc(nomDe(m.de)) + ' corrigé : ' + qty(m.avant || {}) + ' → ' + qty(m.apres || {}) + ' · par ' + esc(nomDe(m.par)) : hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
 }
 document.querySelectorAll('#giveCard .step button').forEach((b) => { b.onclick = () => { give[b.dataset.k] = Math.max(0, give[b.dataset.k] + Number(b.dataset.d)); $('gErr').textContent = ''; renderStock(); }; });
 $('gGo').onclick = async () => {
@@ -2095,3 +2097,40 @@ function drawNotifD() {
   if ($('notifGoD')) $('notifGoD').onclick = () => { if (notifBusy) return; notifBusy = true; saveToken(true).finally(() => { notifBusy = false; }); };
 }
 setTimeout(() => { try { drawNotifD(); } catch (e) {} }, 3000);
+
+// =====================================================================
+// Version 20 : le propriétaire corrige le stock de n'importe qui (✏️), ou remet tout le monde à 0
+// =====================================================================
+// Chaque correction est notée dans les mouvements (type « correction », avant → après).
+const fixS = { id: null, L: 0, XL: 0, all: false };
+function fixForm(id) {
+  return '<div class="msgc" style="margin:4px 0 10px"><div class="small">Corriger le stock de ' + esc(isDep(id) ? 'dépôt de ' + nomDe(id.replace(/-depot$/, '')) : nomDe(id)) + ' (le vrai compte)</div>' +
+    ['L', 'XL'].map((k) => '<div class="step"><span>' + k + '</span><button data-fk2="' + k + '" data-d="-1">−</button><div class="v">' + fixS[k] + '</div><button data-fk2="' + k + '" data-d="1">+</button></div>').join('') +
+    '<div class="two"><button class="btn ghost sm" id="fixCancel">Annuler</button><button class="btn ok sm" id="fixGo">Enregistrer</button></div></div>';
+}
+async function setStocks(list) {
+  // list : [[id, L, XL], …] — au plus 200 personnes par lot
+  for (let i = 0; i < list.length; i += 200) {
+    const b = writeBatch(db);
+    list.slice(i, i + 200).forEach(([id, L, XL]) => {
+      const av = st(id);
+      b.set(doc(db, 'stocks', id), { L, XL }, { merge: true });
+      b.set(doc(collection(db, 'mouvements')), { de: id, vers: id, L: L - (av.L || 0), XL: XL - (av.XL || 0), avant: { L: av.L || 0, XL: av.XL || 0 }, apres: { L, XL }, type: 'correction', par: myMid(), le: serverTimestamp() });
+    });
+    await b.commit();
+  }
+}
+function bindFix(ids) {
+  if (!isOwner()) return;
+  document.querySelectorAll('[data-fix]').forEach((b) => { b.onclick = () => { const id = b.dataset.fix, m = st(id); fixS.id = fixS.id === id ? null : id; fixS.L = m.L || 0; fixS.XL = m.XL || 0; fixS.all = false; renderStock(); }; });
+  document.querySelectorAll('[data-fk2]').forEach((b) => { b.onclick = () => { const k = b.dataset.fk2; fixS[k] = Math.max(0, fixS[k] + Number(b.dataset.d)); renderStock(); }; });
+  if ($('fixCancel')) $('fixCancel').onclick = () => { fixS.id = null; renderStock(); };
+  if ($('fixGo')) $('fixGo').onclick = async () => { try { await setStocks([[fixS.id, fixS.L, fixS.XL]]); fixS.id = null; } catch (e) { $('fixErr').textContent = msg(e); } renderStock(); };
+  if ($('fixAll')) $('fixAll').onclick = async () => {
+    if (!fixS.all) { fixS.all = true; return renderStock(); }
+    fixS.all = false;
+    const tous = new Set(ids.concat(Object.keys(stocks)));
+    try { await setStocks([...tous].filter((id) => { const m = st(id); return (m.L || 0) || (m.XL || 0); }).map((id) => [id, 0, 0])); } catch (e) { $('fixErr').textContent = msg(e); }
+    renderStock();
+  };
+}
