@@ -687,6 +687,8 @@ function renderNew() {
   const f = NF, tot = totalOf(f);
   const focusId = document.activeElement && document.activeElement.id;
   box.innerHTML = '<div class="card"><div class="label">Nouvelle commande</div>' +
+    '<textarea id="nfPaste" rows="4" placeholder="📋 Colle ici le message du client (nom, numéro, adresse avec code postal, commande)"></textarea>' +
+    (f.pasted ? '<div class="small" style="margin:-4px 0 8px;color:var(--cash)">✓ Rempli à partir du message. Vérifie l’adresse et les quantités, puis choisis le paiement.</div>' : '') +
     '<input id="nfClient" placeholder="Nom du client" value="' + esc(f.client) + '">' +
     '<input id="nfAdr" placeholder="Adresse (ex. 5000 jean-talon)" autocomplete="off" value="' + esc(f.q) + '"><div id="nfSugs"></div>' +
     '<div class="step"><span>L</span><button data-k="L" data-d="-1">−</button><div class="v">' + f.L + '</div><button data-k="L" data-d="1">+</button>' +
@@ -703,6 +705,7 @@ function renderNew() {
     '<div class="two"><button class="btn ghost" id="nfCancel">Annuler</button><button class="btn ghost" id="nfKeep">Garder sans assigner</button></div></div>';
   const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
   on('nfClient', 'oninput', (e) => { f.client = e.target.value; });
+  on('nfPaste', 'oninput', (e) => { clearTimeout(nf.pt); const v = e.target.value; if (v.trim().length > 8) nf.pt = setTimeout(() => applyPaste(v), 400); });
   on('nfAdr', 'oninput', (e) => { f.q = e.target.value; f.pick = null; f.opts = null; drawAssign(); nfLookup(); });
   on('nfTel', 'oninput', (e) => { f.tel = e.target.value; });
   on('nfNote', 'oninput', (e) => { f.note = e.target.value; });
@@ -1016,4 +1019,65 @@ async function notifyOrder(cid) {
     const t = await auth.currentUser.getIdToken();
     fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'commande', cid }) }).catch(() => {});
   } catch (e) {}
+}
+
+// « commande: 2 L 1 XL », « 2L », « 1 xl », « xl x2 », « 2 larges et 1 extra-large »…
+function parseQty(t) {
+  let s = ' ' + String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') + ' ';
+  let XL = null, L = null;
+  const take = (re, fn) => { s = s.replace(re, (...m) => { fn(m); return ' '; }); };
+  take(/(\d+)\s*(?:x\s*)?(?:xl|x-?large|extra[- ]?large|extra)\b/g, (m) => { XL = (XL || 0) + Number(m[1]); });
+  take(/\b(?:xl|x-?large|extra[- ]?large)\s*[x×*]\s*(\d+)/g, (m) => { XL = (XL || 0) + Number(m[1]); });
+  take(/\b(?:xl|x-?large|extra[- ]?large)\b/g, () => { XL = (XL || 0) + 1; });
+  take(/(\d+)\s*(?:x\s*)?(?:l|large|larges|grand|grands|grande|grandes)\b/g, (m) => { L = (L || 0) + Number(m[1]); });
+  take(/\b(?:l|large)\s*[x×*]\s*(\d+)/g, (m) => { L = (L || 0) + Number(m[1]); });
+  take(/\b(?:large|larges|grand|grande)\b/g, () => { L = (L || 0) + 1; });
+  take(/(^|\s)l(\s|$)/g, () => { L = (L || 0) + 1; });
+  return (L == null && XL == null) ? {} : { L: L || 0, XL: XL || 0 };
+}
+// ---------- « Coller une commande » : le client a rempli « nom: / numero: / adresse avec code postal: » ----------
+function parsePaste(txt) {
+  const out = { nom: '', tel: '', adr: '', cmd: '' };
+  const lines = String(txt || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const rest = [];
+  lines.forEach((l) => {
+    const m = l.match(/^([^:：]{2,40})[:：]\s*(.*)$/);
+    const k = m ? m[1].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
+    const v = m ? m[2].trim() : l;
+    if (m && /nom|name|client/.test(k)) out.nom = v;
+    else if (m && /num|tel|phone|cell/.test(k)) out.tel = v;
+    else if (m && /adr|address|code postal/.test(k)) out.adr = v;
+    else if (m && /commande|order|qte|quantite/.test(k)) out.cmd = v;
+    else rest.push(v);
+  });
+  // Si le client n'a pas mis les titres : on devine (téléphone, code postal = adresse, le reste = nom).
+  rest.forEach((v) => {
+    if (!out.tel && /(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/.test(v) && v.replace(/\D/g, '').length <= 11) out.tel = v;
+    else if (!out.adr && (/[a-z]\d[a-z]\s?\d[a-z]\d/i.test(v) || /^\d+\s+\S/.test(v))) out.adr = v;
+    else if (!out.nom) out.nom = v;
+  });
+  Object.assign(out, parseQty(out.cmd));
+  out.cp = ((out.adr.match(/[a-z]\d[a-z]\s?\d[a-z]\d/i) || [''])[0]).toUpperCase().replace(/\s/g, '');
+  return out;
+}
+async function applyPaste(txt) {
+  const f = NF; if (!f) return;
+  const p = parsePaste(txt);
+  if (!p.nom && !p.tel && !p.adr && p.L == null) return;
+  if (p.nom) f.client = p.nom;
+  if (p.tel) { f.tel = p.tel; f.plus = true; }
+  if (p.adr) { f.q = p.adr; f.pick = null; }
+  if (p.L != null) { f.L = p.L; f.XL = p.XL; }
+  f.pasted = true; f.opts = null;
+  renderNew();
+  if (!p.adr) return;
+  // Cherche l'adresse ; si le code postal correspond, on la choisit tout seul.
+  const q = p.adr.replace(/[a-z]\d[a-z]\s?\d[a-z]\d/i, '').replace(/,\s*$/, '').trim() || p.adr;
+  const sugs = await photon(q);
+  if (NF !== f) return;
+  nf.sugs = sugs;
+  const cp3 = p.cp.slice(0, 3);
+  const hit = sugs.find((x) => cp3 && (x.l2 || '').toUpperCase().replace(/\s/g, '').indexOf(cp3) >= 0) || (sugs.length === 1 ? sugs[0] : null);
+  if (hit) { f.pick = hit; f.q = hit.l1 + ', ' + hit.l2; renderNew(); computeOpts(); }
+  else drawNfSugs();
 }
