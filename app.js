@@ -1,4 +1,4 @@
-// Version 9 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé de soirée (Firebase).
+// Version 10 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -125,7 +125,9 @@ const isOwner = () => me && me.role === 'proprio';
 const isStaff = () => me && (me.role === 'complet' || me.role === 'limite');
 const delivers = () => me && (me.role === 'livreur' || me.livre || me.role === 'limite');
 // Le dispatch limité doit être autorisé (par MOUSSE ou le propriétaire) avant de pouvoir travailler.
-const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte');
+const isDispMode = (s) => !!(s && s.mode === 'dispatch');
+const working = (s) => s.statut === 'ouverte' && !isDispMode(s); // en service comme livreur
+const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte' && isDispMode(mySoiree));
 function buildTabs() {
   const t = [];
   if (me.role === 'limite') t.push(['soiree', 'Ma soirée']);
@@ -317,6 +319,7 @@ const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 
 function startLive() {
   finState.team = null; finState.me = null; setTimeout(initFin, 0);
+  dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; setTimeout(startDm, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
@@ -336,13 +339,14 @@ function startLive() {
       mySoiree = null; qs.forEach((d) => { mySoiree = Object.assign({ id: d.id }, d.data()); }); renderSoiree();
       document.querySelectorAll('#tabs button').forEach((b) => { b.disabled = locked() && (b.dataset.t === 'direct' || b.dataset.t === 'stock'); });
       if (locked()) setTab('soiree'); else if (wasLocked) setTab('direct');
+      drawDm(); drawMine(); drawCashBtn();
     }, (e) => console.warn(e)));
   }
   startOrders();
   renderAll(); renderSoiree();
   if (delivers()) saveToken(false);
 }
-function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } }
+function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } if (typeof drawDm === 'function') drawDm(); }
 const st = (id) => stocks[id] || { L: 0, XL: 0 };
 
 // ---------- En direct (dispatch) ----------
@@ -373,7 +377,11 @@ function loadSrc(d) { return isOwner() ? RESERVE : me.role === 'complet' && d.sr
 function canAuthorize(s) { return isOwner() || me.role === 'complet' || s.mid !== me.mid; }
 function reqHtml(s) {
   const d = drafts[s.id] || (drafts[s.id] = { L: (s.load && s.load.L) || 0, XL: (s.load && s.load.XL) || 0, adr: s.adresse || '' });
+  if (isDispMode(s)) { d.L = 0; d.XL = 0; }
   const self = s.mid === me.mid;
+  if (isDispMode(s) && !self) return '<div class="item" data-sid="' + s.id + '"><b>' + esc(s.nom) + ' veut faire le 🧭 DISPATCH</b> <span class="small">· ' + hhmm(s.demandeLe) + '</span>' +
+    '<input class="rAdr hide" value="' + esc(d.adr) + '"><p class="small">Il pourra voir les commandes, les messages et faire des loads de son stock.</p>' +
+    '<div class="two"><button class="btn red rNo">Refuser</button><button class="btn ok rYes">Autoriser</button></div><div class="err rErr"></div></div>';
   if (self && !canAuthorize(s)) return '<div class="item"><div class="wait"><span class="dot"></span><b>Ta soirée</b>&nbsp;attend MOUSSE ou le propriétaire.</div></div>';
   const src = loadSrc(d);
   const have = st(src);
@@ -494,13 +502,16 @@ function renderSoiree() {
   const s = mySoiree, mine = st(me.mid);
   let h = '';
   if (!s) {
+    const dmode = me.role === 'limite' && ci.mode === 'dispatch';
     h = '<div class="card"><div class="label">Commencer ma soirée</div>' +
-      '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>' +
+      (me.role === 'limite' ? '<p class="small" style="margin-top:0">Ce soir je fais :</p><div class="seg" id="ciMode">' + [['livreur', '🚗 Livreur'], ['dispatch', '🧭 Dispatch']].map((x) =>
+        '<button data-m="' + x[0] + '" class="' + ((ci.mode || 'livreur') === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' : '') +
+      (dmode ? '' : '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>' +
       '<input id="ciAdr" placeholder="Ex. 1400 Sainte-Catherine" autocomplete="off" value="' + esc(ci.q) + '">' +
       '<div id="ciSugs"></div>' +
-      '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>' +
+      '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>') +
       ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
-      (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser avant que tu puisses faire le dispatch.</p>' : '') +
+      (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser' + (dmode ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
       '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
   } else if (s.statut === 'demande') {
     h = '<div class="card"><div class="wait"><span class="dot"></span><b>' + (me.role === 'limite' ? 'En attente de MOUSSE ou du propriétaire…' : 'En attente du dispatch…') + '</b></div>' +
@@ -511,6 +522,9 @@ function renderSoiree() {
       '<p style="margin:0 0 10px">' + esc(nomDe(L.de)) + ' t’envoie <b>' + (L.L || 0) + ' L</b> et <b>' + (L.XL || 0) + ' XL</b>.</p>' +
       '<p class="small" style="margin-top:0">Compte avant d’accepter. Avec ce que tu as déjà, tu auras ' + ((L.L || 0) + (mine.L || 0)) + ' L · ' + ((L.XL || 0) + (mine.XL || 0)) + ' XL.</p>' +
       '<div class="err" id="ciErr"></div><div class="two"><button class="btn red" id="ciRefuse">Pas le bon compte</button><button class="btn ok" id="ciAccept">J’accepte</button></div></div>';
+  } else if (s.statut === 'ouverte' && isDispMode(s)) {
+    h = '<div class="card"><div class="label">🧭 Tu fais le dispatch ce soir</div><p class="small" style="margin-top:0">Va dans En direct. Tu ne reçois pas de commandes à livrer.</p>' +
+      '<div class="err" id="ciErr"></div><button class="btn ghost" id="ciEnd">' + (ci.endAsk ? 'Appuie encore pour confirmer' : 'Terminer mon dispatch') + '</button></div>';
   } else if (s.statut === 'ouverte') {
     h = myOrdersHtml(s);
   }
@@ -518,6 +532,9 @@ function renderSoiree() {
   const pos = keepFocus ? document.activeElement.selectionStart : null;
   $('soiree').innerHTML = notifCard() + h;
   if ($('notifGo')) $('notifGo').onclick = () => { if (notifBusy) return; notifBusy = true; saveToken(true).finally(() => { notifBusy = false; }); };
+  document.querySelectorAll('#ciMode button').forEach((b) => { b.onclick = () => { ci.mode = b.dataset.m; renderSoiree(); }; });
+  if ($('ciEnd')) $('ciEnd').onclick = () => { if (!ci.endAsk) { ci.endAsk = true; renderSoiree(); return; } ci.endAsk = false; soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'terminee', finLe: serverTimestamp() }).commit()); };
+  if (!$('ciAdr') && $('ciGo')) $('ciGo').onclick = () => soirAct(requestStart);
   if ($('ciAdr')) {
     $('ciAdr').oninput = (e) => { ci.q = e.target.value; ci.pick = null; lookup(); };
     if (keepFocus) { $('ciAdr').focus(); try { $('ciAdr').setSelectionRange(pos, pos); } catch (e) {} }
@@ -562,9 +579,10 @@ function drawSugs() {
   box.querySelectorAll('[data-i]').forEach((d) => { d.onclick = () => { const x = ci.sugs[+d.dataset.i]; ci.pick = x; ci.q = x.l1 + ', ' + x.l2; $('ciAdr').value = ci.q; drawSugs(); }; });
 }
 async function requestStart() {
-  const adr = ci.q.trim();
+  const mode = me.role === 'limite' && ci.mode === 'dispatch' ? 'dispatch' : 'livreur';
+  const adr = mode === 'dispatch' ? 'Dispatch' : ci.q.trim();
   if (adr.length < 4) { $('ciErr').textContent = 'Écris où tu es.'; return; }
-  const data = { mid: me.mid, nom: me.nom, statut: 'demande', adresse: adr, demandeLe: serverTimestamp() };
+  const data = { mid: me.mid, nom: me.nom, statut: 'demande', mode, adresse: adr, demandeLe: serverTimestamp() };
   if (ci.pick && ci.pick.lat) { data.lat = ci.pick.lat; data.lon = ci.pick.lon; }
   await setDoc(doc(collection(db, 'soirees')), data);
   ci.q = ''; ci.pick = null; ci.sugs = [];
@@ -653,7 +671,7 @@ async function googleTimes(origins, dest, trafic) {
 const pos = (c) => (c && c.lat != null ? { lat: c.lat, lon: c.lon } : null);
 const tsMs = (t) => (t && t.toMillis ? t.toMillis() : t || Date.now());
 function queueOf(mid) { return Object.values(cmds).filter((c) => c.livreur === mid && (c.statut === 'assignee' || c.statut === 'ici')).sort((a, b) => a.ordre - b.ordre); }
-function soireeOf(mid) { return Object.values(soirees).find((s) => s.mid === mid && s.statut === 'ouverte'); }
+function soireeOf(mid) { return Object.values(soirees).find((s) => s.mid === mid && working(s)); }
 // trajet = minutes depuis l'arrêt d'avant (enregistré à l'assignation) ; depart = quand la 1re commande a commencé.
 function planOf(list) {
   const out = []; let t = null;
@@ -750,7 +768,7 @@ function drawNfSugs() {
 function stockLeft(mid) { const s = st(mid); const q = queueOf(mid); return { L: (s.L || 0) - q.reduce((a, c) => a + (c.L || 0), 0), XL: (s.XL || 0) - q.reduce((a, c) => a + (c.XL || 0), 0) }; }
 async function optionsFor(o, skipId) {
   const X = pos(o);
-  const people = Object.values(soirees).filter((s) => s.statut === 'ouverte');
+  const people = Object.values(soirees).filter(working);
   const cand = [];
   people.forEach((s) => {
     const q = queueOf(s.mid).filter((c) => c.id !== skipId), plan = planOf(q);
@@ -853,7 +871,7 @@ async function nextFix(b, opt, c) {
 let menuOpen = null, msgOpen = null, reassign = null;
 function renderQueues() {
   const box = $('service'); if (!box) return;
-  const people = Object.values(soirees).filter((s) => s.statut === 'ouverte').sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
+  const people = Object.values(soirees).filter(working).sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
   const seeStock = isOwner() || me.role === 'complet';
   let h = '';
   people.forEach((s) => {
@@ -990,7 +1008,7 @@ if ($('cfgSave')) $('cfgSave').onclick = async () => {
   $('cfgErr').textContent = '';
   const d = { prixL: Number($('cfgL').value) || 0, prixXL: Number($('cfgXL').value) || 0 };
   const k = $('cfgKey').value.trim(); if (k) d.mapsKey = k;
-  try { await setDoc(doc(db, 'config', 'app'), d, { merge: true }); $('cfgKey').value = ''; $('cfgErr').textContent = 'Enregistré ✓'; } catch (e) { $('cfgErr').textContent = msg(e); }
+  try { await setDoc(doc(db, 'config', 'app'), d, { merge: true }); $('cfgKey').value = ''; $('cfgErr').textContent = 'Enregistré ✓'; if (k) $('cfgKeyState').textContent = '✓ Clé Google Maps enregistrée (temps de route avec trafic).'; } catch (e) { $('cfgErr').textContent = msg(e); }
 };
 
 // =====================================================================
@@ -1245,4 +1263,185 @@ function initFin() {
   if (!me) return;
   if ($('finTeam')) { if (isOwner() || me.role === 'complet') drawFin('team'); else $('finTeam').innerHTML = ''; }
   if ($('finMe')) { if (delivers()) drawFin('me'); else $('finMe').innerHTML = ''; }
+}
+
+// =====================================================================
+// Version 10 : messages dispatch ↔ livreur, « À tous », copie pour le propriétaire, bouton 💰
+// =====================================================================
+// messages/{id} : { mid (le livreur de la conversation), de: 'dispatch' | 'livreur', par, nom, txt, img?, le, tous? }
+// lus/{mid}     : { dispatch: ms, livreur: ms } (dernière lecture de chaque côté, pour le rond rouge)
+// archives/{id} : copie des messages effacés par le dispatch, lue et effacée seulement par le propriétaire.
+const dm = { all: [], lus: {}, mine: [], open: null, eraseAsk: false, busy: false, arch: null, archAsk: false };
+const isDispatcher = () => me && (isOwner() || me.role === 'complet' || (me.role === 'limite' && !locked()));
+const chatsDriver = () => me && (me.role === 'livreur' || (me.role === 'limite' && mySoiree && mySoiree.statut === 'ouverte' && !isDispMode(mySoiree)));
+const DQ = ['Appelle-moi', 'Prends ton temps', 'Dépêche, client attend'];
+const LQ = [['👍 OK', '👍 OK'], ['Recharge', 'Besoin d’une recharge'], ['Pause 10 min', 'Pause 10 min'], ['Client répond pas', 'Client répond pas']];
+function startDm() {
+  if (!me) return;
+  if (isOwner() || isStaff()) {
+    stops.push(onSnapshot(query(collection(db, 'messages'), orderBy('le', 'desc'), limit(400)), (qs) => {
+      dm.all = []; qs.forEach((d) => dm.all.push(Object.assign({ id: d.id }, d.data()))); dm.all.reverse(); drawDm();
+    }, () => {}));
+    stops.push(onSnapshot(collection(db, 'lus'), (qs) => { dm.lus = {}; qs.forEach((d) => { dm.lus[d.id] = d.data(); }); drawDm(); }, () => {}));
+  }
+  if (me.role === 'livreur' || me.role === 'limite') {
+    let first = true;
+    stops.push(onSnapshot(query(collection(db, 'messages'), where('mid', '==', me.mid)), (qs) => {
+      const before = dm.mine.length; dm.mine = [];
+      qs.forEach((d) => dm.mine.push(Object.assign({ id: d.id }, d.data())));
+      dm.mine.sort((a, b) => tsMs(a.le) - tsMs(b.le));
+      if (!first && dm.mine.length > before && dm.mine[dm.mine.length - 1].de === 'dispatch' && chatsDriver()) bip();
+      first = false; drawMine();
+    }, () => {}));
+    stops.push(onSnapshot(doc(db, 'lus', me.mid), (s) => { dm.myLu = s.exists() ? s.data() : {}; drawMine(); }, () => {}));
+  }
+  drawDm(); drawMine(); drawCashBtn(); drawArch();
+}
+function bubbles(list, mine) {
+  return list.map((m) => { const t = new Date(tsMs(m.le));
+    return '<div class="cm ' + (m.tous ? 'call' : m.de === mine ? 'cme' : 'cthem') + '">' + (m.tous ? '📣 ' : '') + esc(m.txt || '') + (m.img ? '<img src="' + esc(m.img) + '" alt="photo">' : '') +
+      '<div class="ct">' + (m.tous ? 'À tous · ' : m.de === 'dispatch' && mine === 'dispatch' ? esc(m.nom || '') + ' · ' : '') + t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') + '</div></div>'; }).join('');
+}
+async function sendMsg(mid, de, txt, img, tous) {
+  txt = String(txt || '').trim().slice(0, 300); if (!txt && !img) return;
+  const d = { mid, de, par: me.mid, nom: me.nom || 'Dispatch', txt: txt || '📷 Photo', le: serverTimestamp() };
+  if (img) d.img = img; if (tous) d.tous = true;
+  await setDoc(doc(collection(db, 'messages')), d);
+  if (de === 'dispatch') notifyMsg(mid, d.txt);
+}
+async function notifyMsg(mid, texte) {
+  try { const t = await auth.currentUser.getIdToken();
+    fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'message', mid, texte }) }).catch(() => {}); } catch (e) {}
+}
+function markRead(mid, side) { setDoc(doc(db, 'lus', mid), { [side]: Date.now() }, { merge: true }).catch(() => {}); }
+function unreadFor(mid) { const lu = (dm.lus[mid] && dm.lus[mid].dispatch) || 0; return dm.all.filter((m) => m.mid === mid && m.de === 'livreur' && tsMs(m.le) > lu).length; }
+const typing = (box) => document.activeElement && document.activeElement.closest && document.activeElement.closest('#' + box) && document.activeElement.tagName === 'INPUT';
+
+// ----- Côté dispatch (propriétaire, MOUSSE, lost quand il est autorisé comme dispatch) -----
+function drawDm() {
+  const box = $('dmCard'); if (!box || !me) return;
+  if (!isDispatcher()) { box.innerHTML = ''; return; }
+  const ids = new Set(Object.values(soirees).filter((s) => working(s) && !(team[s.mid] && team[s.mid].role === 'complet')).map((s) => s.mid));
+  dm.all.forEach((m) => ids.add(m.mid));
+  const total = [...ids].reduce((a, id) => a + unreadFor(id), 0);
+  const tb = document.querySelector('#tabs button[data-t="direct"]'); if (tb) tb.textContent = 'En direct' + (total ? ' 🔴' + total : '');
+  if (dm.open) {
+    const mid = dm.open, list = dm.all.filter((m) => m.mid === mid);
+    if (unreadFor(mid)) markRead(mid, 'dispatch');
+    if (typing('dmCard') && $('dmFeed')) { $('dmFeed').innerHTML = bubbles(list, 'dispatch') || '<div class="small">Pas encore de message.</div>'; $('dmFeed').scrollTop = 1e6; return; }
+    box.innerHTML = '<div class="card"><button class="linkbtn" id="dmBack">‹ Tous les livreurs</button><div class="label" style="margin-top:6px">💬 ' + esc(nomDe(mid)) + '</div>' +
+      '<div class="cfeed" id="dmFeed">' + (bubbles(list, 'dispatch') || '<div class="small">Pas encore de message.</div>') + '</div>' +
+      '<div class="seg" style="margin:6px 0">' + DQ.map((q) => '<button data-dq="' + esc(q) + '">' + esc(q) + '</button>').join('') + '</div>' +
+      '<div class="crow"><input id="dmTxt" maxlength="300" placeholder="Écrire à ' + esc(nomDe(mid)) + '…"><label class="cpic">📷<input type="file" id="dmPic" accept="image/*" class="hide"></label><button class="btn sm" id="dmSend">➤</button></div><div class="err" id="dmErr"></div></div>';
+    $('dmFeed').scrollTop = 1e6;
+    const go = (t, img) => sendMsg(mid, 'dispatch', t, img).catch((e) => { $('dmErr').textContent = msg(e); });
+    $('dmBack').onclick = () => { dm.open = null; drawDm(); };
+    box.querySelectorAll('[data-dq]').forEach((b) => { b.onclick = () => go(b.dataset.dq); });
+    $('dmSend').onclick = () => { const v = $('dmTxt').value; $('dmTxt').value = ''; go(v); };
+    $('dmTxt').onkeydown = (e) => { if (e.key === 'Enter') $('dmSend').click(); };
+    $('dmPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { go('', await shrinkImg(f)); } catch (x) {} } };
+    return;
+  }
+  if (typing('dmCard')) return;
+  const rows = [...ids].sort((a, b) => nomDe(a).localeCompare(nomDe(b), 'fr')).map((id) => {
+    const list = dm.all.filter((m) => m.mid === id), last = list[list.length - 1], n = unreadFor(id);
+    return '<div class="q dmrow" data-mid="' + id + '" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center"><div><b>' + esc(nomDe(id)) + '</b><div class="small">' +
+      (last ? esc((last.de === 'dispatch' ? 'Toi : ' : '') + (last.txt || '')).slice(0, 60) : 'Aucun message') + '</div></div>' + (n ? '<span class="badge">' + n + '</span>' : '') + '</div>';
+  }).join('');
+  box.innerHTML = '<div class="card"><div class="label">💬 Messages' + (total ? ' <span class="badge">' + total + '</span>' : '') + '</div>' +
+    (rows || '<div class="small">Personne en service pour l’instant.</div>') +
+    '<div class="label" style="margin-top:12px">📣 À tous les livreurs en service</div>' +
+    '<div class="crow"><input id="dmAll" maxlength="300" placeholder="Message à tous…"><button class="btn sm" id="dmAllGo">➤</button></div>' +
+    (dm.all.length ? '<button class="linkbtn" id="dmErase" style="margin-top:10px;color:var(--danger)">' + (dm.eraseAsk ? 'Appuie encore : effacer les ' + dm.all.length + ' messages (une copie va au propriétaire)' : '🧹 Effacer les messages de la soirée') + '</button>' : '') +
+    '<div class="err" id="dmErr"></div></div>';
+  box.querySelectorAll('.dmrow').forEach((r) => { r.onclick = () => { dm.open = r.dataset.mid; dm.eraseAsk = false; drawDm(); }; });
+  $('dmAllGo').onclick = async () => {
+    const v = $('dmAll').value.trim(); if (!v) return;
+    const to = Object.values(soirees).filter((s) => working(s) && !(team[s.mid] && team[s.mid].role === 'complet')).map((s) => s.mid);
+    if (!to.length) { $('dmErr').textContent = 'Personne en service.'; return; }
+    $('dmAll').value = '';
+    try { for (const mid of to) await sendMsg(mid, 'dispatch', v, null, true); } catch (e) { $('dmErr').textContent = msg(e); }
+  };
+  $('dmAll').onkeydown = (e) => { if (e.key === 'Enter') $('dmAllGo').click(); };
+  if ($('dmErase')) $('dmErase').onclick = () => { if (!dm.eraseAsk) { dm.eraseAsk = true; drawDm(); return; } dm.eraseAsk = false; eraseAll(); };
+}
+// Effacer : copie dans archives (pour le propriétaire), puis on efface les messages.
+async function eraseAll() {
+  if (dm.busy) return; dm.busy = true;
+  try {
+    const qs = await getDocs(collection(db, 'messages'));
+    const docs = []; qs.forEach((d) => docs.push(d));
+    for (let i = 0; i < docs.length; i += 200) {
+      const b = writeBatch(db);
+      docs.slice(i, i + 200).forEach((d) => { b.set(doc(db, 'archives', d.id), Object.assign({}, d.data(), { archiveLe: serverTimestamp(), archivePar: me.mid })); b.delete(d.ref); });
+      await b.commit();
+    }
+  } catch (e) { if ($('dmErr')) $('dmErr').textContent = msg(e); }
+  dm.busy = false; dm.arch = null; drawArch();
+}
+
+// ----- Côté livreur -----
+function drawMine() {
+  const box = $('dmMe'); if (!box || !me) return;
+  if (!chatsDriver()) { box.innerHTML = ''; return; }
+  const lu = (dm.myLu && dm.myLu.livreur) || 0;
+  const n = dm.mine.filter((m) => m.de === 'dispatch' && tsMs(m.le) > lu).length;
+  if (n && curTab === 'soiree' && document.visibilityState === 'visible') markRead(me.mid, 'livreur');
+  const tb = document.querySelector('#tabs button[data-t="soiree"]'); if (tb) tb.textContent = 'Ma soirée' + (n ? ' 🔴' + n : '');
+  if (typing('dmMe') && $('lmFeed')) { $('lmFeed').innerHTML = bubbles(dm.mine, 'livreur') || '<div class="small">Pas encore de message.</div>'; $('lmFeed').scrollTop = 1e6; return; }
+  box.innerHTML = '<div class="card"><div class="label">💬 Dispatch' + (n ? ' <span class="badge">' + n + '</span>' : '') + '</div>' +
+    '<div class="cfeed" id="lmFeed">' + (bubbles(dm.mine, 'livreur') || '<div class="small">Pas encore de message. Le dispatch peut t’écrire ici.</div>') + '</div>' +
+    '<div class="seg" style="margin:6px 0">' + LQ.map((q) => '<button data-lq="' + esc(q[1]) + '">' + esc(q[0]) + '</button>').join('') + '</div>' +
+    '<div class="crow"><input id="lmTxt" maxlength="300" placeholder="Écrire au dispatch…"><label class="cpic">📷<input type="file" id="lmPic" accept="image/*" class="hide"></label><button class="btn sm" id="lmSend">➤</button></div><div class="err" id="lmErr"></div></div>';
+  $('lmFeed').scrollTop = 1e6;
+  const go = (t, img) => sendMsg(me.mid, 'livreur', t, img).catch((e) => { $('lmErr').textContent = msg(e); });
+  box.querySelectorAll('[data-lq]').forEach((b) => { b.onclick = () => go(b.dataset.lq); });
+  $('lmSend').onclick = () => { const v = $('lmTxt').value; $('lmTxt').value = ''; go(v); };
+  $('lmTxt').onkeydown = (e) => { if (e.key === 'Enter') $('lmSend').click(); };
+  $('lmPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { go('', await shrinkImg(f)); } catch (x) {} } };
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') drawMine(); });
+document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('#tabs button[data-t="soiree"]')) setTimeout(drawMine, 0); }, true);
+
+// ----- Copie des messages : propriétaire seulement (Équipe) -----
+async function drawArch() {
+  const box = $('archCard'); if (!box) return;
+  if (!isOwner()) { box.innerHTML = ''; return; }
+  const a = dm.arch;
+  let h = '<div class="card"><div class="label">🗂 Copie des messages effacés</div>';
+  if (a == null) h += '<button class="btn ghost" id="arLoad">Voir la copie</button>';
+  else if (!a.length) h += '<div class="small">Aucune copie.</div><button class="linkbtn" id="arLoad">↻ Actualiser</button>';
+  else {
+    const by = {}; a.forEach((m) => { (by[m.mid] = by[m.mid] || []).push(m); });
+    h += Object.keys(by).sort((x, y) => nomDe(x).localeCompare(nomDe(y), 'fr')).map((mid) => '<details class="q"><summary><b>' + esc(nomDe(mid)) + '</b> <span class="small">· ' + by[mid].length + ' messages</span></summary>' +
+      '<div class="cfeed" style="max-height:300px">' + bubbles(by[mid].sort((x, y) => tsMs(x.le) - tsMs(y.le)), 'dispatch') + '</div></details>').join('') +
+      '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="arLoad">↻ Actualiser</button><button class="btn red sm" id="arDel">' + (dm.archAsk ? 'Appuie encore pour tout effacer' : '🗑 Effacer ma copie') + '</button></div>';
+  }
+  box.innerHTML = h + '<div class="err" id="arErr"></div></div>';
+  if ($('arLoad')) $('arLoad').onclick = async () => { try { const qs = await getDocs(collection(db, 'archives')); dm.arch = []; qs.forEach((d) => dm.arch.push(Object.assign({ ref: d.ref }, d.data()))); } catch (e) { $('arErr').textContent = msg(e); return; } drawArch(); };
+  if ($('arDel')) $('arDel').onclick = async () => {
+    if (!dm.archAsk) { dm.archAsk = true; return drawArch(); }
+    dm.archAsk = false;
+    try { for (let i = 0; i < a.length; i += 400) { const b = writeBatch(db); a.slice(i, i + 400).forEach((m) => b.delete(m.ref)); await b.commit(); } dm.arch = []; } catch (e) { $('arErr').textContent = msg(e); return; }
+    drawArch();
+  };
+}
+
+// ----- Bouton 💰 discret (livreur) : cash sur lui + livraisons de la soirée -----
+function drawCashBtn() {
+  const b = $('cashBtn'); if (!b) return;
+  b.classList.toggle('hide', !chatsDriver());
+  b.onclick = async () => {
+    const pop = $('cashPop');
+    if (!pop.classList.contains('hide')) { pop.classList.add('hide'); return; }
+    pop.textContent = '…'; pop.classList.remove('hide');
+    try {
+      const d = soirStart(), list = [];
+      const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', '==', 'livree')));
+      qs.forEach((x) => { const c = x.data(); const t = c.livreeLe && c.livreeLe.toDate ? c.livreeLe.toDate() : null; if (t && t >= d) list.push(c); });
+      const r = sumUp(list)[0] || { cash: 0, n: 0 };
+      pop.innerHTML = '💰 <b>' + money(r.cash) + '</b> cash · <b>' + r.n + '</b> livraison' + (r.n > 1 ? 's' : '');
+    } catch (e) { pop.textContent = msg(e); }
+    clearTimeout(drawCashBtn.t); drawCashBtn.t = setTimeout(() => pop.classList.add('hide'), 8000);
+  };
 }
