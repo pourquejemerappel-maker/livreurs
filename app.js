@@ -338,6 +338,7 @@ function startLive() {
   rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
   dt.all = []; dt.mine = []; dt.okRappel = false; setTimeout(startDettes, 0);
   ret.toMe = []; ret.mine = []; ret.f = null; setTimeout(startRetours, 0);
+  dons.list = []; setTimeout(startDons, 0);
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
@@ -499,7 +500,7 @@ function renderStock() {
   document.querySelectorAll('#giveTo button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
   $('gL').textContent = give.L; $('gXL').textContent = give.XL;
   $('gGo').textContent = (me.role === 'limite' ? 'Retourner' : me.role === 'complet' && (give.to === me.mid || give.to === DEP(me.mid)) ? 'Déplacer' : 'Donner') + (give.to ? ' → ' + lbl(give.to) : '');
-  $('mvts').innerHTML = mvts.map((m) => m.type === 'correction' ? hhmm(m.le) + ' · ✏️ ' + esc(nomDe(m.de)) + ' corrigé : ' + qty(m.avant || {}) + ' → ' + qty(m.apres || {}) + ' · par ' + esc(nomDe(m.par)) : hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
+  $('mvts').innerHTML = mvts.map((m) => m.type === 'correction' ? hhmm(m.le) + ' · ✏️ ' + esc(nomDe(m.de)) + ' corrigé : ' + qty(m.avant || {}) + ' → ' + qty(m.apres || {}) + ' · par ' + esc(nomDe(m.par)) : hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : m.type === 'recharge' ? ' (recharge)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
 }
 document.querySelectorAll('#giveCard .step button').forEach((b) => { b.onclick = () => { give[b.dataset.k] = Math.max(0, give[b.dataset.k] + Number(b.dataset.d)); $('gErr').textContent = ''; renderStock(); }; });
 $('gGo').onclick = async () => {
@@ -510,6 +511,14 @@ $('gGo').onclick = async () => {
   if (src !== RESERVE && (give.L > (st(src).L || 0) || give.XL > (st(src).XL || 0))) return ($('gErr').textContent = 'Tu n’as que ' + qty(st(src)) + '.');
   $('gGo').disabled = true;
   try {
+    // v23 : ce que le propriétaire donne à MOUSSE (sur lui ou au dépôt) attend que MOUSSE l'accepte.
+    const toComplet = isOwner() && (isDep(give.to) || (team[give.to] && team[give.to].role === 'complet'));
+    if (toComplet) {
+      await writeBatch(db).set(doc(collection(db, 'dons')), { de: RESERVE, vers: give.to, L: give.L, XL: give.XL, par: me.mid, statut: 'attente', le: serverTimestamp() }).commit();
+      const qui = isDep(give.to) ? give.to.replace(/-depot$/, '') : give.to;
+      notifyDispatch('📦 Le propriétaire te donne ' + qty(give) + (isDep(give.to) ? ' (au dépôt)' : '') + ' — accepte dans Gotham', qui);
+      give.L = 0; give.XL = 0; renderStock(); $('gGo').disabled = false; return;
+    }
     const b = writeBatch(db);
     if (src !== RESERVE) b.set(doc(db, 'stocks', src), { L: increment(-give.L), XL: increment(-give.XL) }, { merge: true });
     b.set(doc(db, 'stocks', give.to), { L: increment(give.L), XL: increment(give.XL) }, { merge: true });
@@ -553,7 +562,7 @@ function renderSoiree() {
     h = '<div class="card"><div class="label">🧭 Tu fais le dispatch ce soir</div><p class="small" style="margin-top:0">Va dans En direct. Tu ne reçois pas de commandes à livrer.</p>' +
       '<div class="err" id="ciErr"></div><button class="btn ghost" id="ciEnd">' + (ci.endAsk ? 'Appuie encore pour confirmer' : 'Terminer mon dispatch') + '</button></div>';
   } else if (s.statut === 'ouverte') {
-    h = myOrdersHtml(s);
+    h = rcLivreur(s) + myOrdersHtml(s);
   }
   const keepFocus = document.activeElement && document.activeElement.id === 'ciAdr';
   const pos = keepFocus ? document.activeElement.selectionStart : null;
@@ -571,7 +580,7 @@ function renderSoiree() {
   if ($('ciCancel')) $('ciCancel').onclick = () => soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'annulee', finLe: serverTimestamp() }).commit());
   if ($('ciAccept')) $('ciAccept').onclick = () => soirAct(() => acceptLoad(s));
   if ($('ciRefuse')) $('ciRefuse').onclick = () => soirAct(() => refuseLoad(s));
-  if (s && s.statut === 'ouverte') { bindMyOrders(s); bindFinCard(s); }
+  if (s && s.statut === 'ouverte') { bindMyOrders(s); bindFinCard(s); bindRcLivreur(s); }
 }
 async function soirAct(fn) {
   document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; });
@@ -942,6 +951,7 @@ function pillOf(s) {
     const m = Math.round((plan[0] - Date.now()) / 60000);
     nx = '<div style="margin-top:3px">→ ' + esc(q0.client) + ' ~' + hm(plan[0]) + (m <= 3 && m >= 0 ? ' <span style="color:#fcd34d">● proche</span>' : '') + (m < -10 ? ' <span style="color:var(--danger)">+' + (-m) + '</span>' : '') + '</div>';
   }
+  if (s.recharge) nx += '<div style="margin-top:3px">📦 recharge en attente</div>';
   return '<div class="lvp' + (svcSel === s.mid ? ' on' : '') + '" data-pill="' + s.mid + '"><b>' + esc(s.nom) + '</b><span class="dt" style="background:' + dot + '"></span>' + esc(st) + nx +
     '<div class="small" style="margin-top:3px">' + q.length + ' cmd' + ((isOwner() || me.role === 'complet') ? ' · reste ' + left.L + ' L ' + left.XL + ' XL' : '') + '</div></div>';
 }
@@ -977,7 +987,9 @@ function renderQueues() {
     });
     h += '</div>';
   });
+  if (svcSel) h = rcBlock(Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).find((x) => x.mid === svcSel && working(x))) + h;
   box.innerHTML = h;
+  bindRc();
   // Maintenant : chez les livreurs
   const now = [];
   Object.values(cmds).filter((c) => c.statut === 'ici' || (c.statut === 'assignee' && c.demandePaie)).forEach((c) => {
@@ -2384,3 +2396,125 @@ function bulle(nom, txt, onTap) {
   e.classList.add('on'); e._at = Date.now(); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('on'), 6500);
 }
 document.addEventListener('pointerdown', (ev) => { const e = $('bulle'); if (!e || !e.classList.contains('on') || e.contains(ev.target) || Date.now() - (e._at || 0) < 250) return; e.classList.remove('on'); clearTimeout(e._t); }, true);
+
+// =====================================================================
+// Version 23 : « 📦 Recharger » un livreur pendant la soirée (propriétaire, MOUSSE, lost en dispatch).
+// Le stock part : de la réserve (propriétaire) ; de lui ou de son dépôt, au choix (MOUSSE) ; de son propre stock (lost).
+// Le livreur accepte (son stock monte) ou dit « Pas reçu » (le stock retourne à qui l'a envoyé).
+// =====================================================================
+const rc = { mid: null, L: 0, XL: 0, src: null, err: '', busy: false };
+function rcSources() { return isOwner() ? [RESERVE] : me.role === 'complet' ? [me.mid, DEP(me.mid)] : [me.mid]; }
+function rcBlock(s) {
+  if (!s) return '';
+  if (s.recharge) return '<div class="card"><div class="label">📦 Recharge envoyée à ' + esc(s.nom) + '</div><div class="small">' + qty(s.recharge) + ' de ' + esc(nomDe(s.recharge.de)) + ' — il doit l’accepter sur son téléphone.</div></div>';
+  if (rc.mid !== s.mid) return '<button class="btn ghost" id="rcOpen" data-mid="' + s.mid + '" style="margin-bottom:8px">📦 Recharger ' + esc(s.nom) + '</button>';
+  const srcs = rcSources(); if (!srcs.includes(rc.src)) rc.src = srcs[0];
+  const lbl = (id) => id === RESERVE ? 'De la réserve' : id === me.mid ? 'De moi (' + qty(st(id)) + ')' : 'Du dépôt (' + qty(st(id)) + ')';
+  return '<div class="card"><div class="label">📦 Recharger ' + esc(s.nom) + '</div>' +
+    (srcs.length > 1 ? '<div class="seg" style="margin-bottom:10px">' + srcs.map((id) => '<button data-rcsrc="' + id + '" class="' + (rc.src === id ? 'on' : '') + '">' + esc(lbl(id)) + '</button>').join('') + '</div>' : '<div class="small" style="margin-bottom:8px">' + esc(lbl(srcs[0])) + '</div>') +
+    ['L', 'XL'].map((k) => '<div class="step"><span>' + k + '</span><button data-rc="' + k + '|-1">−</button><div class="v">' + rc[k] + '</div><button data-rc="' + k + '|1">+</button></div>').join('') +
+    '<div class="err">' + esc(rc.err) + '</div><div class="two"><button class="btn ghost" id="rcX">Annuler</button><button class="btn ok" id="rcGo">Envoyer la recharge</button></div></div>';
+}
+function bindRc() {
+  if ($('rcOpen')) $('rcOpen').onclick = () => { rc.mid = $('rcOpen').dataset.mid; rc.L = 0; rc.XL = 0; rc.err = ''; rc.src = null; renderQueues(); };
+  document.querySelectorAll('[data-rcsrc]').forEach((b) => { b.onclick = () => { rc.src = b.dataset.rcsrc; renderQueues(); }; });
+  document.querySelectorAll('[data-rc]').forEach((b) => { b.onclick = () => { const [k, d] = b.dataset.rc.split('|'); rc[k] = Math.max(0, rc[k] + Number(d)); rc.err = ''; renderQueues(); }; });
+  if ($('rcX')) $('rcX').onclick = () => { rc.mid = null; renderQueues(); };
+  if ($('rcGo')) $('rcGo').onclick = async () => {
+    const s = Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).find((x) => x.mid === rc.mid && working(x));
+    if (!s || rc.busy) return;
+    if (!rc.L && !rc.XL) { rc.err = 'Choisis au moins 1 L ou 1 XL.'; return renderQueues(); }
+    const src = rc.src || rcSources()[0];
+    if (src !== RESERVE && (rc.L > (st(src).L || 0) || rc.XL > (st(src).XL || 0))) { rc.err = 'Tu n’as que ' + qty(st(src)) + '.'; return renderQueues(); }
+    rc.busy = true;
+    try {
+      const b = writeBatch(db);
+      b.update(doc(db, 'soirees', s.id), { recharge: { L: rc.L, XL: rc.XL, de: src, par: me.mid, le: Date.now() } });
+      if (src !== RESERVE) b.set(doc(db, 'stocks', src), { L: increment(-rc.L), XL: increment(-rc.XL) }, { merge: true });
+      await b.commit();
+      notifyMsg(s.mid, '📦 Recharge : ' + qty({ L: rc.L, XL: rc.XL }) + ' — accepte-la dans Gotham');
+      rc.mid = null;
+    } catch (e) { rc.err = msg(e); }
+    rc.busy = false; renderQueues();
+  };
+}
+function rcLivreur(s) {
+  const R = s.recharge; if (!R) return '';
+  const mine = st(me.mid);
+  return '<div class="card alert"><div class="label">📦 Recharge</div><p style="margin:0 0 8px">' + esc(nomDe(R.par === 'proprietaire' ? 'proprietaire' : R.par)) + ' t’envoie <b>' + (R.L || 0) + ' L</b> et <b>' + (R.XL || 0) + ' XL</b>.</p>' +
+    '<p class="small" style="margin-top:0">Compte avant d’accepter. Tu auras ' + ((R.L || 0) + (mine.L || 0)) + ' L · ' + ((R.XL || 0) + (mine.XL || 0)) + ' XL.</p>' +
+    '<div class="err" id="rcErr"></div><div class="two"><button class="btn red" id="rcNo">Pas reçu</button><button class="btn ok" id="rcOk">J’accepte</button></div></div>';
+}
+function bindRcLivreur(s) {
+  const R = s.recharge; if (!R) return;
+  const go = async (ok) => {
+    document.querySelectorAll('#rcOk,#rcNo').forEach((b) => { b.disabled = true; });
+    try {
+      const b = writeBatch(db);
+      b.update(doc(db, 'soirees', s.id), { recharge: null, rechargeRep: ok ? 'ok' : 'non' });
+      if (ok) {
+        b.set(doc(db, 'stocks', me.mid), { L: increment(R.L || 0), XL: increment(R.XL || 0), via: s.id }, { merge: true });
+        b.set(doc(collection(db, 'mouvements')), { de: R.de, vers: me.mid, L: R.L || 0, XL: R.XL || 0, type: 'recharge', par: me.mid, soiree: s.id, le: serverTimestamp() });
+      } else if (R.de !== RESERVE) b.set(doc(db, 'stocks', R.de), { L: increment(R.L || 0), XL: increment(R.XL || 0), via: s.id }, { merge: true });
+      await b.commit();
+      notifyDispatch(ok ? '📦 ' + me.nom + ' a accepté la recharge (' + qty(R) + ')' : '📦 ' + me.nom + ' : recharge pas reçue (' + qty(R) + ')', R.par !== 'proprietaire' ? R.par : undefined);
+    } catch (e) { if ($('rcErr')) $('rcErr').textContent = msg(e); document.querySelectorAll('#rcOk,#rcNo').forEach((b) => { b.disabled = false; }); }
+  };
+  if ($('rcOk')) $('rcOk').onclick = () => go(true);
+  if ($('rcNo')) $('rcNo').onclick = () => go(false);
+}
+
+// Toucher le chiffre d'un compteur (− 12 +) permet de l'écrire directement (ex. 150) ; le + et le − restent.
+document.addEventListener('click', (ev) => {
+  const v = ev.target.closest && ev.target.closest('.step .v'); if (!v || v.querySelector('input')) return;
+  const plusBtn = v.nextElementSibling; if (!plusBtn || plusBtn.tagName !== 'BUTTON') return;
+  const old = Number(v.textContent) || 0;
+  const inp = document.createElement('input'); inp.type = 'number'; inp.inputMode = 'numeric'; inp.value = old; inp.min = '0';
+  inp.style.cssText = 'width:70px;margin:0;padding:6px;text-align:center;font-size:18px;font-weight:800';
+  v.textContent = ''; v.appendChild(inp); inp.focus(); inp.select();
+  let done = false;
+  const fin = () => {
+    if (done) return; done = true;
+    const n = Math.max(0, Math.round(Number(inp.value) || 0)), d = n - old;
+    v.textContent = String(old);
+    if (!d) return;
+    if (plusBtn.dataset.rc) { const k = plusBtn.dataset.rc.split('|')[0]; plusBtn.dataset.rc = k + '|' + d; plusBtn.click(); plusBtn.dataset.rc = k + '|1'; }
+    else { const keep = plusBtn.dataset.d; plusBtn.dataset.d = String(d); plusBtn.click(); plusBtn.dataset.d = keep; }
+  };
+  inp.addEventListener('blur', fin); inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+});
+
+// =====================================================================
+// Version 23 : le propriétaire donne du stock à MOUSSE (sur lui ou au dépôt) → MOUSSE accepte ou refuse.
+// =====================================================================
+const dons = { list: [], busy: false };
+function startDons() {
+  if (!(isOwner() || (me && me.role === 'complet'))) return;
+  stops.push(onSnapshot(query(collection(db, 'dons'), where('statut', '==', 'attente')), (qs) => { dons.list = []; qs.forEach((d) => dons.list.push(Object.assign({ id: d.id }, d.data()))); drawDons(); }, () => {}));
+}
+function drawDons() {
+  const box = $('donCard'); if (!box) return;
+  const mine = dons.list.filter((d) => isOwner() || d.vers === me.mid || d.vers === DEP(me.mid));
+  if (!mine.length) { box.innerHTML = ''; if ($('donWait')) $('donWait').innerHTML = ''; return; }
+  if (isOwner()) {
+    box.innerHTML = '';
+    if ($('donWait')) $('donWait').innerHTML = '<div class="small" style="margin:6px 0">⏳ En attente que MOUSSE accepte : ' + mine.map((d) => qty(d) + ' → ' + esc(nomDe(d.vers))).join(' · ') + '</div>';
+    return;
+  }
+  box.innerHTML = mine.map((d) => '<div class="card alert"><div class="label">📦 Le propriétaire te donne du stock</div><p style="margin:0 0 6px"><b>' + qty(d) + '</b>' + (isDep(d.vers) ? ' au dépôt' : ' sur toi') + '</p><p class="small" style="margin-top:0">Compte avant d’accepter.</p>' +
+    '<div class="err" id="donErr' + d.id + '"></div><div class="two"><button class="btn red" data-don="' + d.id + '|non">Refuser</button><button class="btn ok" data-don="' + d.id + '|ok">J’accepte</button></div></div>').join('');
+  box.querySelectorAll('[data-don]').forEach((b) => { b.onclick = async () => {
+    const [id, rep] = b.dataset.don.split('|'), d = dons.list.find((x) => x.id === id);
+    if (!d || dons.busy) return; dons.busy = true;
+    try {
+      const w = writeBatch(db);
+      w.update(doc(db, 'dons', id), { statut: rep, repLe: serverTimestamp() });
+      if (rep === 'ok') {
+        w.set(doc(db, 'stocks', d.vers), { L: increment(d.L || 0), XL: increment(d.XL || 0) }, { merge: true });
+        w.set(doc(collection(db, 'mouvements')), { de: RESERVE, vers: d.vers, L: d.L || 0, XL: d.XL || 0, type: 'don', par: me.mid, le: serverTimestamp() });
+      }
+      await w.commit();
+    } catch (e) { if ($('donErr' + id)) $('donErr' + id).textContent = msg(e); }
+    dons.busy = false;
+  }; });
+}
