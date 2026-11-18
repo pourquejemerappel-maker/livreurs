@@ -1,4 +1,4 @@
-// Version 13 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus (Firebase).
+// Version 14 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -324,6 +324,7 @@ function startLive() {
   dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; setTimeout(startDm, 0);
   rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
   dt.all = []; dt.mine = []; dt.okRappel = false; setTimeout(startDettes, 0);
+  ret.toMe = []; ret.mine = []; ret.f = null; setTimeout(startRetours, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
@@ -502,7 +503,8 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
-  if (document.activeElement && ['mcCash', 'chatTxt', 'dtAmt', 'dtNote'].includes(document.activeElement.id)) return; // ne pas effacer ce qu'il tape
+  if (document.activeElement && ['mcCash', 'chatTxt', 'dtAmt', 'dtNote'].includes(document.activeElement.id)) return;
+  if (typeof ret !== 'undefined' && ret.busy) return; // ne pas effacer ce qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
   if (!s) {
@@ -548,7 +550,7 @@ function renderSoiree() {
   if ($('ciCancel')) $('ciCancel').onclick = () => soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'annulee', finLe: serverTimestamp() }).commit());
   if ($('ciAccept')) $('ciAccept').onclick = () => soirAct(() => acceptLoad(s));
   if ($('ciRefuse')) $('ciRefuse').onclick = () => soirAct(() => refuseLoad(s));
-  if (s && s.statut === 'ouverte') bindMyOrders(s);
+  if (s && s.statut === 'ouverte') { bindMyOrders(s); bindFinCard(s); }
 }
 async function soirAct(fn) {
   document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; });
@@ -965,7 +967,7 @@ const mapsUrl = (c) => 'https://www.google.com/maps/dir/?api=1&travelmode=drivin
 function myOrdersHtml(s) {
   const mine = st(me.mid);
   let h = '<div class="card"><div class="stock"><div><b>' + (mine.L || 0) + '</b>L sur toi</div><div><b>' + (mine.XL || 0) + '</b>XL sur toi</div><div><b>' + (s.livrees || 0) + '</b>livraisons</div></div></div>';
-  if (!myCmds.length) return h + '<div class="card"><div class="small">Aucune commande pour l’instant. Elles apparaissent ici toutes seules.</div><p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse) + '</p></div>';
+  if (!myCmds.length) return h + '<div class="card"><div class="small">Aucune commande pour l’instant. Elles apparaissent ici toutes seules.</div><p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse) + '</p></div>' + finCard(s);
   const plan = planOf(myCmds), c = myCmds[0];
   const banner = c.bloque ? '<div class="banner b-no">🔴 PAS ENCORE PAYÉ — ne livre pas, attends que le dispatch confirme</div>'
     : c.encaisser > 0 ? '<div class="banner b-cash">🔵 À ENCAISSER : <b>' + c.encaisser + ' $</b> cash' + (c.paye === false && c.encaisser && !c.paye ? '' : '') + '</div>'
@@ -1858,3 +1860,87 @@ async function focusAct(c, a) {
   if (a === 'cancel' || a === 'unassign') focusNext(); else renderFocus();
 }
 setInterval(() => { if (fx.id) renderFocus(); }, 30000);
+
+// =====================================================================
+// Version 14 : fin de soirée — « Terminer ma soirée » : je garde mon stock, ou je le rends à MOUSSE (il confirme)
+// =====================================================================
+// retours/{id} : { de, deNom, vers, versNom, L, XL, statut: 'attente' | 'recue' | 'refusee', soiree, le }
+// Ce qui n'est pas rendu reste sur le livreur pour la prochaine fois (il le voit au check-in).
+const ret = { toMe: [], mine: [], f: null, busy: false };
+function startRetours() {
+  if (!me) return;
+  if (me.role === 'complet') stops.push(onSnapshot(query(collection(db, 'retours'), where('vers', '==', myMid())), (qs) => {
+    const n0 = ret.toMe.filter((x) => x.statut === 'attente').length;
+    ret.toMe = []; qs.forEach((d) => ret.toMe.push(Object.assign({ id: d.id }, d.data())));
+    if (ret.toMe.filter((x) => x.statut === 'attente').length > n0) bip();
+    drawRetCard();
+  }, () => {}));
+  if (delivers()) stops.push(onSnapshot(query(collection(db, 'retours'), where('de', '==', myMid())), (qs) => {
+    ret.mine = []; qs.forEach((d) => ret.mine.push(Object.assign({ id: d.id }, d.data()))); drawRetMine();
+  }, () => {}));
+}
+// MOUSSE (dispatch complet) : à qui on rend le stock.
+function mousseDispo() { const e = Object.entries(rm.dispos).find(([id, d]) => d.role === 'complet' && id !== myMid()); return e ? { id: e[0], nom: e[1].nom } : null; }
+function finCard(s) {
+  const mine = st(me.mid), f = ret.f;
+  if (!f) return '<button class="btn ghost" id="finOpen" style="margin-top:4px">🌙 Terminer ma soirée</button>';
+  const to = me.role === 'complet' ? null : mousseDispo();
+  let h = '<div class="card"><div class="label">🌙 Terminer ma soirée</div><div>Il te reste <b>' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL</b>.</div>';
+  if (to) {
+    h += '<div class="seg" id="finMode" style="margin:8px 0">' + [['garde', 'Je garde tout'], ['rends', 'Je rends à ' + esc(to.nom)]].map((x) => '<button data-m="' + x[0] + '" class="' + (f.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+    if (f.mode === 'rends') h += ['L', 'XL'].map((k) => '<div class="step"><span>' + k + '</span><button data-fk="' + k + '" data-d="-1">−</button><div class="v">' + f[k] + '</div><button data-fk="' + k + '" data-d="1">+</button></div>').join('') +
+      '<div class="small">' + esc(to.nom) + ' devra confirmer « Reçu ✓ ». Ce que tu ne rends pas, tu le gardes pour la prochaine fois.</div>';
+    else h += '<div class="small">Tu le gardes pour la prochaine fois. Tu le verras au prochain check-in.</div>';
+  } else h += '<div class="small" style="margin-top:6px">' + (me.role === 'complet' ? 'Ton stock reste à toi.' : 'MOUSSE n’est pas en ligne : tu gardes ton stock pour la prochaine fois.') + '</div>';
+  h += '<div class="err" id="finErr"></div><div class="two"><button class="btn ghost" id="finCancel">Annuler</button><button class="btn ok" id="finGo">Terminer</button></div></div>';
+  return h;
+}
+function bindFinCard(s) {
+  if ($('finOpen')) $('finOpen').onclick = () => { const m = st(me.mid); ret.f = { mode: 'garde', L: m.L || 0, XL: m.XL || 0 }; renderSoiree(); };
+  const f = ret.f; if (!f) return;
+  document.querySelectorAll('#finMode button').forEach((b) => { b.onclick = () => { f.mode = b.dataset.m; renderSoiree(); }; });
+  document.querySelectorAll('[data-fk]').forEach((b) => { b.onclick = () => { const k = b.dataset.fk, m = st(me.mid); f[k] = Math.max(0, Math.min(m[k] || 0, f[k] + Number(b.dataset.d))); renderSoiree(); }; });
+  if ($('finCancel')) $('finCancel').onclick = () => { ret.f = null; renderSoiree(); };
+  if ($('finGo')) $('finGo').onclick = async () => {
+    if (myCmds.length) { $('finErr').textContent = 'Tu as encore des commandes.'; return; }
+    const to = me.role === 'complet' ? null : mousseDispo();
+    ret.busy = true; $('finGo').disabled = true;
+    try {
+      const b = writeBatch(db);
+      if (to && f.mode === 'rends' && (f.L || f.XL)) b.set(doc(collection(db, 'retours')), { de: me.mid, deNom: me.nom, vers: to.id, versNom: to.nom, L: f.L, XL: f.XL, statut: 'attente', soiree: s.id, le: serverTimestamp() });
+      b.update(doc(db, 'soirees', s.id), { statut: 'terminee', finLe: serverTimestamp() });
+      await b.commit();
+      ret.f = null; ret.busy = false; finState.me = null; renderSoiree(); initFin(); loadFin('me');
+    } catch (e) { ret.busy = false; if ($('finErr')) $('finErr').textContent = msg(e); if ($('finGo')) $('finGo').disabled = false; }
+  };
+}
+// Livreur : état de son retour (en attente / reçu)
+function drawRetMine() {
+  const box = $('retMine'); if (!box) return;
+  const r = ret.mine.filter((x) => { const t = x.le && x.le.toDate ? x.le.toDate() : null; return !t || t >= soirStart(); }).slice(-1)[0];
+  box.innerHTML = r ? '<div class="small" style="text-align:center;margin:6px 0">📦 ' + r.L + ' L · ' + r.XL + ' XL rendus à ' + esc(r.versNom) + ' — ' + (r.statut === 'attente' ? 'en attente de confirmation…' : r.statut === 'recue' ? 'reçu ✓' : 'pas reçu ✗ (tu les as encore)') + '</div>' : '';
+}
+// MOUSSE : « Fmj te rend 2 L · 2 XL » → Reçu ✓ / Pas reçu
+function drawRetCard() {
+  const box = $('retCard'); if (!box) return;
+  const att = ret.toMe.filter((x) => x.statut === 'attente');
+  box.innerHTML = att.length ? '<div class="card alert"><div class="label">📦 Stock qu’on te rend</div>' + att.map((r) => '<div class="item"><b>' + esc(r.deNom) + '</b> te rend <b>' + r.L + ' L · ' + r.XL + ' XL</b> (fin de soirée)' +
+    '<div class="two" style="margin-top:8px"><button class="btn red sm" data-rtno="' + r.id + '">Pas reçu</button><button class="btn ok sm" data-rtyes="' + r.id + '">Reçu ✓</button></div></div>').join('') + '</div>' : '';
+  box.querySelectorAll('[data-rtyes]').forEach((b) => { b.onclick = () => retDecide(att.find((x) => x.id === b.dataset.rtyes), true); });
+  box.querySelectorAll('[data-rtno]').forEach((b) => { b.onclick = () => retDecide(att.find((x) => x.id === b.dataset.rtno), false); });
+}
+async function retDecide(r, ok) {
+  if (!r) return;
+  try {
+    const b = writeBatch(db);
+    b.update(doc(db, 'retours', r.id), { statut: ok ? 'recue' : 'refusee', decideLe: serverTimestamp() });
+    if (ok) {
+      const d = st(r.de);
+      const L = Math.min(r.L, d.L || 0), XL = Math.min(r.XL, d.XL || 0);
+      b.set(doc(db, 'stocks', r.de), { L: increment(-L), XL: increment(-XL) }, { merge: true });
+      b.set(doc(db, 'stocks', myMid()), { L: increment(L), XL: increment(XL) }, { merge: true });
+      b.set(doc(collection(db, 'mouvements')), { de: r.de, vers: myMid(), L, XL, type: 'retour', par: myMid(), le: serverTimestamp() });
+    }
+    await b.commit();
+  } catch (e) { alertBar(msg(e)); }
+}
