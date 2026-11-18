@@ -1,4 +1,4 @@
-// Version 8 : connexion, équipe, stock, check-in, commandes, notifications, lien client (Firebase).
+// Version 9 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé de soirée (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -316,8 +316,10 @@ const hhmm = (ts) => { const d = ts && ts.toDate ? ts.toDate() : (ts ? new Date(
 const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 
 function startLive() {
+  finState.team = null; finState.me = null; setTimeout(initFin, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
+  else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
   // Stock : le propriétaire et le dispatch complet voient tout ; les autres seulement le leur.
   if (isOwner() || me.role === 'complet') {
     stops.push(onSnapshot(collection(db, 'stocks'), (qs) => { stocks = {}; qs.forEach((d) => { stocks[d.id] = d.data(); }); renderAll(); }, () => {}));
@@ -967,7 +969,7 @@ function bindMyOrders(s) {
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
     const b = writeBatch(db);
-    b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id });
+    b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null ? { paie: paies[me.mid] } : {}) });
     b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
     b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
     const nx = myCmds[1];
@@ -1172,4 +1174,75 @@ async function closeSuivi(code, statut) {
     const qs = await getDocs(collection(db, 'suivi', code, 'msgs'));
     const b = writeBatch(db); let n = 0; qs.forEach((d) => { b.delete(d.ref); n++; }); if (n) await b.commit();
   } catch (e) { console.warn('suivi', e); }
+}
+
+// =====================================================================
+// Version 9 : résumé de fin de soirée à partager (Signal, etc.)
+// =====================================================================
+// Soirée = de 6 h à 6 h. Par livreur : cash reçu, livraisons, reste.
+// reste = cash − livraisons × salaire − frais − pourboires. Pourboire = cash reçu − à encaisser (si plus) ; un manque est seulement noté.
+function soirStart() { const d = new Date(); if (d.getHours() < 6) d.setDate(d.getDate() - 1); d.setHours(6, 0, 0, 0); return d; }
+const money = (n) => Math.round(n).toLocaleString('fr-CA').replace(/\u202f|\u00a0/g, ' ') + ' $';
+function sumUp(list) {
+  const by = {};
+  list.forEach((c) => {
+    const k = c.livreur || '?';
+    const r = by[k] || (by[k] = { mid: k, nom: c.livreurNom || nomDe(k), n: 0, cash: 0, frais: 0, tips: 0, manque: 0, paie: 0, paieOk: true });
+    const cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
+    const p = c.paie != null ? c.paie : paies[k];
+    r.n++; r.cash += cash; r.frais += Number(c.frais) || 0;
+    if (cash > enc) r.tips += cash - enc; else if (cash < enc) r.manque += enc - cash;
+    if (p == null) r.paieOk = false; else r.paie += Number(p);
+  });
+  return Object.values(by).map((r) => Object.assign(r, { reste: r.cash - r.paie - r.frais - r.tips })).sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
+}
+const jourTxt = (d) => d.toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'short' });
+function teamText(rows, d) {
+  let t = 'Soirée du ' + jourTxt(d) + '\n';
+  const T = { cash: 0, n: 0, reste: 0 };
+  rows.forEach((r) => { T.cash += r.cash; T.n += r.n; T.reste += r.reste;
+    t += '\n' + r.nom + ' : cash ' + money(r.cash) + ' · ' + r.n + ' livraison' + (r.n > 1 ? 's' : '') + ' · reste ' + (r.paieOk ? money(r.reste) : '? (paie inconnue)') +
+      (r.tips ? ' (pourboires ' + money(r.tips) + ')' : '') + (r.manque ? ' ⚠️ manque ' + money(r.manque) : ''); });
+  t += '\n\nTOTAL : cash ' + money(T.cash) + ' · ' + T.n + ' livraison' + (T.n > 1 ? 's' : '') + ' · reste ' + money(T.reste);
+  return t;
+}
+function myText(r, d) {
+  if (!r) return 'Soirée du ' + jourTxt(d) + '\nAucune livraison.';
+  return 'Ma soirée du ' + jourTxt(d) + '\n\nTotal cash : ' + money(r.cash) + '\nLivraisons : ' + r.n + (r.paieOk ? ' (paie ' + money(r.paie) + ')' : '') +
+    (r.frais ? '\nFrais : ' + money(r.frais) : '') + (r.tips ? '\nPourboires : ' + money(r.tips) : '') + (r.manque ? '\n⚠️ Manque : ' + money(r.manque) : '') +
+    '\nReste à remettre : ' + (r.paieOk ? money(r.reste) : '?');
+}
+const finState = { team: null, me: null };
+async function loadFin(which) {
+  const d = soirStart();
+  try {
+    let list = [];
+    if (which === 'team') {
+      const qs = await getDocs(query(collection(db, 'commandes'), where('livreeLe', '>=', d)));
+      qs.forEach((x) => { const c = x.data(); if (c.statut === 'livree') list.push(c); });
+      finState.team = teamText(sumUp(list), d);
+    } else {
+      const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', '==', 'livree')));
+      qs.forEach((x) => { const c = x.data(); const t = c.livreeLe && c.livreeLe.toDate ? c.livreeLe.toDate() : null; if (t && t >= d) list.push(c); });
+      finState.me = myText(sumUp(list)[0], d);
+    }
+  } catch (e) { finState[which] = 'Erreur : ' + msg(e); }
+  drawFin(which);
+}
+function drawFin(which) {
+  const box = $(which === 'team' ? 'finTeam' : 'finMe'); if (!box) return;
+  const t = finState[which];
+  box.innerHTML = '<div class="card"><div class="label">🌙 ' + (which === 'team' ? 'Résumé de la soirée (équipe)' : 'Mon résumé de la soirée') + '</div>' +
+    (t == null ? '<button class="btn ghost" data-fin="load">Voir le résumé</button>' :
+      '<pre class="fin">' + esc(t) + '</pre><div class="two"><button class="btn ghost sm" data-fin="load">↻ Actualiser</button><button class="btn ok sm" data-fin="share">Partager</button></div>') + '</div>';
+  box.querySelectorAll('[data-fin]').forEach((b) => { b.onclick = async () => {
+    if (b.dataset.fin === 'load') { b.textContent = 'Calcul…'; return loadFin(which); }
+    try { if (navigator.share) await navigator.share({ text: t }); else { await navigator.clipboard.writeText(t); b.textContent = 'Copié ✓'; } }
+    catch (e) { try { await navigator.clipboard.writeText(t); b.textContent = 'Copié ✓'; } catch (x) {} }
+  }; });
+}
+function initFin() {
+  if (!me) return;
+  if ($('finTeam')) { if (isOwner() || me.role === 'complet') drawFin('team'); else $('finTeam').innerHTML = ''; }
+  if ($('finMe')) { if (delivers()) drawFin('me'); else $('finMe').innerHTML = ''; }
 }
