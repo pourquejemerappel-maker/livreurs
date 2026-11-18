@@ -149,6 +149,18 @@
   .fdock { border-top: 1px solid #262c36; background: #0b0e13; padding: 8px 10px 16px; }
   .fchips { display: flex; gap: 6px; overflow-x: auto; }
   .fchip { flex: 0 0 auto; border-radius: 12px; padding: 7px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  /* Boutons plus gros et plus clairs (v18) */
+  .btn.sm{padding:11px 14px;font-size:14px;min-height:44px}
+  .btn{min-height:48px;border-radius:12px}
+  .seg button{font-size:14px;min-height:44px;color:var(--text)}
+  .linkbtn{font-size:15px;padding:8px 0 12px}
+  .two{gap:10px;margin-top:8px}
+  .cm img,.fchat img.thumb{max-height:200px;width:auto;max-width:100%;object-fit:cover;cursor:zoom-in;border-radius:10px;display:block;margin-top:6px}
+  /* Photo en grand */
+  #photoView{display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.94);align-items:center;justify-content:center;padding:env(safe-area-inset-top) 10px env(safe-area-inset-bottom)}
+  #photoView.on{display:flex}
+  #photoView img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
+  #photoView .pvx{position:absolute;top:calc(env(safe-area-inset-top) + 10px);right:14px;width:44px;height:44px;border-radius:22px;border:0;background:#2a2a30;color:#fff;font-size:20px}
 </style>
 </head>
 <body>
@@ -247,7 +259,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=17"></script>
+<script type="module" src="app.js?v=18"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
