@@ -1,4 +1,4 @@
-// Version 17 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
+// Version 18 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -716,7 +716,6 @@ function renderNew() {
   const f = NF, tot = totalOf(f);
   const focusId = document.activeElement && document.activeElement.id;
   box.innerHTML = '<div class="card"><div class="label">Nouvelle commande</div>' +
-    '<textarea id="nfPaste" rows="4" placeholder="📋 Colle ici le message du client (nom, numéro, adresse avec code postal, commande)"></textarea>' +
     (f.pasted ? '<div class="small" style="margin:-4px 0 8px;color:var(--cash)">✓ Rempli à partir du message. Vérifie l’adresse et les quantités, puis choisis le paiement.</div>' : '') +
     '<input id="nfClient" placeholder="Nom du client" value="' + esc(f.client) + '">' +
     '<input id="nfAdr" placeholder="Adresse (ex. 5000 jean-talon)" autocomplete="off" value="' + esc(f.q) + '"><div id="nfSugs"></div>' +
@@ -1813,11 +1812,11 @@ function renderFocus() {
       '<div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
       '<div class="fban ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + (u.k === 'ici' ? 'Sur place depuis ' + u.min + ' min' : u.k === 'proche' ? 'Arrive dans ~' + u.eta + ' min' : 'En route · arrivée ~' + hm(plan[0])) + (c.retard ? ' · ' + lateTag(c.retard) : '') + '</div>' +
       '<div style="margin:6px 0">Paiement : ' + payTag(c) + (c.note ? '<div class="small">📝 ' + esc(c.note) + '</div>' : '') + '</div>';
-    if (fx.cl.length) h += '<div class="fchat"><div class="small">Livreur ↔ client</div>' + fx.cl.slice(-3).map((m) => '<div><b>' + (m.de === 'client' ? esc(prenom(c.client)) : esc(c.livreurNom || '')) + ' :</b> ' + esc(m.txt || '') + '</div>').join('') + '</div>';
+    if (fx.cl.length) h += '<div class="fchat"><div class="small">Livreur ↔ client</div>' + fx.cl.slice(-3).map((m) => '<div><b>' + (m.de === 'client' ? esc(prenom(c.client)) : esc(c.livreurNom || '')) + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') + '</div>';
     // Chat avec le livreur, directement ici
     const dl = dm.all.filter((m) => m.mid === c.livreur);
     if (unreadFor(c.livreur)) markRead(c.livreur, 'dispatch');
-    h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
+    h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
       '<div class="crow" style="margin-top:6px"><input id="fxTxt" maxlength="300" placeholder="Écrire à ' + esc(c.livreurNom || '') + '…"><button class="btn sm" id="fxSend">➤</button></div></div>';
     h += (c.bloque ? fBtn('paid', '✓ Interac reçu', 'ok') : '') +
       '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette ? fBtn('dette', '📒 Dette') : '') + '</div>' +
@@ -2056,4 +2055,18 @@ document.addEventListener('visibilitychange', () => {
     if (navigator.serviceWorker) navigator.serviceWorker.getRegistration().then((r) => r && r.getNotifications().then((ns) => ns.forEach((x) => x.close()))).catch(() => {});
     badgeLast = -1; updBadge();
   }
+});
+
+// =====================================================================
+// Version 18 : toucher une photo pour l'ouvrir en grand (chats livreur ↔ client, livreur ↔ dispatch, copie des messages)
+// =====================================================================
+function openPhoto(src) {
+  let v = $('photoView');
+  if (!v) { v = document.createElement('div'); v.id = 'photoView'; document.body.appendChild(v); v.onclick = () => { v.classList.remove('on'); v.innerHTML = ''; }; }
+  v.innerHTML = '<button class="pvx" aria-label="Fermer">✕</button><img src="' + esc(src) + '" alt="photo">';
+  v.classList.add('on');
+}
+document.addEventListener('click', (e) => {
+  const im = e.target && e.target.closest && e.target.closest('.cm img, .fchat img, .cfeed img');
+  if (im && !im.closest('#photoView')) { e.preventDefault(); openPhoto(im.getAttribute('src')); }
 });
