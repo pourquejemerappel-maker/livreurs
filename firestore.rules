@@ -78,6 +78,18 @@ service cloud.firestore {
         ((id == myId() && s1.statut == 'ouverte') || (id == s0.load.de && s1.statut == 'demande')) &&
         nv('L') == cur('L') + s0.load.L && nv('XL') == cur('XL') + s0.load.XL;
     }
+    // Recharge pendant la soirée : le livreur accepte (son stock monte) ou dit « Pas reçu » (le stock retourne à qui l'a envoyé),
+    // exactement de la quantité de la recharge.
+    function rechargeOk(id) {
+      let sid = request.resource.data.get('via', '');
+      let p = /databases/$(db)/documents/soirees/$(sid);
+      let s0 = get(p).data;
+      let s1 = getAfter(p).data;
+      return active() && sid != '' && s0.mid == myId() && s0.statut == 'ouverte' &&
+        s0.get('recharge', null) != null && s1.get('recharge', null) == null &&
+        ((id == myId() && s1.get('rechargeRep', '') == 'ok') || (id == s0.recharge.de && s1.get('rechargeRep', '') == 'non')) &&
+        nv('L') == cur('L') + s0.recharge.L && nv('XL') == cur('XL') + s0.recharge.XL;
+    }
     // Livraison : le stock du livreur baisse exactement de la commande qu'il marque « livrée ».
     function livraisonOk(id) {
       let cid = request.resource.data.get('cmd', '');
@@ -89,7 +101,7 @@ service cloud.firestore {
     }
     match /stocks/{id} {
       allow read: if isOwner() || isComplet() || isMember(id);
-      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id) || livraisonOk(id);
+      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id) || livraisonOk(id) || rechargeOk(id);
     }
 
     // Historique du stock : on ajoute, on ne modifie jamais.
@@ -113,6 +125,11 @@ service cloud.firestore {
           (resource.data.statut == 'ouverte' && request.resource.data.statut == 'ouverte' &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['livrees']) &&
            request.resource.data.livrees == resource.data.get('livrees', 0) + 1) ||
+          // Recharge : il l'accepte ou la refuse (et rien d'autre).
+          (resource.data.statut == 'ouverte' && request.resource.data.statut == 'ouverte' &&
+           resource.data.get('recharge', null) != null && request.resource.data.get('recharge', null) == null &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['recharge', 'rechargeRep']) &&
+           request.resource.data.rechargeRep in ['ok', 'non']) ||
           // Fin de soirée : le livreur ferme sa propre soirée.
           (resource.data.statut == 'ouverte' && request.resource.data.statut == 'terminee' &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'finLe']))));
@@ -252,6 +269,16 @@ service cloud.firestore {
       allow update: if isComplet() && resource.data.vers == myId() && resource.data.statut == 'attente' &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'decideLe']) &&
         request.resource.data.statut in ['recue', 'refusee'];
+    }
+
+    // Stock donné par le propriétaire à MOUSSE (sur lui ou au dépôt) : MOUSSE l'accepte ou le refuse.
+    match /dons/{id} {
+      allow read: if isOwner() || isComplet();
+      allow create: if isOwner() && request.resource.data.statut == 'attente';
+      allow update: if isOwner() ||
+        (isComplet() && resource.data.statut == 'attente' && request.resource.data.statut in ['ok', 'non'] &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'repLe']));
+      allow delete: if isOwner();
     }
 
     // Permission de dispatch de lost pour ce soir : seuls le propriétaire et MOUSSE (complet) l'écrivent.
