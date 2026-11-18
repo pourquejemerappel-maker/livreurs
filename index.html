@@ -7,11 +7,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Livreurs">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-title" content="Gotham">
+<link rel="manifest" href="manifest.webmanifest?v=2">
+<link rel="apple-touch-icon" href="icon-180.png?v=2">
 <link rel="icon" href="icon-192.png">
-<title>Livreurs</title>
+<title>Gotham</title>
 <style>
   :root{--bg:#0b0b0d;--card:#151518;--card2:#1d1d21;--line:#2a2a30;--text:#f4f4f5;--muted:#8b8b94;--accent:#e7e7ea;--cash:#2fbf71;--interac:#f5b301;--danger:#ff5a5f;--blue:#7fa8ff}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -149,7 +149,7 @@
 </head>
 <body>
 <div class="wrap">
-  <header><b>LIVREURS</b><span><span id="who" class="small"></span> <button id="cashBtn" class="hide" title="Ma soirée" style="background:none;border:0;font-size:16px;padding:0 6px;opacity:.6;cursor:pointer">💰</button> <button id="logout" class="hide">Déconnexion</button></span></header>
+  <header><b>⚡ GOTHAM</b><span><span id="who" class="small"></span> <button id="cashBtn" class="hide" title="Ma soirée" style="background:none;border:0;font-size:16px;padding:0 6px;opacity:.6;cursor:pointer">💰</button> <button id="logout" class="hide">Déconnexion</button></span></header>
   <div id="cashPop" class="hide" style="position:fixed;top:44px;right:12px;z-index:50;background:#1f2530;border:1px solid #333b48;border-radius:12px;padding:8px 12px;font-size:14px;box-shadow:0 6px 24px #0008"></div>
   <div id="loading" class="center small" style="padding:40px 0">Chargement…</div>
 
@@ -243,7 +243,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=15"></script>
+<script type="module" src="app.js?v=16"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
