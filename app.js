@@ -1,8 +1,8 @@
-// Version 6 : connexion, équipe, stock, check-in, commandes, notifications (Firebase).
+// Version 8 : connexion, équipe, stock, check-in, commandes, notifications, lien client (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit }
+import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocs, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getMessaging, getToken, isSupported as msgSupported } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
 
@@ -488,7 +488,7 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
-  if (document.activeElement && document.activeElement.id === 'mcCash') return; // ne pas effacer le montant qu'il tape
+  if (document.activeElement && (document.activeElement.id === 'mcCash' || document.activeElement.id === 'chatTxt')) return; // ne pas effacer ce qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
   if (!s) {
@@ -817,12 +817,14 @@ async function saveOrder(opt) {
     const mode = f.meth, recu = f.meth === 'cash' ? true : f.recu;
     const encaisser = mode === 'cash' ? tot : mode === 'mix' ? f.cashPart : 0;
     const ref = doc(collection(db, 'commandes'));
-    const data = { client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim(), L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
+    const code = newCode();
+    const data = { suivi: code, client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim(), L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
       encaisser, paye: mode !== 'cash' && recu && mode === 'int', bloque: !recu, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: me.mid };
     if (f.pick && f.pick.lat != null) { data.lat = f.pick.lat; data.lon = f.pick.lon; }
     const b = writeBatch(db);
     if (opt) Object.assign(data, await assignFields(opt, data));
     b.set(ref, data);
+    b.set(doc(db, 'suivi', code), { actif: true, statut: opt ? 'assignee' : 'attente', eta: opt ? Math.round(opt.arr) : null, luid: opt ? uidOf(opt.mid) : null, prenom: prenom(data.client), le: serverTimestamp() });
     b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: tot, mode, cash: encaisser, interac: tot - encaisser, recu, prixL: cfg.prixL, prixXL: cfg.prixXL, le: serverTimestamp() });
     if (opt) await nextFix(b, opt, data);
     await b.commit();
@@ -879,7 +881,7 @@ function renderQueues() {
   document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
 }
 function msgBox(c, eta) {
-  const t = 'Salut ' + c.client + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.';
+  const t = 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison et écris-lui ici : ' + SUIVI + c.suivi : '');
   return '<div class="msgc">' + esc(t) + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-copy="' + esc(t) + '">Copier</button>' +
     (c.tel ? '<a class="btn ok sm" style="text-align:center;text-decoration:none" href="sms:' + encodeURIComponent(c.tel) + '?&body=' + encodeURIComponent(t) + '">Texto à ' + esc(c.tel) + '</a>' : '<span class="small" style="align-self:center">Pas de téléphone : copie-le où tu parles au client.</span>') + '</div></div>';
 }
@@ -894,12 +896,19 @@ async function qAct(a, id) {
       b.update(doc(db, 'cmdPrive', id), { recu: true });
       return await b.commit();
     }
-    if (a === 'unassign') { menuOpen = null; return await writeBatch(db).update(doc(db, 'commandes', id), { statut: 'attente', livreur: null, livreurNom: null, retard: 0 }).commit(); }
+    if (a === 'unassign') {
+      menuOpen = null;
+      const b = writeBatch(db);
+      b.update(doc(db, 'commandes', id), { statut: 'attente', livreur: null, livreurNom: null, retard: 0 });
+      if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'attente', eta: null, luid: null });
+      return await b.commit();
+    }
     if (a === 'cancel') {
       menuOpen = null;
       const b = writeBatch(db);
       b.update(doc(db, 'commandes', id), { statut: 'annulee', annuleePar: me.mid, finLe: serverTimestamp() });
       b.update(doc(db, 'cmdPrive', id), { actif: false });
+      if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { actif: false, statut: 'annulee' });
       return await b.commit();
     }
     if (a === 'assign') {
@@ -914,6 +923,7 @@ async function assignExisting(id, opt) {
   try {
     const b = writeBatch(db);
     b.update(doc(db, 'commandes', id), await assignFields(opt, c));
+    if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'assignee', eta: Math.round(opt.arr), luid: uidOf(opt.mid) });
     await nextFix(b, opt, c);
     await b.commit(); reassign = null;
     notifyOrder(id);
@@ -934,7 +944,7 @@ function myOrdersHtml(s) {
   h += '<div class="card now"><div class="label">Maintenant · commande 1 sur ' + myCmds.length + '</div><div class="client">' + esc(c.client) + '</div>' +
     '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b><br><u>Ouvrir dans Google Maps</u></span></a>' +
     '<div class="chips"><span class="chip">' + c.L + ' × L</span><span class="chip">' + c.XL + ' × XL</span><span class="chip eta">' + (c.statut === 'ici' ? 'Sur place' : 'Arrivée ~' + hm(plan[0]) + (c.retard ? ' (+' + c.retard + ' min)' : ' si tu pars maintenant')) + '</span></div>' +
-    banner + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') + '<div class="err" id="mcErr"></div>';
+    banner + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') + chatHtml(c) + '<div class="err" id="mcErr"></div>';
   if (c.statut !== 'ici') h += '<div class="two"><button class="btn ghost" id="mcLate" style="color:var(--danger);border-color:var(--danger)">⏱ +5 min</button><button class="btn" id="mcHere">Je suis arrivé</button></div>';
   else if (c.bloque) h += '<button class="btn" disabled>🔒 Attends l’Interac</button>';
   else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + c.encaisser + '">' : '') + '<button class="btn ok big" id="mcDone">✓ Livrée</button>';
@@ -947,10 +957,13 @@ function myOrdersHtml(s) {
   return h;
 }
 function bindMyOrders(s) {
-  const c = myCmds[0]; if (!c) return;
+  const c = myCmds[0];
+  watchChat(c); syncEtas();
+  if (!c) return;
+  bindChat();
   const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
   if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
-  if ($('mcHere')) $('mcHere').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }).commit());
+  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit(); });
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
     const b = writeBatch(db);
@@ -960,6 +973,7 @@ function bindMyOrders(s) {
     const nx = myCmds[1];
     if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 }); // la suivante part maintenant (2 min de marge)
     await b.commit();
+    closeSuivi(c.suivi, 'livree');
   });
 }
 
@@ -1080,4 +1094,82 @@ async function applyPaste(txt) {
   const hit = sugs.find((x) => cp3 && (x.l2 || '').toUpperCase().replace(/\s/g, '').indexOf(cp3) >= 0) || (sugs.length === 1 ? sugs[0] : null);
   if (hit) { f.pick = hit; f.q = hit.l1 + ', ' + hit.l2; renderNew(); computeOpts(); }
   else drawNfSugs();
+}
+
+// =====================================================================
+// Version 8 : lien de suivi pour le client (suivi.html#code) — heure d'arrivée, chat anonyme, photos
+// =====================================================================
+// suivi/{code}        : { actif, statut, eta, luid (compte du livreur), prenom } — lisible par qui a le lien.
+// suivi/{code}/msgs   : messages { de: 'client' | 'livreur', txt, img? } — effacés quand la commande est livrée.
+const SUIVI = 'https://pourquejemerappel-maker.github.io/livreurs/suivi.html#';
+function newCode() { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789', r = crypto.getRandomValues(new Uint8Array(22)); return Array.from(r, (x) => a[x % a.length]).join(''); }
+const uidOf = (mid) => (team[mid] && team[mid].uid) || null;
+const prenom = (n) => String(n || '').trim().split(/\s+/)[0] || 'Client';
+
+// ----- Côté livreur : heure d'arrivée envoyée au client + chat -----
+const etaSent = {};
+function syncEtas() {
+  if (!myCmds.length) return;
+  const plan = planOf(myCmds);
+  myCmds.forEach((c, i) => {
+    if (!c.suivi || c.statut !== 'assignee') return;
+    if (etaSent[c.id] && Math.abs(etaSent[c.id] - plan[i]) < 60000) return;
+    etaSent[c.id] = plan[i];
+    writeBatch(db).update(doc(db, 'suivi', c.suivi), { eta: Math.round(plan[i]), statut: 'assignee' }).commit().catch(() => {});
+  });
+}
+let chatSub = null, chatFor = null, chatMsgs = [];
+function watchChat(c) {
+  const code = c && c.suivi;
+  if (code === chatFor) return;
+  if (chatSub) { chatSub(); chatSub = null; } chatMsgs = []; chatFor = code;
+  if (!code) return;
+  chatSub = onSnapshot(query(collection(db, 'suivi', code, 'msgs'), orderBy('le', 'asc'), limit(60)), (qs) => {
+    const before = chatMsgs.length; chatMsgs = []; qs.forEach((d) => chatMsgs.push(d.data()));
+    if (chatMsgs.length > before && chatMsgs.length && chatMsgs[chatMsgs.length - 1].de === 'client') bip();
+    drawChat();
+  }, () => {});
+}
+function bip() { try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; o.connect(g); g.connect(a.destination); g.gain.value = 0.15; o.start(); o.stop(a.currentTime + 0.25); if (navigator.vibrate) navigator.vibrate(200); } catch (e) {} }
+function chatHtml(c) {
+  if (!c || !c.suivi) return '';
+  return '<div class="chatbox"><div class="label" style="margin-bottom:6px">💬 Client (anonyme)</div><div id="chatFeed" class="cfeed"></div>' +
+    '<div class="seg" style="margin:6px 0">' + [['🚗 En route', 'Je suis en route 🚗'], ['📍 Devant', 'Je suis arrivé, je suis devant'], ['📍 Derrière', 'Je suis arrivé, je suis derrière'], ['📍 À côté', 'Je suis arrivé, je suis à côté'], ['⏱ 5 min', 'Petit retard, environ 5 minutes']]
+      .map((x) => '<button data-say="' + esc(x[1]) + '">' + x[0] + '</button>').join('') + '</div>' +
+    '<div class="crow"><input id="chatTxt" maxlength="300" placeholder="Écrire au client…"><label class="cpic">📷<input type="file" id="chatPic" accept="image/*" class="hide"></label><button class="btn sm" id="chatSend">➤</button></div></div>';
+}
+function drawChat() {
+  const box = $('chatFeed'); if (!box) return;
+  box.innerHTML = chatMsgs.map((m) => { const t = m.le && m.le.toDate ? m.le.toDate() : new Date();
+    return '<div class="cm ' + (m.de === 'client' ? 'cthem' : 'cme') + '">' + esc(m.txt || '') + (m.img ? '<img src="' + esc(m.img) + '" alt="photo">' : '') + '<div class="ct">' + (m.de === 'client' ? 'Client' : 'Moi') + ' · ' + t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') + '</div></div>'; }).join('') ||
+    '<div class="small">Le client voit ici tes messages. Il peut te répondre ou envoyer une photo.</div>';
+  box.scrollTop = box.scrollHeight;
+}
+async function chatSend(txt, img) {
+  if (!chatFor || (!txt && !img)) return;
+  const d = { de: 'livreur', txt: String(txt || '').slice(0, 300), le: serverTimestamp() }; if (img) d.img = img;
+  try { await setDoc(doc(collection(db, 'suivi', chatFor, 'msgs')), d); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); }
+}
+function bindChat() {
+  drawChat();
+  document.querySelectorAll('#soiree [data-say]').forEach((b) => { b.onclick = () => chatSend(b.dataset.say); });
+  if ($('chatSend')) $('chatSend').onclick = () => { const v = $('chatTxt').value.trim(); if (v) { chatSend(v); $('chatTxt').value = ''; } };
+  if ($('chatTxt')) $('chatTxt').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('chatSend').click(); });
+  if ($('chatPic')) $('chatPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { chatSend('📷 Photo', await shrinkImg(f)); } catch (x) {} } };
+}
+function shrinkImg(file) {
+  return new Promise((ok, ko) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => { const k = Math.min(1, 900 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); let q = 0.7, out = c.toDataURL('image/jpeg', q); while (out.length > 350000 && q > 0.3) { q -= 0.1; out = c.toDataURL('image/jpeg', q); } ok(out); };
+    img.onerror = ko; img.src = url;
+  });
+}
+// À la livraison : on ferme la page du client et on efface les messages et photos.
+async function closeSuivi(code, statut) {
+  if (!code) return;
+  try {
+    await writeBatch(db).update(doc(db, 'suivi', code), { actif: false, statut }).commit();
+    const qs = await getDocs(collection(db, 'suivi', code, 'msgs'));
+    const b = writeBatch(db); let n = 0; qs.forEach((d) => { b.delete(d.ref); n++; }); if (n) await b.commit();
+  } catch (e) { console.warn('suivi', e); }
 }
