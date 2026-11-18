@@ -1,4 +1,4 @@
-// Version 14 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée (Firebase).
+// Version 15 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -134,6 +134,7 @@ function buildTabs() {
   if (me.role === 'limite') t.push(['soiree', 'Ma soirée']);
   if (isOwner() || isStaff()) t.push(['direct', 'En direct'], ['stock', 'Stock']);
   if (delivers() && me.role !== 'limite') t.push(['soiree', 'Ma soirée']);
+  if (isOwner() || me.role === 'complet') t.push(['histo', 'Historique']);
   if (isOwner()) t.push(['equipe', 'Équipe']);
   $('tabs').innerHTML = t.map((x) => '<button data-t="' + x[0] + '">' + x[1] + '</button>').join('');
   $('tabs').classList.toggle('hide', t.length < 2);
@@ -142,11 +143,12 @@ function buildTabs() {
 }
 let curTab = '';
 function setTab(t) {
+  if (t === 'histo' && typeof drawHisto === 'function') setTimeout(drawHisto, 0);
   if (typeof fx !== 'undefined' && fx.id && t !== 'direct') closeFocus();
   if (locked() && (t === 'direct' || t === 'stock')) t = 'soiree';
   curTab = t;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
-  ['direct', 'stock', 'soiree', 'equipe'].forEach((x) => $('tab' + x[0].toUpperCase() + x.slice(1)).classList.toggle('hide', x !== t));
+  ['direct', 'stock', 'soiree', 'equipe', 'histo'].forEach((x) => $('tab' + x[0].toUpperCase() + x.slice(1)).classList.toggle('hide', x !== t));
 }
 
 // ---------- Équipe (propriétaire seulement) ----------
@@ -1943,4 +1945,73 @@ async function retDecide(r, ok) {
     }
     await b.commit();
   } catch (e) { alertBar(msg(e)); }
+}
+
+// =====================================================================
+// Version 15 : historique des soirées (propriétaire et MOUSSE) — une soirée (6 h à 6 h) ou une semaine, partager, CSV
+// =====================================================================
+const hs = { day: null, week: false, text: null, rows: [], extra: '', busy: false };
+function dayStart(d) { const x = new Date(d); x.setHours(6, 0, 0, 0); return x; }
+function histoRange() {
+  if (!hs.day) { const y = soirStart(); hs.day = new Date(y.getTime() - 86400000); }
+  if (!hs.week) return [dayStart(hs.day), new Date(dayStart(hs.day).getTime() + 86400000)];
+  const m = dayStart(hs.day); const k = (m.getDay() + 6) % 7; m.setDate(m.getDate() - k); // lundi
+  return [m, new Date(m.getTime() + 7 * 86400000)];
+}
+async function rangeDocs(col, field, a, b) {
+  const out = [];
+  try { const qs = await getDocs(query(collection(db, col), where(field, '>=', a), where(field, '<', b))); qs.forEach((d) => out.push(Object.assign({ id: d.id }, d.data()))); } catch (e) { console.warn(col, e); }
+  return out;
+}
+async function loadHisto() {
+  const [a, b] = histoRange();
+  hs.busy = true; drawHisto();
+  const [cmdsH, rems, dts, rets] = await Promise.all([
+    rangeDocs('commandes', 'livreeLe', a, b), rangeDocs('remises', 'le', a, b),
+    canDette() ? rangeDocs('dettes', 'creeLe', a, b) : Promise.resolve([]), rangeDocs('retours', 'le', a, b)]);
+  const livrees = cmdsH.filter((c) => c.statut === 'livree');
+  const remis = {}; rems.forEach((r) => { if (r.statut === 'recue') remis[r.de] = (remis[r.de] || 0) + (r.montant || 0); });
+  const dtt = {}; dts.forEach((x) => { if (x.statut !== 'refusee') dtt[x.livreur] = (dtt[x.livreur] || 0) + (x.montant || 0); });
+  const rows = withDettes(sumUp(livrees, remis), dtt);
+  let t = teamText(rows, a);
+  if (hs.week) t = t.replace(/^Soirée du [^\n]*/, 'Semaine du ' + jourTxt(a) + ' au ' + jourTxt(new Date(b.getTime() - 86400000)));
+  let x = '';
+  const dOk = dts.filter((d) => d.statut !== 'refusee');
+  if (dOk.length) x += '\n\n📒 Dettes : ' + dOk.map((d) => d.client + ' ' + money(d.montant || 0) + ' (resp. ' + respNom(d) + (d.statut === 'reglee' ? ', réglée' : '') + ')').join(' · ');
+  const rOk = rets.filter((r) => r.statut === 'recue');
+  if (rOk.length) x += '\n\n📦 Stock rendu : ' + rOk.map((r) => r.deNom + ' → ' + r.versNom + ' ' + r.L + ' L · ' + r.XL + ' XL').join(' · ');
+  const cash = rems.filter((r) => r.statut === 'recue');
+  if (cash.length) x += '\n\n💵 Cash remis : ' + cash.map((r) => r.deNom + ' → ' + r.versNom + ' ' + money(r.montant)).join(' · ');
+  hs.text = livrees.length || x ? t + x : (hs.week ? 'Semaine du ' + jourTxt(a) : 'Soirée du ' + jourTxt(a)) + '\nAucune livraison.';
+  hs.rows = livrees.sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
+  hs.busy = false; drawHisto();
+}
+function histoCsv() {
+  const head = ['date', 'heure', 'livreur', 'client', 'L', 'XL', 'a_encaisser', 'cash_recu', 'frais', 'paie', 'dette'];
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = hs.rows.map((c) => { const d = new Date(tsMs(c.livreeLe)); return [d.toLocaleDateString('fr-CA'), hm(d.getTime()), c.livreurNom || c.livreur, c.client, c.L, c.XL, c.encaisser, c.cashRecu, c.frais || 0, c.paie == null ? '' : c.paie, c.dette ? 'oui' : ''].map(q).join(','); });
+  const blob = new Blob(['﻿' + head.join(',') + '\n' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const [a] = histoRange(); const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob); link.download = 'gotham-' + (hs.week ? 'semaine-' : '') + a.toISOString().slice(0, 10) + '.csv'; link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+}
+function drawHisto() {
+  const box = $('histo'); if (!box || !me) return;
+  if (!(isOwner() || me.role === 'complet')) { box.innerHTML = ''; return; }
+  const [a, b] = histoRange();
+  const label = hs.week ? 'Semaine du ' + jourTxt(a) : jourTxt(a);
+  box.innerHTML = '<div class="card"><div class="label">📅 Historique</div>' +
+    '<div class="seg" style="margin-bottom:8px">' + [['jour', 'Une soirée'], ['sem', 'Une semaine']].map((x) => '<button data-hm="' + x[0] + '" class="' + ((x[0] === 'sem') === hs.week ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    '<div class="two" style="align-items:center"><button class="btn ghost sm" id="hPrev" style="flex:0 0 52px">‹</button><div style="flex:1;text-align:center;font-weight:700">' + esc(label) + '</div><button class="btn ghost sm" id="hNext" style="flex:0 0 52px"' + (b > new Date() ? ' disabled' : '') + '>›</button></div>' +
+    '<input type="date" id="hDate" value="' + a.toISOString().slice(0, 10) + '" style="margin-top:8px">' +
+    (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' :
+      '<pre class="fin" style="margin-top:10px">' + esc(hs.text) + '</pre><div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
+      '<div class="small" style="margin-top:6px">' + hs.rows.length + ' livraison' + (hs.rows.length > 1 ? 's' : '') + '. Le CSV s’ouvre dans Google Sheets (Fichier → Importer) ou Excel.</div>') + '</div>';
+  const move = (n) => { const d = new Date(dayStart(hs.day)); d.setDate(d.getDate() + n * (hs.week ? 7 : 1)); hs.day = d; hs.text = null; loadHisto(); };
+  box.querySelectorAll('[data-hm]').forEach((x) => { x.onclick = () => { hs.week = x.dataset.hm === 'sem'; hs.text = null; loadHisto(); }; });
+  $('hPrev').onclick = () => move(-1); $('hNext').onclick = () => move(1);
+  $('hDate').onchange = (e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split('-').map(Number); hs.day = new Date(y, m - 1, d, 12); hs.text = null; loadHisto(); };
+  if ($('hLoad')) $('hLoad').onclick = loadHisto;
+  if ($('hCsv')) $('hCsv').onclick = histoCsv;
+  if ($('hShare')) $('hShare').onclick = async () => { try { if (navigator.share) await navigator.share({ text: hs.text }); else { await navigator.clipboard.writeText(hs.text); $('hShare').textContent = 'Copié ✓'; } } catch (e) {} };
 }
