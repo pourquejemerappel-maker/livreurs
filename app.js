@@ -472,7 +472,7 @@ function giveSources() {
 function giveTargets(from) {
   const disp = Object.keys(team).filter((id) => team[id].actif && (team[id].role === 'complet' || team[id].role === 'limite'));
   const complets = disp.filter((id) => team[id].role === 'complet');
-  if (isOwner()) return from === RESERVE ? disp.concat(complets.map(DEP)).concat(livreursIds()) : disp.filter((id) => team[id].role === 'limite').concat(livreursIds()); // propriétaire → MOUSSE, son dépôt, lost, ou un livreur (de la réserve ou du dépôt)
+  if (isOwner()) return from === RESERVE ? disp.concat(complets.map(DEP)).concat(livreursIds()) : disp.concat(livreursIds()); // propriétaire → MOUSSE, son dépôt, lost, ou un livreur (de la réserve ou du dépôt)
   if (me.role === 'complet') {                                                               // MOUSSE : entre lui et son dépôt, ou à lost
     const other = from === DEP(me.mid) ? me.mid : DEP(me.mid);
     return [other].concat(disp.filter((id) => id !== me.mid)).concat(livreursIds());    // + n'importe quel livreur (il accepte)
@@ -524,9 +524,12 @@ $('gGo').onclick = async () => {
     // v23 : ce que le propriétaire donne à MOUSSE (sur lui ou au dépôt) attend que MOUSSE l'accepte.
     const toComplet = isOwner() && (isDep(give.to) || (team[give.to] && team[give.to].role === 'complet'));
     if (toComplet) {
-      await writeBatch(db).set(doc(collection(db, 'dons')), { de: RESERVE, vers: give.to, L: give.L, XL: give.XL, par: me.mid, statut: 'attente', le: serverTimestamp() }).commit();
+      const w0 = writeBatch(db);
+      w0.set(doc(collection(db, 'dons')), { de: src, vers: give.to, L: give.L, XL: give.XL, par: me.mid, statut: 'attente', le: serverTimestamp() });
+      if (src !== RESERVE) w0.set(doc(db, 'stocks', src), { L: increment(-give.L), XL: increment(-give.XL) }, { merge: true }); // ex. du dépôt de MOUSSE vers MOUSSE
+      await w0.commit();
       const qui = isDep(give.to) ? give.to.replace(/-depot$/, '') : give.to;
-      notifyDispatch('📦 Le propriétaire te donne ' + qty(give) + (isDep(give.to) ? ' (au dépôt)' : '') + ' — accepte dans Gotham', qui);
+      notifyDispatch('📦 Le propriétaire te donne ' + qty(give) + (isDep(give.to) ? ' (au dépôt)' : isDep(src) ? ' (pris de ton dépôt)' : '') + ' — accepte dans Gotham', qui);
       give.L = 0; give.XL = 0; renderStock(); $('gGo').disabled = false; return;
     }
     const b = writeBatch(db);
@@ -2515,7 +2518,7 @@ function drawDons() {
     if ($('donWait')) $('donWait').innerHTML = '<div class="small" style="margin:6px 0">⏳ En attente d’être accepté : ' + mine.map((d) => qty(d) + ' → ' + esc(nomDe(d.vers))).join(' · ') + '</div>';
     return;
   }
-  box.innerHTML = mine.map((d) => '<div class="card alert"><div class="label">📦 Le propriétaire te donne du stock</div><p style="margin:0 0 6px"><b>' + qty(d) + '</b>' + (isDep(d.vers) ? ' au dépôt' : ' sur toi') + '</p><p class="small" style="margin-top:0">Compte avant d’accepter.</p>' +
+  box.innerHTML = mine.map((d) => '<div class="card alert"><div class="label">📦 Le propriétaire te donne du stock</div><p style="margin:0 0 6px"><b>' + qty(d) + '</b>' + (isDep(d.vers) ? ' au dépôt' : ' sur toi') + (d.de && isDep(d.de) ? ' (pris de ton dépôt)' : '') + '</p><p class="small" style="margin-top:0">Compte avant d’accepter.</p>' +
     '<div class="err" id="donErr' + d.id + '"></div><div class="two"><button class="btn red" data-don="' + d.id + '|non">Refuser</button><button class="btn ok" data-don="' + d.id + '|ok">J’accepte</button></div></div>').join('');
   box.querySelectorAll('[data-don]').forEach((b) => { b.onclick = async () => {
     const [id, rep] = b.dataset.don.split('|'), d = dons.list.find((x) => x.id === id);
@@ -2525,8 +2528,8 @@ function drawDons() {
       w.update(doc(db, 'dons', id), { statut: rep, repLe: serverTimestamp() });
       if (rep === 'ok') {
         w.set(doc(db, 'stocks', d.vers), { L: increment(d.L || 0), XL: increment(d.XL || 0) }, { merge: true });
-        w.set(doc(collection(db, 'mouvements')), { de: RESERVE, vers: d.vers, L: d.L || 0, XL: d.XL || 0, type: 'don', par: me.mid, le: serverTimestamp() });
-      }
+        w.set(doc(collection(db, 'mouvements')), { de: d.de || RESERVE, vers: d.vers, L: d.L || 0, XL: d.XL || 0, type: 'don', par: me.mid, le: serverTimestamp() });
+      } else if (d.de && d.de !== RESERVE) w.set(doc(db, 'stocks', d.de), { L: increment(d.L || 0), XL: increment(d.XL || 0) }, { merge: true }); // refusé : retourne au dépôt
       await w.commit();
     } catch (e) { if ($('donErr' + id)) $('donErr' + id).textContent = msg(e); }
     dons.busy = false;
