@@ -101,7 +101,10 @@ service cloud.firestore {
           (resource.data.statut == 'load' && request.resource.data.statut in ['ouverte', 'demande']) ||
           (resource.data.statut == 'ouverte' && request.resource.data.statut == 'ouverte' &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['livrees']) &&
-           request.resource.data.livrees == resource.data.get('livrees', 0) + 1)));
+           request.resource.data.livrees == resource.data.get('livrees', 0) + 1) ||
+          // Fin de soirée : le livreur ferme sa propre soirée.
+          (resource.data.statut == 'ouverte' && request.resource.data.statut == 'terminee' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'finLe']))));
     }
 
     // ---------- Commandes ----------
@@ -220,6 +223,21 @@ service cloud.firestore {
          request.resource.data.statut == 'ouverte' &&
          (request.resource.data.responsable == myId() || request.resource.data.responsable == resource.data.creePar) &&
          request.resource.data.note is string && request.resource.data.note.size() <= 160);
+    }
+
+    // ---------- Fin de soirée : stock rendu à MOUSSE ----------
+    match /retours/{r} {
+      allow read: if isOwner() || isStaff() || (active() && resource.data.de == myId());
+      allow create: if active() && request.resource.data.de == myId() && request.resource.data.statut == 'attente' &&
+        request.resource.data.keys().hasOnly(['de', 'deNom', 'vers', 'versNom', 'L', 'XL', 'statut', 'soiree', 'le']) &&
+        request.resource.data.L is int && request.resource.data.XL is int && request.resource.data.L >= 0 && request.resource.data.XL >= 0 &&
+        request.resource.data.L <= get(/databases/$(db)/documents/stocks/$(myId())).data.get('L', 0) &&
+        request.resource.data.XL <= get(/databases/$(db)/documents/stocks/$(myId())).data.get('XL', 0) &&
+        request.resource.data.le == request.time &&
+        get(/databases/$(db)/documents/dispos/$(request.resource.data.vers)).data.role == 'complet';
+      allow update: if isComplet() && resource.data.vers == myId() && resource.data.statut == 'attente' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'decideLe']) &&
+        request.resource.data.statut in ['recue', 'refusee'];
     }
 
     // Un document par téléphone qui accepte les notifications (lu seulement par le programme « notifier »).
