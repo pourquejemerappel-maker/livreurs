@@ -6,7 +6,7 @@ import { initializeFirestore, persistentLocalCache, doc, getDoc, onSnapshot, wri
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const firebaseConfig = {
-  apiKey: '__API_KEY__',
+  apiKey: 'AIzaSyAn12YxRVuAgkyQDx056TVErnKyYzVIOLI',
   authDomain: 'livreurs-app-6dafd.firebaseapp.com',
   projectId: 'livreurs-app-6dafd',
   storageBucket: 'livreurs-app-6dafd.firebasestorage.app',
