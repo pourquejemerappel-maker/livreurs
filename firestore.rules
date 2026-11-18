@@ -70,9 +70,18 @@ service cloud.firestore {
         ((id == myId() && s1.statut == 'ouverte') || (id == s0.load.de && s1.statut == 'demande')) &&
         nv('L') == cur('L') + s0.load.L && nv('XL') == cur('XL') + s0.load.XL;
     }
+    // Livraison : le stock du livreur baisse exactement de la commande qu'il marque « livrée ».
+    function livraisonOk(id) {
+      let cid = request.resource.data.get('cmd', '');
+      let p = /databases/$(db)/documents/commandes/$(cid);
+      let c0 = get(p).data;
+      let c1 = getAfter(p).data;
+      return active() && cid != '' && id == myId() && c0.livreur == myId() && c0.statut == 'ici' && c1.statut == 'livree' &&
+        nv('L') == cur('L') - c0.L && nv('XL') == cur('XL') - c0.XL;
+    }
     match /stocks/{id} {
       allow read: if isOwner() || isComplet() || isMember(id);
-      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id);
+      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id) || livraisonOk(id);
     }
 
     // Historique du stock : on ajoute, on ne modifie jamais.
@@ -89,7 +98,34 @@ service cloud.firestore {
         (active() && resource.data.mid == myId() && request.resource.data.mid == resource.data.mid &&
          request.resource.data.get('load', null) == resource.data.get('load', null) &&
          ((resource.data.statut == 'demande' && request.resource.data.statut == 'annulee') ||
-          (resource.data.statut == 'load' && request.resource.data.statut in ['ouverte', 'demande'])));
+          (resource.data.statut == 'load' && request.resource.data.statut in ['ouverte', 'demande']) ||
+          (resource.data.statut == 'ouverte' && request.resource.data.statut == 'ouverte' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['livrees']) &&
+           request.resource.data.livrees == resource.data.get('livrees', 0) + 1)));
+    }
+
+    // ---------- Commandes ----------
+    // Réglages (prix, clé Google Maps) : lus par l'équipe, changés par le propriétaire seulement.
+    match /config/{id} {
+      allow read: if active();
+      allow write: if isOwner();
+    }
+    // Ce que le livreur voit de ses commandes. Il peut seulement : ajouter du retard, dire qu'il est arrivé,
+    // marquer « livrée » (jamais si c'est bloqué / pas payé) avec le cash reçu.
+    match /commandes/{cid} {
+      allow read: if isOwner() || isStaff() || (active() && resource.data.livreur == myId());
+      allow create, delete: if isOwner() || isStaff();
+      allow update: if isOwner() || isStaff() ||
+        (active() && resource.data.livreur == myId() && request.resource.data.livreur == myId() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['retard', 'statut', 'iciLe', 'livreeLe', 'cashRecu', 'soiree', 'depart']) &&
+         request.resource.data.get('retard', 0) >= resource.data.get('retard', 0) &&
+         ((resource.data.statut == 'assignee' && request.resource.data.statut in ['assignee', 'ici']) ||
+          (resource.data.statut == 'ici' && request.resource.data.statut == 'ici') ||
+          (resource.data.statut == 'ici' && request.resource.data.statut == 'livree' && resource.data.bloque == false)));
+    }
+    // Montants complets et Interac : jamais visibles par les livreurs.
+    match /cmdPrive/{cid} {
+      allow read, write: if isOwner() || isStaff();
     }
 
     // Test en direct (première version).
