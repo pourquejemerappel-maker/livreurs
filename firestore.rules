@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signed() { return request.auth != null; }
+    function userDoc(uid) { return /databases/$(db)/documents/users/$(uid); }
+    function isOwner() { return signed() && exists(userDoc(request.auth.uid)) && get(userDoc(request.auth.uid)).data.role == 'proprio'; }
+    function setupDone() { return exists(/databases/$(db)/documents/public/setup); }
+
+    // Indique seulement si le compte propriétaire existe déjà.
+    match /public/setup {
+      allow read: if true;
+      allow create: if signed() && !setupDone()
+        && request.resource.data.ownerUid == request.auth.uid
+        && getAfter(userDoc(request.auth.uid)).data.role == 'proprio';
+    }
+
+    match /users/{uid} {
+      allow read: if signed() && (request.auth.uid == uid || isOwner());
+      // Seul le tout premier compte (le propriétaire) se crée lui-même.
+      allow create: if signed() && request.auth.uid == uid && !setupDone() && request.resource.data.role == 'proprio';
+      allow update, delete: if isOwner();
+    }
+
+    // Test en direct (première version).
+    match /test/{id} {
+      allow read, write: if signed();
+    }
+  }
+}
