@@ -380,6 +380,17 @@ function renderDirect() {
   const dep = st(DEP(me.mid));
   $('msDep').classList.toggle('hide', me.role !== 'complet');
   $('msDep').textContent = 'Au dépôt : ' + qty(dep);
+  // v26 : en haut d'En direct, ce qui reste à MOUSSE (sur lui) et dans son dépôt — pour le propriétaire et MOUSSE.
+  const bar = $('stockBar');
+  if (bar) {
+    const cid = me.role === 'complet' ? me.mid : Object.keys(team).find((id) => team[id].actif && team[id].role === 'complet');
+    if ((isOwner() || me.role === 'complet') && cid) {
+      const a = st(cid), d = st(DEP(cid)), moi = cid === me.mid;
+      bar.innerHTML = '<div class="sbx"><span class="small">' + (moi ? 'Sur moi' : esc(nomDe(cid)) + ' (sur lui)') + '</span><b>' + (a.L || 0) + ' L · ' + (a.XL || 0) + ' XL</b></div>' +
+        '<div class="sbx"><span class="small">' + (moi ? 'Mon dépôt' : 'Dépôt de ' + esc(nomDe(cid))) + '</span><b>' + (d.L || 0) + ' L · ' + (d.XL || 0) + ' XL</b></div>';
+      bar.classList.remove('hide');
+    } else bar.classList.add('hide');
+  }
   const list = Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).sort((a, b) => ((a.demandeLe && a.demandeLe.seconds) || 0) - ((b.demandeLe && b.demandeLe.seconds) || 0));
   const todo = list.filter((s) => s.statut === 'demande');
   const att = list.filter((s) => s.statut === 'load');
