@@ -1,4 +1,4 @@
-// Version 15 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique (Firebase).
+// Version 16 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -1057,7 +1057,7 @@ function notifCard() {
   if (!delivers()) return '';
   if (notifState === 'ok' || notifState === 'inconnu') return '';
   if (notifState === 'installer') return '<div class="card notif"><b>🔔 Pour recevoir les notifications sur iPhone</b><p class="small" style="margin:6px 0 0">1. Dans Safari, touche Partager → « Sur l’écran d’accueil ».<br>2. Ouvre l’app avec la nouvelle icône, puis active les notifications ici.</p></div>';
-  if (notifState === 'refuse') return '<div class="card notif"><b>🔕 Notifications bloquées</b><p class="small" style="margin:6px 0 0">Va dans Réglages du téléphone → Notifications → Livreurs, et autorise-les.</p></div>';
+  if (notifState === 'refuse') return '<div class="card notif"><b>🔕 Notifications bloquées</b><p class="small" style="margin:6px 0 0">Va dans Réglages du téléphone → Notifications → Gotham, et autorise-les.</p></div>';
   if (notifState === 'impossible') return '<div class="card notif"><b>🔕 Ce téléphone ne peut pas recevoir les notifications de l’app.</b><p class="small" style="margin:6px 0 0">Mets à jour le téléphone (iPhone : iOS 16.4 ou plus).</p></div>';
   return '<div class="card notif"><b>🔔 Reçois tes nouvelles commandes même téléphone verrouillé</b><button class="btn ok" id="notifGo" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
 }
@@ -2015,3 +2015,42 @@ function drawHisto() {
   if ($('hCsv')) $('hCsv').onclick = histoCsv;
   if ($('hShare')) $('hShare').onclick = async () => { try { if (navigator.share) await navigator.share({ text: hs.text }); else { await navigator.clipboard.writeText(hs.text); $('hShare').textContent = 'Copié ✓'; } } catch (e) {} };
 }
+
+// =====================================================================
+// Version 16 : petit chiffre rouge sur l'icône de l'app (écran d'accueil)
+// =====================================================================
+// Livreur : ses commandes à faire + messages du dispatch pas lus + dette à confirmer.
+// Dispatch (propriétaire, MOUSSE, lost autorisé) : check-ins, commandes pas assignées, messages pas lus, cash / stock à confirmer, dettes demandées.
+let badgeLast = -1;
+function badgeCount() {
+  if (!me) return 0;
+  let n = 0;
+  if (chatsDriver() || (delivers() && mySoiree && working(mySoiree))) {
+    n += myCmds.length;
+    const lu = (dm.myLu && dm.myLu.livreur) || 0;
+    if (chatsDriver()) n += dm.mine.filter((m) => m.de === 'dispatch' && tsMs(m.le) > lu).length;
+    n += dt.mine.filter((x) => x.statut === 'attente_livreur' && x.responsable === myMid()).length;
+  }
+  if (isDispatcher()) {
+    n += Object.values(soirees).filter((s) => s.statut === 'demande' && canAuthorize(s)).length;
+    n += Object.values(cmds).filter((c) => c.statut === 'attente').length;
+    const ids = new Set(dm.all.map((m) => m.mid)); ids.forEach((id) => { n += unreadFor(id); });
+    n += rm.toMe.filter((r) => r.statut === 'attente').length + ret.toMe.filter((r) => r.statut === 'attente').length;
+    if (canDette()) n += dt.all.filter((x) => x.statut === 'demande').length;
+  }
+  return n;
+}
+function updBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const n = me ? badgeCount() : 0;
+  if (n === badgeLast) return; badgeLast = n;
+  try { (n > 0 ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {}); } catch (e) {}
+}
+setInterval(updBadge, 4000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // L'app est ouverte : on enlève les notifications déjà vues, le chiffre redevient celui de l'app.
+    if (navigator.serviceWorker) navigator.serviceWorker.getRegistration().then((r) => r && r.getNotifications().then((ns) => ns.forEach((x) => x.close()))).catch(() => {});
+    badgeLast = -1; updBadge();
+  }
+});
