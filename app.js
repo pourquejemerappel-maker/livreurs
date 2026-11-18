@@ -59,6 +59,8 @@ function msg(e) {
 let stops = [];
 let creating = false; // pendant la création du compte propriétaire
 let me = null;        // { uid, nom, role, ... }
+const ss = { list: null, ask: null, busy: false, err: '' }; // sessions (v21)
+let lastPing = 0;
 
 function stopAll() { stops.forEach((f) => f()); stops = []; }
 
@@ -80,8 +82,11 @@ onAuthStateChanged(auth, async (user) => {
   buildTabs();
   show('home');
   // Si le compte est désactivé ou son mot de passe changé, il est déconnecté tout de suite.
+  // Le propriétaire peut aussi déconnecter quelqu'un à distance (Équipe → Sessions) : « forceOut ».
   stops.push(onSnapshot(doc(db, 'users', user.uid), (s) => {
-    if (!s.exists() || s.data().actif === false) { $('lErr').textContent = 'Ce compte n’est plus actif.'; signOut(auth); }
+    if (!s.exists() || s.data().actif === false) { $('lErr').textContent = 'Ce compte n’est plus actif.'; signOut(auth); return; }
+    const fo = s.data().forceOut, depuis = Date.parse((user.metadata && user.metadata.lastSignInTime) || '') || 0;
+    if (fo && fo > depuis) { $('lErr').textContent = 'Tu as été déconnecté. Reconnecte-toi.'; signOut(auth); }
   }, () => {}));
   startLive();
 });
@@ -327,6 +332,7 @@ function startLive() {
   rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
   dt.all = []; dt.mine = []; dt.okRappel = false; setTimeout(startDettes, 0);
   ret.toMe = []; ret.mine = []; ret.f = null; setTimeout(startRetours, 0);
+  ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
@@ -569,20 +575,11 @@ function lookup() {
   if (q.length < 4) { ci.sugs = []; drawSugs(); return; }
   ci.timer = setTimeout(async () => {
     const my = ++ci.seq;
-    try {
-      const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=fr&lat=45.52&lon=-73.6&bbox=-79.8,44.9,-57.1,62.6&q=' + encodeURIComponent(q));
-      const j = await r.json();
-      if (my !== ci.seq) return;
-      const seen = {};
-      ci.sugs = (j.features || []).map((f) => {
-        const p = f.properties || {};
-        const l1 = [p.housenumber, p.street || p.name].filter(Boolean).join(' ');
-        const l2 = [p.city || p.town || p.village || p.district, 'QC', p.postcode].filter(Boolean).join(' ').replace(' QC ', ', QC ');
-        return { l1, l2, lat: f.geometry && f.geometry.coordinates[1], lon: f.geometry && f.geometry.coordinates[0], st: p.state };
-      }).filter((x) => x.l1 && (!x.st || /qu[ée]bec/i.test(x.st))).filter((x) => { const k = x.l1 + x.l2; if (seen[k]) return false; seen[k] = 1; return true; }).slice(0, 5);
-    } catch (e) { ci.sugs = []; }
+    const sg = await photon(q);
+    if (my !== ci.seq) return;
+    ci.sugs = sg;
     drawSugs();
-  }, 350);
+  }, 250);
 }
 function drawSugs() {
   const box = $('ciSugs'); if (!box) return;
@@ -755,9 +752,48 @@ function nfLookup() {
   clearTimeout(nf.timer);
   const q = NF.q.trim();
   if (q.length < 4) { nf.sugs = []; drawNfSugs(); return; }
-  nf.timer = setTimeout(async () => { const my = ++nf.seq; const s = await photon(q); if (my === nf.seq) { nf.sugs = s; drawNfSugs(); } }, 350);
+  nf.timer = setTimeout(async () => { const my = ++nf.seq; const s = await photon(q); if (my === nf.seq) { nf.sugs = s; drawNfSugs(); } }, 250);
+}
+// Adresses : Adresses Québec (gouvernement, gratuit, toutes les adresses civiques) d'abord ;
+// Photon / OpenStreetMap seulement en secours. Les adresses du Grand Montréal passent en premier.
+const MTL = [45.508, -73.587];
+function kmMtl(lat, lon) { const dx = (lon - MTL[1]) * 78.7, dy = (lat - MTL[0]) * 111.2; return Math.sqrt(dx * dx + dy * dy); }
+function fmtCp(c) { c = (c || '').toUpperCase().replace(/\s/g, ''); return c.length === 6 ? c.slice(0, 3) + ' ' + c.slice(3) : c; }
+async function icherche(q) {
+  try {
+    const r = await fetch('https://geoegl.msp.gouv.qc.ca/apis/icherche/geocode?type=adresses&geometry=true&limit=8&q=' + encodeURIComponent(q));
+    const j = await r.json();
+    return (j.features || []).map((f) => {
+      const nom = String((f.properties || {}).nom || ''); const i = nom.lastIndexOf(',');
+      const l1 = (i > 0 ? nom.slice(0, i) : nom).trim();
+      const rest = i > 0 ? nom.slice(i + 1).trim() : '';
+      const m = rest.match(/^(.*?)\s*([A-Z]\d[A-Z]\s?\d[A-Z]\d)?$/i);
+      const ville = m ? m[1].trim() : rest; const cp = m && m[2] ? fmtCp(m[2]) : '';
+      const c = f.geometry && f.geometry.coordinates;
+      return { l1, l2: [ville, 'QC'].filter(Boolean).join(', ') + (cp ? ' ' + cp : ''), lat: c && c[1], lon: c && c[0] };
+    }).filter((x) => x.l1);
+  } catch (e) { return []; }
 }
 async function photon(q) {
+  const ville = /montr[ée]al|laval|longueuil|brossard|[a-z]\d[a-z]\s?\d[a-z]\d/i.test(q);
+  const [a, b] = await Promise.all([icherche(q), ville ? Promise.resolve([]) : icherche(q + ' Montréal')]);
+  const near = (x) => !!(x.lat && kmMtl(x.lat, x.lon) < 40);
+  let all = b.concat(a);
+  if (!all.some(near)) all = all.concat(await photonRaw(q)); // secours seulement
+  const seen = {};
+  all = all.filter((x) => { const k = (x.l1 + '|' + x.l2).toLowerCase(); if (seen[k]) return false; seen[k] = 1; return true; });
+  // Classement : les mots tapés retrouvés dans la rue, puis Montréal, puis le Grand Montréal, puis l'ordre reçu.
+  const nrm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const mots = nrm(q).split(/[^a-z0-9]+/).filter((w) => w.length >= 3 || /^\d+$/.test(w));
+  all.forEach((x, i) => {
+    const l1 = nrm(x.l1);
+    x._i = i; x._m = mots.filter((w) => l1.indexOf(w) >= 0).length;
+    x._n = /montreal/.test(nrm(x.l2)) ? 2 : near(x) ? 1 : 0;
+  });
+  all.sort((x, y) => (y._m - x._m) || (y._n - x._n) || (x._i - y._i));
+  return all.slice(0, 5).map((x) => ({ l1: x.l1, l2: x.l2, lat: x.lat, lon: x.lon }));
+}
+async function photonRaw(q) {
   try {
     const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=fr&lat=45.52&lon=-73.6&bbox=-79.8,44.9,-57.1,62.6&q=' + encodeURIComponent(q));
     const j = await r.json(); const seen = {};
@@ -766,7 +802,7 @@ async function photon(q) {
       const l1 = [p.housenumber, p.street || p.name].filter(Boolean).join(' ');
       const l2 = [p.city || p.town || p.village || p.district, 'QC', p.postcode].filter(Boolean).join(' ').replace(' QC ', ', QC ');
       return { l1, l2, lat: f.geometry && f.geometry.coordinates[1], lon: f.geometry && f.geometry.coordinates[0], st: p.state };
-    }).filter((x) => x.l1 && (!x.st || /qu[ée]bec/i.test(x.st))).filter((x) => { const k = x.l1 + x.l2; if (seen[k]) return false; seen[k] = 1; return true; }).slice(0, 5);
+    }).filter((x) => x.l1 && (!x.st || /qu[ée]bec/i.test(x.st))).filter((x) => { const k = x.l1 + x.l2; if (seen[k]) return false; seen[k] = 1; return true; })
   } catch (e) { return []; }
 }
 function drawNfSugs() {
@@ -2133,4 +2169,80 @@ function bindFix(ids) {
     try { await setStocks([...tous].filter((id) => { const m = st(id); return (m.L || 0) || (m.XL || 0); }).map((id) => [id, 0, 0])); } catch (e) { $('fixErr').textContent = msg(e); }
     renderStock();
   };
+}
+
+// =====================================================================
+// Version 21 : sessions connectées (propriétaire seulement) — nom, appareil, adresse IP, « Déconnecter »
+// =====================================================================
+// Chaque téléphone ouvert envoie un signe de vie au programme « notifier » (toutes les 2 min, app visible).
+// Le programme écrit sessions/{uid}_{appareil} avec l'adresse IP vue par le serveur. Seul le propriétaire lit.
+function devId() {
+  try { let d = localStorage.getItem('gDev'); if (!d) { d = Math.random().toString(36).slice(2, 12); localStorage.setItem('gDev', d); } return d; }
+  catch (e) { return 'x' + String(navigator.userAgent.length); }
+}
+function appareil() {
+  const ua = navigator.userAgent || '';
+  const a = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? (((ua.match(/Android [^;]*;\s*([^;)]+)/) || [])[1] || 'Android').replace(/\s*Build.*$/, '').trim()) :
+    /Macintosh/.test(ua) ? (navigator.maxTouchPoints > 1 ? 'iPad' : 'Mac') : /Windows/.test(ua) ? 'PC Windows' : /CrOS/.test(ua) ? 'Chromebook' : /Linux/.test(ua) ? 'Linux' : 'Appareil';
+  const b = /Edg/.test(ua) ? 'Edge' : /CriOS|Chrome/.test(ua) ? 'Chrome' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /Safari/.test(ua) ? 'Safari' : '';
+  const app = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
+  return a + (app ? ' · app Gotham' : b ? ' · ' + b : '');
+}
+async function callNotif(body) {
+  const t = await auth.currentUser.getIdToken();
+  const r = await fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(await r.text().catch(() => 'erreur'));
+  return r.json();
+}
+function ping(force) {
+  if (!me || !auth.currentUser || document.visibilityState !== 'visible') return;
+  if (!force && Date.now() - lastPing < 60000) return;
+  lastPing = Date.now();
+  callNotif({ type: 'presence', dev: devId(), appareil: appareil() }).catch(() => {});
+}
+setInterval(() => ping(true), 120000);
+document.addEventListener('visibilitychange', () => ping(false));
+setInterval(() => { if (curTab === 'equipe') drawSess(); }, 60000);
+function startSessions() {
+  setTimeout(() => ping(true), 1500);
+  if (!isOwner()) return;
+  stops.push(onSnapshot(collection(db, 'sessions'), (qs) => { ss.list = []; qs.forEach((d) => ss.list.push(Object.assign({ id: d.id }, d.data()))); drawSess(); }, (e) => { ss.err = msg(e); drawSess(); }));
+}
+function ilYa(ms) {
+  const m = Math.floor((Date.now() - ms) / 60000);
+  if (m < 3) return '<span style="color:#16a34a;font-weight:600">● en ligne</span>';
+  if (m < 60) return 'vu il y a ' + m + ' min';
+  if (m < 1440) return 'vu il y a ' + Math.floor(m / 60) + ' h';
+  return 'vu il y a ' + Math.floor(m / 1440) + ' j';
+}
+function drawSess() {
+  let box = $('sessCard');
+  if (!box) { const a = $('archCard'); if (!a) return; box = document.createElement('div'); box.id = 'sessCard'; a.parentNode.insertBefore(box, a); }
+  if (!isOwner()) { box.innerHTML = ''; return; }
+  const L = (ss.list || []).filter((x) => Date.now() - tsMs(x.vu) < 7 * 86400000).sort((x, y) => tsMs(y.vu) - tsMs(x.vu));
+  let h = '<div class="card"><div class="label">🖥 Sessions connectées</div>';
+  if (ss.list == null) h += '<div class="small">Chargement…</div>';
+  else if (!L.length) h += '<div class="small">Personne pour l’instant. (Chaque téléphone apparaît ici quand il ouvre l’app.)</div>';
+  else h += L.map((x) => {
+    const moi = x.uid === me.uid;
+    return '<div class="q" style="display:flex;gap:8px;align-items:center;justify-content:space-between">' +
+      '<div><b>' + esc(x.nom || x.mid || '?') + '</b>' + (moi ? ' <span class="small">(toi)</span>' : '') +
+      '<div class="small">' + esc(x.appareil || 'Appareil') + '</div>' +
+      '<div class="small">IP ' + esc(x.ip || '?') + ' · ' + ilYa(tsMs(x.vu)) + '</div></div>' +
+      (moi ? '' : '<button class="btn ' + (ss.ask === x.uid ? 'red' : 'ghost') + ' sm" data-out="' + esc(x.uid) + '" style="width:auto;white-space:nowrap">' + (ss.ask === x.uid ? 'Sûr ? Appuie encore' : 'Déconnecter') + '</button>') +
+      '</div>';
+  }).join('');
+  h += '<div class="small" style="margin-top:6px">« Déconnecter » ferme l’app sur tous ses appareils. Il pourra se reconnecter avec son mot de passe (change-le ou désactive la personne si besoin).</div>';
+  box.innerHTML = h + '<div class="err" id="sessErr">' + esc(ss.err || '') + '</div></div>';
+  box.querySelectorAll('[data-out]').forEach((b) => {
+    b.onclick = async () => {
+      const uid = b.dataset.out;
+      if (ss.ask !== uid) { ss.ask = uid; ss.err = ''; return drawSess(); }
+      if (ss.busy) return;
+      ss.busy = true; b.disabled = true; b.textContent = '…';
+      try { await callNotif({ type: 'deconnecter', uid }); ss.ask = null; ss.err = ''; }
+      catch (e) { ss.err = 'Ça n’a pas marché : ' + (e.message || e); }
+      ss.busy = false; drawSess();
+    };
+  });
 }
