@@ -128,6 +128,30 @@ service cloud.firestore {
       allow read, write: if isOwner() || isStaff();
     }
 
+    // ---------- Lien de suivi du client (suivi.html#code) ----------
+    // Le code secret dans le lien est le seul accès : on peut lire un suivi si on connaît son code, jamais la liste.
+    function suiviDoc(t) { return get(/databases/$(db)/documents/suivi/$(t)).data; }
+    match /suivi/{t} {
+      allow get: if true;
+      allow list: if false;
+      allow create, delete: if isOwner() || isStaff();
+      allow update: if isOwner() || isStaff() ||
+        (signed() && resource.data.luid == request.auth.uid &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['eta', 'statut', 'actif']));
+      // Messages : le client (sans compte) et le livreur de cette commande, seulement tant que c'est ouvert.
+      match /msgs/{m} {
+        allow read: if suiviDoc(t).actif == true || isOwner() || isStaff();
+        allow create: if suiviDoc(t).actif == true &&
+          request.resource.data.keys().hasOnly(['de', 'txt', 'img', 'le']) &&
+          request.resource.data.le == request.time &&
+          request.resource.data.txt is string && request.resource.data.txt.size() <= 300 &&
+          (!('img' in request.resource.data) || (request.resource.data.img is string && request.resource.data.img.size() < 400000)) &&
+          (request.resource.data.de == 'client' ||
+           (request.resource.data.de == 'livreur' && signed() && suiviDoc(t).luid == request.auth.uid));
+        allow delete: if isOwner() || isStaff() || (signed() && suiviDoc(t).luid == request.auth.uid);
+      }
+    }
+
     // Un document par téléphone qui accepte les notifications (lu seulement par le programme « notifier »).
     match /tokens/{t} {
       allow create, update: if active() && request.resource.data.mid == myId();

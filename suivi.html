@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f4f4f6">
+<meta name="robots" content="noindex">
+<title>Ta livraison</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:#f4f4f6;color:#111;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif}
+  body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  .wrap{max-width:520px;margin:0 auto;padding:16px 14px 30px}
+  .card{background:#fff;border:1px solid #e3e3e8;border-radius:16px;padding:14px;margin-bottom:12px}
+  .small{font-size:13px;color:#666}
+  .big{font-size:34px;font-weight:800;margin:4px 0}
+  .bar{height:8px;background:#e6e6ea;border-radius:99px;overflow:hidden;margin:10px 0 2px}
+  .bar div{height:100%;background:#2fbf71;transition:width .6s}
+  .feed{max-height:46vh;overflow:auto}
+  .m{padding:9px 12px;border-radius:14px;margin:6px 0;max-width:85%;font-size:15px;line-height:1.35;word-wrap:break-word}
+  .m img{display:block;max-width:100%;border-radius:10px;margin-top:4px}
+  .them{background:#ececf0}
+  .me{background:#2f6fed;color:#fff;margin-left:auto}
+  .sys{background:#e9f8ef;color:#167a43;font-weight:700}
+  .t{font-size:11px;opacity:.6;margin-top:3px}
+  .quick{display:flex;gap:8px;margin-bottom:8px}
+  .quick button{flex:1;padding:12px 6px;border-radius:12px;border:1px solid #ddd;background:#f2f2f5;font-weight:700;font-size:15px;color:#111;font-family:inherit}
+  .row{display:flex;gap:8px}
+  .row input{flex:1;padding:12px;border-radius:12px;border:1px solid #ddd;font-size:16px;font-family:inherit;outline:none}
+  .row button,.row label{padding:0 14px;border-radius:12px;border:none;background:#2f6fed;color:#fff;font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;font-family:inherit;cursor:pointer}
+  .row label{background:#e9e9ee;color:#111;font-size:20px}
+  .hide{display:none!important}
+  .err{color:#d33;font-size:13px;min-height:4px}
+  .center{text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card" id="top"><div class="small">Ta livraison</div><div class="big" id="eta">…</div><div class="small" id="stat">Chargement…</div><div class="bar"><div id="prog" style="width:10%"></div></div></div>
+  <div class="card hide" id="chat">
+    <div class="small" style="margin-bottom:4px">Messages avec ton livreur <span style="opacity:.7">(ton numéro reste privé)</span></div>
+    <div class="feed" id="feed"></div>
+    <div class="quick" style="margin-top:8px"><button data-q="👍 J’arrive">👍 J’arrive</button><button data-q="⏳ 2 minutes">⏳ 2 minutes</button></div>
+    <div class="row"><input id="txt" maxlength="300" placeholder="Écris un message…"><label title="Photo">📷<input type="file" id="pic" accept="image/*" class="hide"></label><button id="send">➤</button></div>
+    <div class="err" id="err"></div>
+  </div>
+  <div class="card hide center" id="done"><div class="big">✓</div><div>Livré. Merci !</div><div class="small" style="margin-top:6px">Cette page est maintenant fermée.</div></div>
+  <div class="card hide center" id="bad"><div>Ce lien n’est plus valide.</div></div>
+</div>
+<script type="module">
+// Page du client : suit sa livraison et parle au livreur sans échanger de numéros.
+// Le lien contient un code secret (#…) : seul celui qui a le lien voit cette livraison.
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getFirestore, doc, onSnapshot, collection, query, orderBy, limit, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+const $ = (i) => document.getElementById(i);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const tok = (location.hash || '').slice(1).replace(/[^A-Za-z0-9]/g, '');
+if (tok.length < 16) { $('top').classList.add('hide'); $('bad').classList.remove('hide'); throw new Error('lien'); }
+
+// La configuration Firebase est lue dans app.js (même site) pour ne pas la recopier.
+const src = await (await fetch('app.js', { cache: 'no-cache' })).text();
+const cfg = {};
+['apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId'].forEach((k) => { const m = src.match(new RegExp(k + ":\\s*'([^']+)'")); if (m) cfg[k] = m[1]; });
+const db = getFirestore(initializeApp(cfg));
+const ref = doc(db, 'suivi', tok);
+let actif = true, total = null;
+
+let last = null;
+onSnapshot(ref, (s) => {
+  if (!s.exists()) { $('top').classList.add('hide'); $('chat').classList.add('hide'); $('bad').classList.remove('hide'); return; }
+  last = s.data(); paint(last);
+}, () => { $('top').classList.add('hide'); $('bad').classList.remove('hide'); });
+function paint(d) {
+  actif = d.actif === true;
+  if (!actif || d.statut === 'livree' || d.statut === 'annulee') {
+    $('top').classList.add('hide'); $('chat').classList.add('hide');
+    if (d.statut === 'annulee') { $('bad').classList.remove('hide'); $('bad').firstElementChild.textContent = 'Cette commande a été annulée.'; }
+    else $('done').classList.remove('hide');
+    return;
+  }
+  $('chat').classList.toggle('hide', d.statut === 'attente');
+  if (d.statut === 'ici') { $('eta').textContent = 'Arrivé'; $('stat').textContent = 'Ton livreur est devant. Sors le rejoindre 🙂'; $('prog').style.width = '100%'; }
+  else if (d.statut === 'assignee' && d.eta) {
+    const min = Math.max(1, Math.round((d.eta - Date.now()) / 60000));
+    if (total == null) total = min;
+    $('eta').textContent = '~' + min + ' min';
+    $('stat').textContent = 'Ton livreur est en route (arrivée vers ' + new Date(d.eta).getHours() + ':' + String(new Date(d.eta).getMinutes()).padStart(2, '0') + ').';
+    $('prog').style.width = Math.min(95, Math.max(10, 100 - (min / Math.max(total, min)) * 90)) + '%';
+  } else { $('eta').textContent = 'Reçue'; $('stat').textContent = 'Ta commande est reçue, on te trouve un livreur.'; $('prog').style.width = '10%'; }
+}
+
+onSnapshot(query(collection(db, 'suivi', tok, 'msgs'), orderBy('le', 'asc'), limit(60)), (qs) => {
+  const box = $('feed'); const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  let h = '';
+  qs.forEach((m) => {
+    const d = m.data(); const t = d.le && d.le.toDate ? d.le.toDate() : new Date();
+    const cls = d.de === 'client' ? 'me' : /devant|derri|côté|arrivé/i.test(d.txt || '') ? 'sys' : 'them';
+    h += '<div class="m ' + cls + '">' + esc(d.txt || '') + (d.img ? '<img src="' + esc(d.img) + '" alt="photo">' : '') + '<div class="t">' + (d.de === 'client' ? 'Toi' : 'Livreur') + ' · ' + t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') + '</div></div>';
+  });
+  box.innerHTML = h || '<div class="small">Ton livreur peut t’écrire ici quand il arrive.</div>';
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}, () => {});
+
+async function send(txt, img) {
+  if (!actif || (!txt && !img)) return;
+  $('err').textContent = '';
+  try { const d = { de: 'client', txt: String(txt || '').slice(0, 300), le: serverTimestamp() }; if (img) d.img = img; await addDoc(collection(db, 'suivi', tok, 'msgs'), d); }
+  catch (e) { $('err').textContent = 'Message pas envoyé. Réessaie.'; }
+}
+$('send').onclick = () => { const v = $('txt').value.trim(); if (v) { send(v); $('txt').value = ''; } };
+$('txt').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('send').click(); });
+document.querySelectorAll('[data-q]').forEach((b) => { b.onclick = () => send(b.dataset.q); });
+// Photo : réduite sur le téléphone avant l'envoi (petite et rapide).
+$('pic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { send('📷 Photo', await shrink(f)); } catch (x) { $('err').textContent = 'Photo impossible.'; } };
+function shrink(file) {
+  return new Promise((ok, ko) => {
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => { const max = 900, k = Math.min(1, max / Math.max(img.width, img.height)); const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); let q = 0.7, out = c.toDataURL('image/jpeg', q); while (out.length > 350000 && q > 0.3) { q -= 0.1; out = c.toDataURL('image/jpeg', q); } ok(out); };
+    img.onerror = ko; img.src = url;
+  });
+}
+setInterval(() => { if (last) paint(last); }, 30000); // rafraîchit le compte à rebours
+</script>
+</body>
+</html>
