@@ -3,7 +3,12 @@ service cloud.firestore {
   match /databases/{db}/documents {
     function signed() { return request.auth != null; }
     function userDoc(uid) { return /databases/$(db)/documents/users/$(uid); }
-    function isOwner() { return signed() && exists(userDoc(request.auth.uid)) && get(userDoc(request.auth.uid)).data.role == 'proprio'; }
+    function meExists() { return signed() && exists(userDoc(request.auth.uid)); }
+    function me() { return get(userDoc(request.auth.uid)).data; }
+    function active() { return meExists() && me().actif == true; }
+    function isOwner() { return active() && me().role == 'proprio'; }
+    function isStaff() { return active() && (me().role == 'complet' || me().role == 'limite'); }
+    function isMember(id) { return active() && me().mid == id; }
     function setupDone() { return exists(/databases/$(db)/documents/public/setup); }
 
     // Indique seulement si le compte propriétaire existe déjà.
@@ -14,11 +19,31 @@ service cloud.firestore {
         && getAfter(userDoc(request.auth.uid)).data.role == 'proprio';
     }
 
+    // Accès de connexion : un document par compte de connexion.
     match /users/{uid} {
       allow read: if signed() && (request.auth.uid == uid || isOwner());
-      // Seul le tout premier compte (le propriétaire) se crée lui-même.
-      allow create: if signed() && request.auth.uid == uid && !setupDone() && request.resource.data.role == 'proprio';
+      // Le tout premier compte (le propriétaire) se crée lui-même ; ensuite seul le propriétaire crée les accès.
+      allow create: if (signed() && request.auth.uid == uid && !setupDone() && request.resource.data.role == 'proprio') || isOwner();
       allow update, delete: if isOwner();
+    }
+
+    // Nom de connexion → adresse interne. Lisible un par un (pour se connecter), jamais en liste.
+    match /logins/{id} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if isOwner();
+    }
+
+    // L'équipe : visible par le propriétaire et les dispatchs ; chacun voit sa propre fiche.
+    match /members/{id} {
+      allow read: if isOwner() || isStaff() || isMember(id);
+      allow write: if isOwner();
+    }
+
+    // Paie par livraison : seulement le propriétaire et la personne elle-même.
+    match /paies/{id} {
+      allow read: if isOwner() || isMember(id);
+      allow write: if isOwner();
     }
 
     // Test en direct (première version).

@@ -35,6 +35,29 @@
   .big{font-size:56px;font-weight:800;text-align:center;margin:8px 0}
   .pill{display:inline-block;font-size:11px;font-weight:800;padding:4px 9px;border-radius:999px;background:rgba(47,191,113,.18);color:var(--cash)}
   .center{text-align:center}
+  .tabs{display:flex;gap:6px;margin-bottom:12px}
+  .tabs button{flex:1;padding:10px;background:var(--card);border:1px solid var(--line);color:var(--muted);font-size:14px}
+  .tabs button.on{background:var(--accent);color:#0b0b0d}
+  .btn.red{background:transparent;border:1px solid var(--danger);color:var(--danger)}
+  .row{display:flex;align-items:center;justify-content:space-between;padding:11px 2px;border-top:1px solid var(--line);cursor:pointer}
+  .row:first-child{border-top:none}
+  .row .n{font-weight:700}
+  .row .s{font-size:12px;color:var(--muted);margin-top:2px}
+  .row .pill{margin-left:6px}
+  .p-complet{background:rgba(127,168,255,.18);color:var(--blue)}
+  .p-limite{background:rgba(245,179,1,.16);color:var(--interac)}
+  .p-livreur{background:rgba(47,191,113,.16);color:var(--cash)}
+  .p-off{background:rgba(255,90,95,.15);color:var(--danger)}
+  .off .n{color:var(--muted);text-decoration:line-through}
+  .seg{display:flex;gap:6px;margin-bottom:8px}
+  .seg button{flex:1;padding:10px 4px;background:var(--card2);border:1px solid var(--line);color:var(--muted);font-size:13px;border-radius:10px}
+  .seg button.on{border-color:var(--accent);color:var(--text);background:#2a2a30}
+  .chk{display:flex;align-items:center;gap:10px;font-size:14px;margin:4px 0 10px}
+  .chk input{width:20px;height:20px;margin:0}
+  .sheet{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center;z-index:5}
+  .sheet .card{width:100%;max-width:520px;border-radius:18px 18px 0 0;margin:0;max-height:90vh;overflow:auto;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .give{background:var(--card2);border-radius:10px;padding:10px;font-size:14px;line-height:1.5;white-space:pre-line;margin-bottom:8px}
+  .two{display:flex;gap:8px}.two>*{flex:1}
 </style>
 </head>
 <body>
@@ -62,10 +85,12 @@
   </section>
 
   <section id="home" class="hide">
+    <div class="tabs hide" id="tabs"><button data-t="accueil" class="on">Accueil</button><button data-t="equipe">Équipe</button></div>
+    <div id="tabAccueil">
     <div class="card center">
       <span class="pill" id="role"></span>
       <h2 id="hello" style="margin:10px 0 4px"></h2>
-      <p class="small">Première version : la connexion et la mise à jour en direct. Les vraies fonctions arrivent étape par étape.</p>
+      <p class="small">Connexion, mise à jour en direct et équipe. Les vraies fonctions arrivent étape par étape.</p>
     </div>
     <div class="card center">
       <div class="label">Test en direct</div>
@@ -77,9 +102,17 @@
       <b style="color:var(--text)">Installer sur iPhone :</b> dans Safari, Partager → « Sur l'écran d'accueil ».<br>
       <b style="color:var(--text)">Sur Android :</b> menu ⋮ → « Installer l'application ».
     </div>
+    </div>
+    <div id="tabEquipe" class="hide">
+      <button class="btn ok" id="addBtn" style="margin-bottom:12px">＋ Ajouter quelqu'un</button>
+      <div class="card"><div class="label">Dispatchs</div><div id="lDisp"></div></div>
+      <div class="card"><div class="label">Livreurs</div><div id="lLiv"></div></div>
+      <p class="small">Touche une personne pour changer son rôle, sa paie ou son mot de passe, ou pour la désactiver.</p>
+    </div>
   </section>
+  <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js"></script>
+<script type="module" src="app.js?v=2"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
