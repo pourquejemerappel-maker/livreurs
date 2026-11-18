@@ -90,6 +90,16 @@ service cloud.firestore {
         ((id == myId() && s1.get('rechargeRep', '') == 'ok') || (id == s0.recharge.de && s1.get('rechargeRep', '') == 'non')) &&
         nv('L') == cur('L') + s0.recharge.L && nv('XL') == cur('XL') + s0.recharge.XL;
     }
+    // Stock donné à un livreur (dons) : il accepte (son stock monte) ou refuse (le stock retourne à la source).
+    function donOk(id) {
+      let did = request.resource.data.get('via', '');
+      let p = /databases/$(db)/documents/dons/$(did);
+      let d0 = get(p).data;
+      let d1 = getAfter(p).data;
+      return active() && did != '' && d0.vers == myId() && d0.statut == 'attente' &&
+        ((id == myId() && d1.statut == 'ok') || (id == d0.de && d1.statut == 'non')) &&
+        nv('L') == cur('L') + d0.L && nv('XL') == cur('XL') + d0.XL;
+    }
     // Livraison : le stock du livreur baisse exactement de la commande qu'il marque « livrée ».
     function livraisonOk(id) {
       let cid = request.resource.data.get('cmd', '');
@@ -101,7 +111,7 @@ service cloud.firestore {
     }
     match /stocks/{id} {
       allow read: if isOwner() || isComplet() || isMember(id);
-      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id) || livraisonOk(id) || rechargeOk(id);
+      allow create, update: if isOwner() || (isComplet() && positif()) || limiteOk(id) || livreurOk(id) || livraisonOk(id) || rechargeOk(id) || donOk(id);
     }
 
     // Historique du stock : on ajoute, on ne modifie jamais.
@@ -272,11 +282,12 @@ service cloud.firestore {
     }
 
     // Stock donné par le propriétaire à MOUSSE (sur lui ou au dépôt) : MOUSSE l'accepte ou le refuse.
+    // v24 : aussi le propriétaire ou MOUSSE → un livreur, qui accepte ou refuse.
     match /dons/{id} {
-      allow read: if isOwner() || isComplet();
-      allow create: if isOwner() && request.resource.data.statut == 'attente';
+      allow read: if isOwner() || isComplet() || (active() && resource.data.vers == myId());
+      allow create: if (isOwner() || isComplet()) && request.resource.data.statut == 'attente';
       allow update: if isOwner() ||
-        (isComplet() && resource.data.statut == 'attente' && request.resource.data.statut in ['ok', 'non'] &&
+        ((isComplet() || (active() && resource.data.vers == myId())) && resource.data.statut == 'attente' && request.resource.data.statut in ['ok', 'non'] &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut', 'repLe']));
       allow delete: if isOwner();
     }
