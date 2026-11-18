@@ -1,4 +1,4 @@
-// Version 11 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash (Firebase).
+// Version 12 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -322,6 +322,7 @@ function startLive() {
   finState.team = null; finState.me = null; setTimeout(initFin, 0);
   dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; setTimeout(startDm, 0);
   rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
+  dt.all = []; dt.mine = []; dt.okRappel = false; setTimeout(startDettes, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
@@ -500,7 +501,7 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
-  if (document.activeElement && (document.activeElement.id === 'mcCash' || document.activeElement.id === 'chatTxt')) return; // ne pas effacer ce qu'il tape
+  if (document.activeElement && ['mcCash', 'chatTxt', 'dtAmt', 'dtNote'].includes(document.activeElement.id)) return; // ne pas effacer ce qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
   if (!s) {
@@ -886,8 +887,8 @@ function renderQueues() {
         '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL · ' + (c.statut === 'ici' ? '<b style="color:var(--cash)">sur place</b>' : 'arrivée ~' + hm(plan[i])) + (c.retard ? ' ' + lateTag(c.retard) : '') + (c.note ? '<br>📝 ' + esc(c.note) : '') + '</div>' +
         '<div class="seg" style="margin:0">' + (c.bloque ? '<button class="on" data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') +
         '<button data-a="msg" data-id="' + c.id + '">💬 Client</button>' +
-        (menuOpen === c.id ? '<button data-a="unassign" data-id="' + c.id + '">Retirer</button><button data-a="cancel" data-id="' + c.id + '">Annuler</button>' : '<button data-a="menu" data-id="' + c.id + '" style="flex:0 0 46px">⋯</button>') + '</div>' +
-        (msgOpen === c.id ? msgBox(c, plan[i]) : '') + '</div>';
+        (menuOpen === c.id ? (!c.dette && canDette() ? '<button data-a="dette" data-id="' + c.id + '">📒 Dette</button>' : '') + '<button data-a="unassign" data-id="' + c.id + '">Retirer</button><button data-a="cancel" data-id="' + c.id + '">Annuler</button>' : '<button data-a="menu" data-id="' + c.id + '" style="flex:0 0 46px">⋯</button>') + '</div>' +
+        (msgOpen === c.id ? msgBox(c, plan[i]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') + '</div>';
     });
     h += '</div>';
   });
@@ -899,6 +900,7 @@ function renderQueues() {
     (reassign && reassign.id === c.id ? (reassign.opts === 'calc' ? '<div class="small">Calcul…</div>' : (reassign.opts || []).map((o, i) => optLine(o, i === 0 && o.ok, i)).join('') || '<div class="small">Aucun livreur en service.</div>') :
       '<div class="seg" style="margin:0"><button class="on" data-a="assign" data-id="' + c.id + '">Assigner</button>' + (c.bloque ? '<button data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') + '<button data-a="cancel" data-id="' + c.id + '">Annuler</button></div>') + '</div>').join('');
   document.querySelectorAll('#service [data-a], #freeList [data-a]').forEach((el) => { el.onclick = () => qAct(el.dataset.a, el.dataset.id); });
+  bindDetteDisp();
   document.querySelectorAll('#freeList [data-o]').forEach((el) => { el.onclick = () => assignExisting(reassign.id, reassign.opts[+el.dataset.o]); });
   document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
 }
@@ -911,6 +913,7 @@ async function qAct(a, id) {
   const c = cmds[id]; if (!c) return;
   try {
     if (a === 'menu') { menuOpen = id; return renderQueues(); }
+    if (a === 'dette') { menuOpen = null; dt.disp = { id, resp: (cmds[id] && cmds[id].livreur) || myMid(), note: '' }; return renderQueues(); }
     if (a === 'msg') { msgOpen = msgOpen === id ? null : id; return renderQueues(); }
     if (a === 'paid') {
       const b = writeBatch(db);
@@ -968,8 +971,8 @@ function myOrdersHtml(s) {
     '<div class="chips"><span class="chip">' + c.L + ' × L</span><span class="chip">' + c.XL + ' × XL</span><span class="chip eta">' + (c.statut === 'ici' ? 'Sur place' : 'Arrivée ~' + hm(plan[0]) + (c.retard ? ' (+' + c.retard + ' min)' : ' si tu pars maintenant')) + '</span></div>' +
     banner + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') + chatHtml(c) + '<div class="err" id="mcErr"></div>';
   if (c.statut !== 'ici') h += '<div class="two"><button class="btn ghost" id="mcLate" style="color:var(--danger);border-color:var(--danger)">⏱ +5 min</button><button class="btn" id="mcHere">Je suis arrivé</button></div>';
-  else if (c.bloque) h += '<button class="btn" disabled>🔒 Attends l’Interac</button>';
-  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + c.encaisser + '">' : '') + '<button class="btn ok big" id="mcDone">✓ Livrée</button>';
+  else if (c.bloque) h += '<button class="btn" disabled>🔒 Attends l’Interac</button>' + detteDoor(c);
+  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + Math.max(0, c.encaisser - detteSur(c)) + '">' : '') + '<button class="btn ok big" id="mcDone">✓ Livrée</button>' + (c.encaisser > 0 ? detteDoor(c) : '');
   h += '</div>';
   if (myCmds.length > 1) {
     h += '<div class="card"><div class="label">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + '</span>' +
@@ -986,6 +989,7 @@ function bindMyOrders(s) {
   const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
   if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
   if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit(); });
+  bindDetteDoor(c);
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
     const b = writeBatch(db);
@@ -1223,14 +1227,14 @@ function teamText(rows, d) {
   const T = { cash: 0, n: 0, reste: 0 };
   rows.forEach((r) => { T.cash += r.cash; T.n += r.n; T.reste += r.reste;
     t += '\n' + r.nom + ' : cash ' + money(r.cash) + ' · ' + r.n + ' livraison' + (r.n > 1 ? 's' : '') + ' · reste ' + (r.paieOk ? money(r.reste) : '? (paie inconnue)') +
-      (r.tips ? ' (pourboires ' + money(r.tips) + ')' : '') + (r.manque ? ' ⚠️ manque ' + money(r.manque) : ''); });
+      (r.tips ? ' (pourboires ' + money(r.tips) + ')' : '') + (r.manque ? ' ⚠️ manque ' + money(r.manque) : '') + (r.dette ? ' 📒 dette ' + money(r.dette) : ''); });
   t += '\n\nTOTAL : cash ' + money(T.cash) + ' · ' + T.n + ' livraison' + (T.n > 1 ? 's' : '') + ' · reste ' + money(T.reste);
   return t;
 }
 function myText(r, d) {
   if (!r) return 'Soirée du ' + jourTxt(d) + '\nAucune livraison.';
   return 'Ma soirée du ' + jourTxt(d) + '\n\nTotal cash : ' + money(r.cash) + '\nLivraisons : ' + r.n + (r.paieOk ? ' (paie ' + money(r.paie) + ')' : '') +
-    (r.frais ? '\nFrais : ' + money(r.frais) : '') + (r.tips ? '\nPourboires : ' + money(r.tips) : '') + (r.manque ? '\n⚠️ Manque : ' + money(r.manque) : '') +
+    (r.frais ? '\nFrais : ' + money(r.frais) : '') + (r.tips ? '\nPourboires : ' + money(r.tips) : '') + (r.manque ? '\n⚠️ Manque : ' + money(r.manque) : '') + (r.dette ? '\n📒 Dette (paie plus tard) : ' + money(r.dette) : '') +
     '\nReste à remettre : ' + (r.paieOk ? money(r.reste) : '?');
 }
 const finState = { team: null, me: null };
@@ -1241,11 +1245,12 @@ async function loadFin(which) {
     if (which === 'team') {
       const qs = await getDocs(query(collection(db, 'commandes'), where('livreeLe', '>=', d)));
       qs.forEach((x) => { const c = x.data(); if (c.statut === 'livree') list.push(c); });
-      finState.team = teamText(sumUp(list, await remisDepuis(d)), d);
+      const dts = await dettesDepuis(d);
+      finState.team = teamText(withDettes(sumUp(list, await remisDepuis(d)), dts), d);
     } else {
       const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', '==', 'livree')));
       qs.forEach((x) => { const c = x.data(); const t = c.livreeLe && c.livreeLe.toDate ? c.livreeLe.toDate() : null; if (t && t >= d) list.push(c); });
-      finState.me = myText(sumUp(list, await remisDepuis(d, me.mid))[0], d);
+      finState.me = myText(withDettes(sumUp(list, await remisDepuis(d, me.mid)), await dettesDepuis(d, me.mid))[0], d);
     }
   } catch (e) { finState[which] = 'Erreur : ' + msg(e); }
   drawFin(which);
@@ -1503,6 +1508,7 @@ async function drawPop() {
   const att = rm.mine.filter((r) => r.statut === 'attente');
   let h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> sur toi' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') : '') + '</div>';
   if (k.recu) h += '<div class="small">dont ' + money(k.recu) + ' reçus des livreurs</div>';
+  dt.mine.filter((x) => x.statut === 'ouverte' && x.responsable === myMid()).forEach((x) => { h += '<div class="small">📒 Ta dette : ' + money(x.montant) + ' (' + esc(x.client) + ')</div>'; });
   att.forEach((r) => { h += '<div class="small" style="margin-top:4px">⏳ ' + money(r.montant) + ' → ' + esc(r.versNom) + ' : en attente <button class="linkbtn" data-ann="' + r.id + '">Annuler</button></div>'; });
   rm.mine.filter((r) => r.statut !== 'attente').slice(-3).forEach((r) => { h += '<div class="small">' + (r.statut === 'recue' ? '✓ ' : '✗ ') + money(r.montant) + ' → ' + esc(r.versNom) + (r.statut === 'recue' ? ' (reçu)' : ' (pas reçu)') + '</div>'; });
   if (!rm.form) h += '<button class="linkbtn" id="popGive" style="margin-top:6px">↗ Donner du cash ' + (me.role === 'complet' ? 'au propriétaire' : me.role === 'limite' ? 'à MOUSSE' : 'au dispatch') + '</button>';
@@ -1544,3 +1550,182 @@ function drawRemCard() {
   box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => updRemise(b.dataset.rno, 'refusee'); });
 }
 function updRemise(id, statut) { writeBatch(db).update(doc(db, 'remises', id), { statut, recueLe: serverTimestamp() }).commit().catch((e) => alertBar(msg(e))); }
+
+// =====================================================================
+// Version 12 : dettes (« le client paie plus tard »), surtout pour les Interac pas reçus
+// =====================================================================
+// dettes/{id} : { client, montant, responsable (mid du livreur, ou du dispatch ; 'dispatch' tant que pas accepté), livreur, livreurNom, cmd, note,
+//                 statut: 'demande' | 'ouverte' | 'refusee' | 'reglee', creePar, creeParNom, creeLe, ... }
+// Le livreur la demande à la porte → MOUSSE ou le propriétaire accepte. Eux deux voient toutes les dettes ;
+// les autres voient seulement les leurs. Rappel au livreur responsable à chaque ouverture de l'app ; revue le lundi.
+const dt = { all: [], mine: [], door: {}, disp: null, page: false, okRappel: false, lundiVu: false };
+const canDette = () => me && (isOwner() || me.role === 'complet');
+function startDettes() {
+  if (!me) return;
+  if (canDette()) stops.push(onSnapshot(query(collection(db, 'dettes'), where('statut', 'in', ['demande', 'ouverte', 'attente_livreur'])), (qs) => {
+    const n0 = dt.all.filter((x) => x.statut === 'demande').length;
+    dt.all = []; qs.forEach((d) => dt.all.push(Object.assign({ id: d.id }, d.data())));
+    if (dt.all.filter((x) => x.statut === 'demande').length > n0) bip();
+    drawDettes();
+  }, () => {}));
+  // Les miennes : celles dont je suis responsable, et celles que j'ai demandées.
+  const mine = {};
+  const upd = () => { dt.mine = Object.values(mine); drawDettes(); drawPop(); if (typeof renderSoiree === 'function' && delivers()) renderSoiree(); };
+  stops.push(onSnapshot(query(collection(db, 'dettes'), where('responsable', '==', myMid())), (qs) => { Object.keys(mine).forEach((k) => { if (mine[k]._r) delete mine[k]; }); qs.forEach((d) => { mine[d.id] = Object.assign({ id: d.id, _r: 1 }, d.data()); }); upd(); }, () => {}));
+  stops.push(onSnapshot(query(collection(db, 'dettes'), where('creePar', '==', myMid())), (qs) => { qs.forEach((d) => { mine[d.id] = Object.assign({ id: d.id }, mine[d.id], d.data()); }); upd(); }, () => {}));
+  if (!canDette()) stops.push(onSnapshot(query(collection(db, 'dettes'), where('livreur', '==', myMid())), (qs) => { qs.forEach((d) => { mine[d.id] = Object.assign({ id: d.id }, mine[d.id], d.data()); }); upd(); }, () => {}));
+  drawDettes();
+}
+const dDate = (t) => { const x = t && t.toDate ? t.toDate() : t ? new Date(t) : null; return x ? x.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }) : ''; };
+const respNom = (x) => (x.responsable === 'dispatch' ? 'le dispatch' : x.responsable === 'proprietaire' ? 'Propriétaire' : nomDe(x.responsable) || x.livreurNom);
+function detteSur(c) { const x = dt.mine.find((y) => y.cmd === c.id && y.statut !== 'refusee'); return x && x.montant ? x.montant : 0; }
+async function dettesDepuis(d, mid) {
+  const out = {};
+  try {
+    const qs = await getDocs(mid ? query(collection(db, 'dettes'), where('livreur', '==', mid)) : query(collection(db, 'dettes'), where('creeLe', '>=', d)));
+    qs.forEach((x) => { const r = x.data(); const t = r.creeLe && r.creeLe.toDate ? r.creeLe.toDate() : null; if (r.statut !== 'refusee' && t && t >= d) out[r.livreur] = (out[r.livreur] || 0) + (Number(r.montant) || 0); });
+  } catch (e) {}
+  return out;
+}
+function withDettes(rows, dts) { rows.forEach((r) => { r.dette = dts[r.mid] || 0; r.manque = Math.max(0, r.manque - r.dette); }); return rows; }
+
+// ----- Livreur à la porte : « 📒 Le client paie plus tard » -----
+function detteDoor(c) {
+  const ex = dt.mine.find((y) => y.cmd === c.id && y.statut !== 'refusee');
+  if (ex) return '<div class="small" style="margin-top:8px">📒 Dette ' + (ex.montant ? money(ex.montant) + ' ' : '') + '— ' + (ex.statut === 'demande' ? 'en attente du dispatch…' : 'acceptée ✓') + ' (responsable : ' + (ex.responsable === myMid() ? 'toi' : 'le dispatch') + ')</div>';
+  const f = dt.door[c.id];
+  if (!f) return '<button class="linkbtn" id="dtOpen" style="margin-top:8px">📒 Le client paie plus tard</button>';
+  return '<div class="msgc" style="margin-top:8px"><div class="small">Qui est responsable ?</div><div class="seg" id="dtResp" style="margin:4px 0">' +
+    [['moi', 'Moi'], ['dispatch', 'Le dispatch']].map((x) => '<button data-r="' + x[0] + '" class="' + (f.resp === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    (c.bloque ? '<div class="small">Montant : l’Interac pas reçu (le dispatch le connaît).</div>' : '<div class="small">Montant pas payé</div><input id="dtAmt" type="number" inputmode="numeric" value="' + esc(f.amt) + '">') +
+    '<input id="dtNote" maxlength="120" placeholder="Note (ex. paie demain)" value="' + esc(f.note) + '">' +
+    '<div class="two"><button class="btn ghost sm" id="dtCancel">Annuler</button><button class="btn sm" id="dtSend">Envoyer au dispatch</button></div><div class="err" id="dtErr"></div></div>';
+}
+function bindDetteDoor(c) {
+  if (!c) return;
+  if ($('dtOpen')) $('dtOpen').onclick = () => { dt.door[c.id] = { resp: 'moi', amt: c.encaisser || '', note: '' }; renderSoiree(); };
+  const f = dt.door[c.id]; if (!f) return;
+  document.querySelectorAll('#dtResp button').forEach((b) => { b.onclick = () => { f.resp = b.dataset.r; renderSoiree(); }; });
+  if ($('dtAmt')) $('dtAmt').oninput = (e) => { f.amt = e.target.value; };
+  if ($('dtNote')) $('dtNote').oninput = (e) => { f.note = e.target.value; };
+  if ($('dtCancel')) $('dtCancel').onclick = () => { delete dt.door[c.id]; renderSoiree(); };
+  if ($('dtSend')) $('dtSend').onclick = async () => {
+    const m = c.bloque ? 0 : Math.round(Number(f.amt) || 0);
+    if (!c.bloque && (m <= 0 || m > c.encaisser)) { $('dtErr').textContent = 'Montant entre 1 et ' + c.encaisser + ' $.'; return; }
+    try {
+      await setDoc(doc(collection(db, 'dettes')), { client: c.client || 'Client', montant: m, responsable: f.resp === 'moi' ? me.mid : 'dispatch', livreur: me.mid, livreurNom: me.nom,
+        cmd: c.id, note: String(f.note || '').slice(0, 120), statut: 'demande', creePar: me.mid, creeParNom: me.nom, creeLe: serverTimestamp() });
+      delete dt.door[c.id]; renderSoiree();
+    } catch (e) { $('dtErr').textContent = msg(e); }
+  };
+}
+// ----- Dispatch (⋯ sur une commande 🔴 Interac pas reçu) : 📒 Dette → débloque la commande -----
+function detteDispForm(c) {
+  const f = dt.disp;
+  const def = c.bloque ? Math.round((prive[c.id] && prive[c.id].interac) || 0) : (c.encaisser || 0);
+  if (f.amt == null) f.amt = def;
+  return '<div class="msgc"><div class="small">📒 Dette' + (c.bloque ? ' (Interac pas reçu)' : '') + ' · montant</div><input id="ddAmt" type="number" inputmode="numeric" value="' + esc(f.amt) + '"><div class="small">Qui est responsable ?</div><div class="seg" id="ddResp" style="margin:4px 0">' +
+    (c.livreur ? [[c.livreur, esc(c.livreurNom || nomDe(c.livreur))]] : []).concat([[myMid(), 'Moi (dispatch)']]).map((x) => '<button data-r="' + x[0] + '" class="' + (f.resp === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    '<input id="ddNote" maxlength="120" placeholder="Note (ex. paie demain)" value="' + esc(f.note) + '"><div class="two"><button class="btn ghost sm" id="ddCancel">Annuler</button><button class="btn sm" id="ddGo">Créer la dette</button></div><div class="err" id="ddErr"></div></div>';
+}
+function bindDetteDisp() {
+  const f = dt.disp; if (!f || !$('ddGo')) return;
+  const c = cmds[f.id]; if (!c) return;
+  document.querySelectorAll('#ddResp button').forEach((b) => { b.onclick = () => { f.resp = b.dataset.r; renderQueues(); }; });
+  $('ddNote').oninput = (e) => { f.note = e.target.value; };
+  $('ddAmt').oninput = (e) => { f.amt = e.target.value; };
+  $('ddCancel').onclick = () => { dt.disp = null; renderQueues(); };
+  $('ddGo').onclick = async () => {
+    try {
+      const ref = doc(collection(db, 'dettes'));
+      const b = writeBatch(db);
+      const m = Math.round(Number(f.amt) || 0);
+      if (m <= 0) { $('ddErr').textContent = 'Écris le montant.'; return; }
+      // Si le livreur est nommé responsable, il doit confirmer.
+      b.set(ref, { client: c.client || 'Client', montant: m, responsable: f.resp, livreur: c.livreur || '', livreurNom: c.livreurNom || '',
+        cmd: c.id, note: String(f.note || '').slice(0, 120), statut: f.resp === myMid() ? 'ouverte' : 'attente_livreur', creePar: myMid(), creeParNom: me.nom || 'Propriétaire', creeLe: serverTimestamp() });
+      b.update(doc(db, 'commandes', c.id), c.bloque ? { bloque: false, paye: !(c.encaisser > 0), dette: ref.id } : { dette: ref.id });
+      b.update(doc(db, 'cmdPrive', c.id), { dette: ref.id });
+      await b.commit(); dt.disp = null; renderQueues();
+    } catch (e) { $('ddErr').textContent = msg(e); }
+  };
+}
+// Accepter / refuser une demande du livreur. Si la commande était bloquée (Interac pas reçu), elle se débloque.
+async function detteDecide(x, ok) {
+  try {
+    const b = writeBatch(db);
+    if (!ok) b.update(doc(db, 'dettes', x.id), { statut: 'refusee', decidePar: myMid(), decideLe: serverTimestamp() });
+    else {
+      const c = cmds[x.cmd], p = prive[x.cmd];
+      const m = x.montant || Math.round((p && p.interac) || 0);
+      b.update(doc(db, 'dettes', x.id), Object.assign({ statut: 'ouverte', montant: m, decidePar: myMid(), decideLe: serverTimestamp() }, x.responsable === 'dispatch' ? { responsable: myMid() } : {}));
+      if (c && c.bloque) { b.update(doc(db, 'commandes', x.cmd), { bloque: false, paye: !(c.encaisser > 0), dette: x.id }); b.update(doc(db, 'cmdPrive', x.cmd), { dette: x.id }); }
+    }
+    await b.commit();
+  } catch (e) { alertBar(msg(e)); }
+}
+async function detteRegler(x, mode) {
+  try { await writeBatch(db).update(doc(db, 'dettes', x.id), { statut: 'reglee', regleMode: mode, reglePar: myMid(), regleParNom: me.nom || 'Propriétaire', regleLe: serverTimestamp() }).commit(); }
+  catch (e) { alertBar(msg(e)); }
+}
+// Le livreur nommé responsable par le dispatch : « Je confirme » ou « Pas moi » (alors ça revient au dispatch qui l'a créée).
+async function detteConfirm(x, ok) {
+  if (!x) return;
+  try {
+    await writeBatch(db).update(doc(db, 'dettes', x.id), ok ? { statut: 'ouverte', confirmeLe: serverTimestamp() }
+      : { statut: 'ouverte', responsable: x.creePar, note: ((x.note ? x.note + ' · ' : '') + (me.nom || '') + ' a dit « pas moi »').slice(0, 160), confirmeLe: serverTimestamp() }).commit();
+  } catch (e) { alertBar(msg(e)); }
+}
+const isMonday = () => new Date().getDay() === 1;
+function drawDettes() {
+  // 1) Dispatch : demandes à accepter (carte jaune en haut d'En direct) + revue du lundi
+  const top = $('detteCard');
+  if (top) {
+    let h = '';
+    if (canDette()) {
+      const dem = dt.all.filter((x) => x.statut === 'demande');
+      if (dem.length) h += '<div class="card alert"><div class="label">📒 Dette demandée</div>' + dem.map((x) => '<div class="item"><b>' + esc(x.livreurNom) + '</b> : ' + esc(x.client) + ' paie plus tard' +
+        (x.montant ? ' · <b>' + money(x.montant) + '</b>' : ' · Interac pas reçu (' + money((prive[x.cmd] && prive[x.cmd].interac) || 0) + ')') +
+        '<div class="small">Responsable : ' + (x.responsable === 'dispatch' ? 'le dispatch (toi si tu acceptes)' : esc(x.livreurNom)) + (x.note ? ' · 📝 ' + esc(x.note) : '') + '</div>' +
+        '<div class="two" style="margin-top:8px"><button class="btn red sm" data-dno="' + x.id + '">Refuser</button><button class="btn ok sm" data-dyes="' + x.id + '">' + (x.responsable === 'dispatch' ? 'Je confirme (responsable)' : 'Accepter') + '</button></div></div>').join('') + '</div>';
+      const open = dt.all.filter((x) => x.statut === 'ouverte');
+      let vu = ''; try { vu = localStorage.getItem('dettesLundi') || ''; } catch (e) {}
+      if (isMonday() && open.length && vu !== new Date().toDateString()) h += '<div class="card"><div class="label">📒 Lundi : on vérifie les dettes</div><div class="small">' + open.length + ' dette' + (open.length > 1 ? 's' : '') + ' pas réglée' + (open.length > 1 ? 's' : '') + ' · ' + money(open.reduce((a, x) => a + (x.montant || 0), 0)) + '</div>' +
+        '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="dlVu">Vu</button><button class="btn sm" id="dlGo">Voir les dettes</button></div></div>';
+    }
+    top.innerHTML = h;
+    top.querySelectorAll('[data-dyes]').forEach((b) => { b.onclick = () => detteDecide(dt.all.find((x) => x.id === b.dataset.dyes), true); });
+    top.querySelectorAll('[data-dno]').forEach((b) => { b.onclick = () => detteDecide(dt.all.find((x) => x.id === b.dataset.dno), false); });
+    if ($('dlVu')) $('dlVu').onclick = () => { try { localStorage.setItem('dettesLundi', new Date().toDateString()); } catch (e) {} drawDettes(); };
+    if ($('dlGo')) $('dlGo').onclick = () => { try { localStorage.setItem('dettesLundi', new Date().toDateString()); } catch (e) {} dt.page = true; setTab('stock'); drawDettes(); };
+  }
+  // 2) Rappel au livreur responsable, à chaque ouverture de l'app (bouton OK)
+  const rp = $(isOwner() || isStaff() ? 'detteRappelD' : 'detteRappel');
+  if (rp) {
+    const conf = dt.mine.filter((x) => x.statut === 'attente_livreur' && x.responsable === myMid());
+    const mineOpen = dt.mine.filter((x) => x.statut === 'ouverte' && x.responsable === myMid());
+    rp.innerHTML = conf.map((x) => '<div class="card alert"><div class="label">📒 À confirmer</div>' + esc(x.creeParNom || 'Le dispatch') + ' dit que tu es responsable de <b>' + money(x.montant) + '</b> (' + esc(x.client) + ')' +
+      (x.note ? '<div class="small">📝 ' + esc(x.note) + '</div>' : '') + '<div class="two" style="margin-top:8px"><button class="btn red sm" data-cno="' + x.id + '">Pas moi</button><button class="btn ok sm" data-cyes="' + x.id + '">Je confirme</button></div></div>').join('') +
+      (mineOpen.length && !dt.okRappel ? '<div class="card alert"><div class="label">📒 Rappel</div>' + mineOpen.map((x) => '<div>Tu es responsable de <b>' + money(x.montant) + '</b> (' + esc(x.client) + ', depuis le ' + dDate(x.creeLe) + '). À régler.</div>').join('') +
+      '<button class="btn sm" id="drOk" style="margin-top:8px">OK</button></div>' : '');
+    rp.querySelectorAll('[data-cyes]').forEach((b) => { b.onclick = () => detteConfirm(dt.mine.find((x) => x.id === b.dataset.cyes), true); });
+    rp.querySelectorAll('[data-cno]').forEach((b) => { b.onclick = () => detteConfirm(dt.mine.find((x) => x.id === b.dataset.cno), false); });
+    if ($('drOk')) $('drOk').onclick = () => { dt.okRappel = true; drawDettes(); };
+  }
+  // 3) Page 📒 Dettes (petit lien en bas de Stock) : tout pour toi et MOUSSE, seulement les siennes pour les autres
+  if (!me) return;
+  const pg = $(isOwner() || isStaff() ? 'dettePage' : 'dettePageMe'); if (!pg) return;
+  const list = (canDette() ? dt.all : dt.mine.filter((x) => x.responsable === myMid() || x.creePar === myMid())).filter((x) => x.statut === 'ouverte' || x.statut === 'attente_livreur' || (x.statut === 'demande' && !canDette()));
+  const tot = list.filter((x) => x.statut === 'ouverte').reduce((a, x) => a + (x.montant || 0), 0);
+  if (!list.length && !dt.page) { pg.innerHTML = '<button class="linkbtn small" id="dpOpen" style="opacity:.6">📒 Dettes</button>'; }
+  else if (!dt.page) pg.innerHTML = '<button class="linkbtn small" id="dpOpen" style="opacity:.75">📒 ' + list.length + ' dette' + (list.length > 1 ? 's' : '') + ' · ' + money(tot) + '</button>';
+  else pg.innerHTML = '<div class="card"><div class="label">📒 Dettes pas réglées <button class="linkbtn" id="dpClose" style="float:right">Fermer</button></div>' +
+    (list.map((x) => '<div class="item"><b>' + esc(x.client) + '</b> · ' + (x.montant ? money(x.montant) : '?') + (x.statut === 'demande' ? ' <span class="small">(en attente du dispatch)</span>' : x.statut === 'attente_livreur' ? ' <span class="small">(à confirmer par ' + esc(respNom(x)) + ')</span>' : '') +
+      '<div class="small">Depuis le ' + dDate(x.creeLe) + ' · responsable : ' + esc(respNom(x)) + ' · livreur : ' + esc(x.livreurNom || '—') + ' · créée par ' + esc(x.creeParNom || '') + (x.note ? '<br>📝 ' + esc(x.note) : '') + '</div>' +
+      (canDette() && x.statut === 'ouverte' ? '<div class="seg" style="margin-top:6px">' + (dt.ask === x.id ? '<button data-reg="int" data-id="' + x.id + '">Réglé par Interac ✓</button><button data-reg="cash" data-id="' + x.id + '">Réglé en cash ✓</button>' : '<button data-ask="' + x.id + '">Réglé…</button>') + '</div>' : '') + '</div>').join('') ||
+      '<div class="small">Aucune dette. 👍</div>') + (list.length ? '<div class="small" style="margin-top:6px">Total : ' + money(tot) + '</div>' : '') + '</div>';
+  if ($('dpOpen')) $('dpOpen').onclick = () => { dt.page = true; drawDettes(); };
+  if ($('dpClose')) $('dpClose').onclick = () => { dt.page = false; dt.ask = null; drawDettes(); };
+  pg.querySelectorAll('[data-ask]').forEach((b) => { b.onclick = () => { dt.ask = b.dataset.ask; drawDettes(); }; });
+  pg.querySelectorAll('[data-reg]').forEach((b) => { b.onclick = () => { dt.ask = null; detteRegler(dt.all.find((x) => x.id === b.dataset.id), b.dataset.reg); }; });
+}
