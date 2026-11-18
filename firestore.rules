@@ -128,6 +128,13 @@ service cloud.firestore {
       allow read, write: if isOwner() || isStaff();
     }
 
+    // Un document par téléphone qui accepte les notifications (lu seulement par le programme « notifier »).
+    match /tokens/{t} {
+      allow create, update: if active() && request.resource.data.mid == myId();
+      allow delete: if active() && resource.data.mid == myId();
+      allow read: if false;
+    }
+
     // Test en direct (première version).
     match /test/{id} {
       allow read, write: if signed();
