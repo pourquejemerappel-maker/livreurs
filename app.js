@@ -127,7 +127,8 @@ const delivers = () => me && (me.role === 'livreur' || me.livre || me.role === '
 // Le dispatch limité doit être autorisé (par MOUSSE ou le propriétaire) avant de pouvoir travailler.
 const isDispMode = (s) => !!(s && s.mode === 'dispatch');
 const working = (s) => s.statut === 'ouverte' && !isDispMode(s); // en service comme livreur
-const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte' && isDispMode(mySoiree));
+const doesDisp = (s) => !!(s && (s.mode === 'dispatch' || s.mode === 'les2')); // lost : dispatch seul, ou livreur + dispatch
+const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte' && doesDisp(mySoiree));
 function buildTabs() {
   const t = [];
   if (me.role === 'limite') t.push(['soiree', 'Ma soirée']);
@@ -387,7 +388,7 @@ function reqHtml(s) {
   const have = st(src);
   const over = !isOwner() && (d.L > (have.L || 0) || d.XL > (have.XL || 0));
   const gard = st(s.mid);
-  return '<div class="item" data-sid="' + s.id + '"><b>' + esc(s.nom) + ' veut commencer</b> <span class="small">· ' + hhmm(s.demandeLe) + '</span>' +
+  return '<div class="item" data-sid="' + s.id + '"><b>' + esc(s.nom) + (s.mode === 'les2' ? ' veut LIVRER + faire le 🧭 DISPATCH' : ' veut commencer') + '</b> <span class="small">· ' + hhmm(s.demandeLe) + '</span>' +
     (s.refusLe ? '<div class="small" style="color:var(--danger)">A refusé le dernier load (pas le bon compte).</div>' : '') +
     '<div class="label" style="margin-top:10px">Adresse de départ (tu peux corriger)</div><input class="rAdr" value="' + esc(d.adr) + '">' +
     ((isOwner() || me.role === 'complet') && (gard.L || gard.XL) ? '<div class="small" style="margin:-2px 0 8px">Il a déjà sur lui : ' + qty(gard) + '</div>' : '') +
@@ -504,14 +505,14 @@ function renderSoiree() {
   if (!s) {
     const dmode = me.role === 'limite' && ci.mode === 'dispatch';
     h = '<div class="card"><div class="label">Commencer ma soirée</div>' +
-      (me.role === 'limite' ? '<p class="small" style="margin-top:0">Ce soir je fais :</p><div class="seg" id="ciMode">' + [['livreur', '🚗 Livreur'], ['dispatch', '🧭 Dispatch']].map((x) =>
+      (me.role === 'limite' ? '<p class="small" style="margin-top:0">Ce soir je fais :</p><div class="seg" id="ciMode">' + [['livreur', '🚗 Livreur'], ['dispatch', '🧭 Dispatch'], ['les2', '🚗+🧭 Les deux']].map((x) =>
         '<button data-m="' + x[0] + '" class="' + ((ci.mode || 'livreur') === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' : '') +
       (dmode ? '' : '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>' +
       '<input id="ciAdr" placeholder="Ex. 1400 Sainte-Catherine" autocomplete="off" value="' + esc(ci.q) + '">' +
       '<div id="ciSugs"></div>' +
       '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>') +
       ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
-      (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser' + (dmode ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
+      (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser' + (ci.mode === 'dispatch' || ci.mode === 'les2' ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
       '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
   } else if (s.statut === 'demande') {
     h = '<div class="card"><div class="wait"><span class="dot"></span><b>' + (me.role === 'limite' ? 'En attente de MOUSSE ou du propriétaire…' : 'En attente du dispatch…') + '</b></div>' +
@@ -579,7 +580,7 @@ function drawSugs() {
   box.querySelectorAll('[data-i]').forEach((d) => { d.onclick = () => { const x = ci.sugs[+d.dataset.i]; ci.pick = x; ci.q = x.l1 + ', ' + x.l2; $('ciAdr').value = ci.q; drawSugs(); }; });
 }
 async function requestStart() {
-  const mode = me.role === 'limite' && ci.mode === 'dispatch' ? 'dispatch' : 'livreur';
+  const mode = me.role === 'limite' && (ci.mode === 'dispatch' || ci.mode === 'les2') ? ci.mode : 'livreur';
   const adr = mode === 'dispatch' ? 'Dispatch' : ci.q.trim();
   if (adr.length < 4) { $('ciErr').textContent = 'Écris où tu es.'; return; }
   const data = { mid: me.mid, nom: me.nom, statut: 'demande', mode, adresse: adr, demandeLe: serverTimestamp() };
@@ -1273,7 +1274,8 @@ function initFin() {
 // archives/{id} : copie des messages effacés par le dispatch, lue et effacée seulement par le propriétaire.
 const dm = { all: [], lus: {}, mine: [], open: null, eraseAsk: false, busy: false, arch: null, archAsk: false };
 const isDispatcher = () => me && (isOwner() || me.role === 'complet' || (me.role === 'limite' && !locked()));
-const chatsDriver = () => me && (me.role === 'livreur' || (me.role === 'limite' && mySoiree && mySoiree.statut === 'ouverte' && !isDispMode(mySoiree)));
+const chatsDriver = () => me && (me.role === 'livreur' || (me.role === 'limite' && mySoiree && mySoiree.statut === 'ouverte' && !doesDisp(mySoiree)));
+const isDispPerson = (s) => (team[s.mid] && team[s.mid].role === 'complet') || s.mode === 'les2';
 const DQ = ['Appelle-moi', 'Prends ton temps', 'Dépêche, client attend'];
 const LQ = [['👍 OK', '👍 OK'], ['Recharge', 'Besoin d’une recharge'], ['Pause 10 min', 'Pause 10 min'], ['Client répond pas', 'Client répond pas']];
 function startDm() {
@@ -1321,7 +1323,7 @@ const typing = (box) => document.activeElement && document.activeElement.closest
 function drawDm() {
   const box = $('dmCard'); if (!box || !me) return;
   if (!isDispatcher()) { box.innerHTML = ''; return; }
-  const ids = new Set(Object.values(soirees).filter((s) => working(s) && !(team[s.mid] && team[s.mid].role === 'complet')).map((s) => s.mid));
+  const ids = new Set(Object.values(soirees).filter((s) => working(s) && !isDispPerson(s)).map((s) => s.mid));
   dm.all.forEach((m) => ids.add(m.mid));
   const total = [...ids].reduce((a, id) => a + unreadFor(id), 0);
   const tb = document.querySelector('#tabs button[data-t="direct"]'); if (tb) tb.textContent = 'En direct' + (total ? ' 🔴' + total : '');
@@ -1357,7 +1359,7 @@ function drawDm() {
   box.querySelectorAll('.dmrow').forEach((r) => { r.onclick = () => { dm.open = r.dataset.mid; dm.eraseAsk = false; drawDm(); }; });
   $('dmAllGo').onclick = async () => {
     const v = $('dmAll').value.trim(); if (!v) return;
-    const to = Object.values(soirees).filter((s) => working(s) && !(team[s.mid] && team[s.mid].role === 'complet')).map((s) => s.mid);
+    const to = Object.values(soirees).filter((s) => working(s) && !isDispPerson(s)).map((s) => s.mid);
     if (!to.length) { $('dmErr').textContent = 'Personne en service.'; return; }
     $('dmAll').value = '';
     try { for (const mid of to) await sendMsg(mid, 'dispatch', v, null, true); } catch (e) { $('dmErr').textContent = msg(e); }
@@ -1430,7 +1432,7 @@ async function drawArch() {
 // ----- Bouton 💰 discret (livreur) : cash sur lui + livraisons de la soirée -----
 function drawCashBtn() {
   const b = $('cashBtn'); if (!b) return;
-  b.classList.toggle('hide', !chatsDriver());
+  b.classList.toggle('hide', !(delivers() && mySoiree && working(mySoiree)));
   b.onclick = async () => {
     const pop = $('cashPop');
     if (!pop.classList.contains('hide')) { pop.classList.add('hide'); return; }
