@@ -122,11 +122,14 @@ $('logout').onclick = () => signOut(auth);
 // ---------- Onglets (selon le rôle) ----------
 const isOwner = () => me && me.role === 'proprio';
 const isStaff = () => me && (me.role === 'complet' || me.role === 'limite');
-const delivers = () => me && (me.role === 'livreur' || me.livre);
+const delivers = () => me && (me.role === 'livreur' || me.livre || me.role === 'limite');
+// Le dispatch limité doit être autorisé (par MOUSSE ou le propriétaire) avant de pouvoir travailler.
+const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte');
 function buildTabs() {
   const t = [];
+  if (me.role === 'limite') t.push(['soiree', 'Ma soirée']);
   if (isOwner() || isStaff()) t.push(['direct', 'En direct'], ['stock', 'Stock']);
-  if (delivers()) t.push(['soiree', 'Ma soirée']);
+  if (delivers() && me.role !== 'limite') t.push(['soiree', 'Ma soirée']);
   if (isOwner()) t.push(['equipe', 'Équipe']);
   $('tabs').innerHTML = t.map((x) => '<button data-t="' + x[0] + '">' + x[1] + '</button>').join('');
   $('tabs').classList.toggle('hide', t.length < 2);
@@ -135,6 +138,7 @@ function buildTabs() {
 }
 let curTab = '';
 function setTab(t) {
+  if (locked() && (t === 'direct' || t === 'stock')) t = 'soiree';
   curTab = t;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
   ['direct', 'stock', 'soiree', 'equipe'].forEach((x) => $('tab' + x[0].toUpperCase() + x.slice(1)).classList.toggle('hide', x !== t));
@@ -301,9 +305,12 @@ async function changePwd() {
 // soirees/{…}     : la soirée d'un livreur : demande → load → ouverte (ou refusée / annulée).
 
 const RESERVE = 'reserve';
+// Le dispatch complet (MOUSSE) a deux piles : ce qu'il a sur lui, et son dépôt (ce qu'il garde ailleurs).
+const DEP = (id) => id + '-depot';
+const isDep = (id) => /-depot$/.test(id || '');
 const ACTIVES = ['demande', 'load', 'ouverte'];
 let stocks = {}, soirees = {}, mySoiree = null, mvts = [];
-const nomDe = (id) => (id === RESERVE ? 'Réserve' : id === 'proprietaire' ? 'Propriétaire' : (team[id] && team[id].nom) || id);
+const nomDe = (id) => (id === RESERVE ? 'Réserve' : id === 'proprietaire' ? 'Propriétaire' : isDep(id) ? 'Dépôt de ' + nomDe(id.replace(/-depot$/, '')) : (team[id] && team[id].nom) || id);
 const hhmm = (ts) => { const d = ts && ts.toDate ? ts.toDate() : (ts ? new Date(ts) : null); return d ? d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0') : ''; };
 const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 
@@ -322,7 +329,10 @@ function startLive() {
   }
   if (delivers()) {
     stops.push(onSnapshot(query(collection(db, 'soirees'), where('mid', '==', me.mid), where('statut', 'in', ACTIVES)), (qs) => {
+      const wasLocked = locked();
       mySoiree = null; qs.forEach((d) => { mySoiree = Object.assign({ id: d.id }, d.data()); }); renderSoiree();
+      document.querySelectorAll('#tabs button').forEach((b) => { b.disabled = locked() && (b.dataset.t === 'direct' || b.dataset.t === 'stock'); });
+      if (locked()) setTab('soiree'); else if (wasLocked) setTab('direct');
     }, (e) => console.warn(e)));
   }
   renderAll(); renderSoiree();
@@ -336,6 +346,9 @@ function renderDirect() {
   const mine = st(me.mid);
   $('myStockCard').classList.toggle('hide', isOwner());
   $('msL').textContent = mine.L || 0; $('msXL').textContent = mine.XL || 0;
+  const dep = st(DEP(me.mid));
+  $('msDep').classList.toggle('hide', me.role !== 'complet');
+  $('msDep').textContent = 'Au dépôt : ' + qty(dep);
   const list = Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).sort((a, b) => ((a.demandeLe && a.demandeLe.seconds) || 0) - ((b.demandeLe && b.demandeLe.seconds) || 0));
   const todo = list.filter((s) => s.statut === 'demande');
   const att = list.filter((s) => s.statut === 'load');
@@ -351,12 +364,13 @@ function renderDirect() {
   $('service').innerHTML = srv.map((s) => '<div class="item"><b>' + esc(s.nom) + '</b> <span class="small">· depuis ' + hhmm(s.ouverteLe) + '</span><div class="small">' +
     ((isOwner() || me.role === 'complet') ? qty(st(s.mid)) + ' · ' : '') + esc(s.adresse || '') + '</div></div>').join('') || '<div class="small">Personne pour l’instant.</div>';
 }
+function loadSrc(d) { return isOwner() ? RESERVE : me.role === 'complet' && d.src === DEP(me.mid) ? DEP(me.mid) : me.mid; }
 function canAuthorize(s) { return isOwner() || me.role === 'complet' || s.mid !== me.mid; }
 function reqHtml(s) {
   const d = drafts[s.id] || (drafts[s.id] = { L: (s.load && s.load.L) || 0, XL: (s.load && s.load.XL) || 0, adr: s.adresse || '' });
   const self = s.mid === me.mid;
   if (self && !canAuthorize(s)) return '<div class="item"><div class="wait"><span class="dot"></span><b>Ta soirée</b>&nbsp;attend MOUSSE ou le propriétaire.</div></div>';
-  const src = isOwner() ? RESERVE : me.mid;
+  const src = loadSrc(d);
   const have = st(src);
   const over = !isOwner() && (d.L > (have.L || 0) || d.XL > (have.XL || 0));
   const gard = st(s.mid);
@@ -365,7 +379,9 @@ function reqHtml(s) {
     '<div class="label" style="margin-top:10px">Adresse de départ (tu peux corriger)</div><input class="rAdr" value="' + esc(d.adr) + '">' +
     ((isOwner() || me.role === 'complet') && (gard.L || gard.XL) ? '<div class="small" style="margin:-2px 0 8px">Il a déjà sur lui : ' + qty(gard) + '</div>' : '') +
     (self ? '<div class="small" style="margin-bottom:8px">C’est toi : ta soirée s’ouvre avec ton stock.</div>' :
-      '<div class="label">Load à lui envoyer' + (isOwner() ? ' (de la réserve)' : ' (de ton stock)') + '</div>' +
+      '<div class="label">Load à lui envoyer' + (isOwner() ? ' (de la réserve)' : me.role === 'limite' ? ' (de ton stock)' : '') + '</div>' +
+      (me.role === 'complet' ? '<div class="who">' + [[me.mid, 'De moi (' + qty(st(me.mid)) + ')'], [DEP(me.mid), 'Du dépôt (' + qty(st(DEP(me.mid))) + ')']].map((x) =>
+        '<button class="rSrc ' + (src === x[0] ? 'on' : '') + '" data-src="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' : '') +
       '<div class="step"><span>L</span><button data-k="L" data-d="-1">−</button><div class="v">' + d.L + '</div><button data-k="L" data-d="1">+</button></div>' +
       '<div class="step"><span>XL</span><button data-k="XL" data-d="-1">−</button><div class="v">' + d.XL + '</div><button data-k="XL" data-d="1">+</button></div>' +
       (over ? '<div class="err">Tu n’as que ' + qty(have) + '.</div>' : '') +
@@ -378,6 +394,7 @@ function bindReq(s) {
   const el = document.querySelector('#todo [data-sid="' + s.id + '"]'); if (!el || !el.querySelector('.rAdr')) return;
   const d = drafts[s.id];
   el.querySelector('.rAdr').oninput = (e) => { d.adr = e.target.value; };
+  el.querySelectorAll('.rSrc').forEach((b) => { b.onclick = () => { d.src = b.dataset.src; renderDirect(); }; });
   el.querySelectorAll('.step button').forEach((b) => { b.onclick = () => { d[b.dataset.k] = Math.max(0, d[b.dataset.k] + Number(b.dataset.d)); document.activeElement.blur(); renderDirect(); }; });
   const yes = el.querySelector('.rYes'), no = el.querySelector('.rNo');
   if (yes) yes.onclick = () => run(el, () => authorize(s, d));
@@ -394,7 +411,7 @@ async function authorize(s, d) {
     // Sa propre soirée, ou aucun load à envoyer (il part avec ce qu'il a déjà) : ouverte tout de suite.
     b.update(ref, { statut: 'ouverte', adresse: d.adr, autorisePar: me.mid, ouverteLe: serverTimestamp() });
   } else {
-    const src = isOwner() ? RESERVE : me.mid;
+    const src = loadSrc(d);
     b.update(ref, { statut: 'load', adresse: d.adr, autorisePar: me.mid, autoriseLe: serverTimestamp(), load: { L: d.L, XL: d.XL, de: src } });
     if (src !== RESERVE && (d.L || d.XL)) b.set(doc(db, 'stocks', src), { L: increment(-d.L), XL: increment(-d.XL) }, { merge: true });
   }
@@ -407,27 +424,42 @@ async function refuseReq(s) {
 }
 
 // ---------- Stock (propriétaire et dispatchs) ----------
-const give = { to: null, L: 0, XL: 0 };
-function giveTargets() {
+const give = { to: null, from: null, L: 0, XL: 0 };
+function giveSources() {
+  if (isOwner()) return [RESERVE];
+  if (me.role === 'complet') return [me.mid, DEP(me.mid)];
+  return [me.mid];
+}
+function giveTargets(from) {
   const disp = Object.keys(team).filter((id) => team[id].actif && (team[id].role === 'complet' || team[id].role === 'limite'));
-  if (isOwner()) return disp;                                                   // propriétaire → un dispatch (de la réserve)
-  if (me.role === 'complet') return disp.filter((id) => id !== me.mid);         // MOUSSE → Lost (ou un autre dispatch)
-  return disp.filter((id) => team[id].role === 'complet');                      // Lost → seulement retourner à MOUSSE
+  const complets = disp.filter((id) => team[id].role === 'complet');
+  if (isOwner()) return disp.concat(complets.map(DEP));                                      // propriétaire → MOUSSE, son dépôt, ou lost
+  if (me.role === 'complet') {                                                               // MOUSSE : entre lui et son dépôt, ou à lost
+    const other = from === DEP(me.mid) ? me.mid : DEP(me.mid);
+    return [other].concat(disp.filter((id) => id !== me.mid));
+  }
+  return complets.concat(complets.map(DEP));                                                // lost : seulement retourner à MOUSSE ou à son dépôt
 }
 function renderStock() {
   const all = isOwner() || me.role === 'complet';
-  const ids = all ? Object.keys(team).filter((id) => team[id].actif || (stocks[id] && (stocks[id].L || stocks[id].XL)))
-    .sort((a, b) => ({ complet: 0, limite: 1, livreur: 2 }[team[a].role] - { complet: 0, limite: 1, livreur: 2 }[team[b].role]) || team[a].nom.localeCompare(team[b].nom, 'fr')) : [me.mid];
-  $('stockList').innerHTML = ids.map((id) => '<div class="srow"><span>' + esc(nomDe(id)) + (id === me.mid ? ' (moi)' : '') + '</span><b>' + qty(st(id)) + '</b></div>').join('');
-  const tg = giveTargets();
+  const ids = all ? [].concat(...Object.keys(team).filter((id) => team[id].actif || (stocks[id] && (stocks[id].L || stocks[id].XL)))
+    .sort((a, b) => ({ complet: 0, limite: 1, livreur: 2 }[team[a].role] - { complet: 0, limite: 1, livreur: 2 }[team[b].role]) || team[a].nom.localeCompare(team[b].nom, 'fr'))
+    .map((id) => (team[id].role === 'complet' ? [id, DEP(id)] : [id]))) : [me.mid];
+  $('stockList').innerHTML = ids.map((id) => '<div class="srow"><span>' + (isDep(id) ? '&nbsp;&nbsp;↳ ' : '') + esc(isDep(id) ? 'au dépôt' : nomDe(id) + (team[id] && team[id].role === 'complet' ? ' (sur lui)' : '')) + (id === me.mid ? ' · moi' : '') + '</span><b>' + qty(st(id)) + '</b></div>').join('');
+  const srcs = giveSources();
+  if (srcs.indexOf(give.from) < 0) give.from = srcs[0];
+  const tg = giveTargets(give.from);
   $('giveCard').classList.toggle('hide', !tg.length);
   if (give.to && tg.indexOf(give.to) < 0) give.to = null;
   if (!give.to && tg.length === 1) give.to = tg[0];
-  $('giveTitle').textContent = isOwner() ? 'Donner du stock (de la réserve)' : me.role === 'complet' ? 'Donner de mon stock' : 'Retourner du stock';
-  $('giveWho').innerHTML = '<div class="who">' + tg.map((id) => '<button data-id="' + id + '" class="' + (give.to === id ? 'on' : '') + '">' + esc(nomDe(id)) + '</button>').join('') + '</div>';
-  document.querySelectorAll('#giveWho button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
+  const lbl = (id) => (me.role === 'complet' && id === me.mid ? 'Sur moi' : me.role === 'complet' && id === DEP(me.mid) ? 'Mon dépôt' : nomDe(id));
+  $('giveTitle').textContent = isOwner() ? 'Donner du stock (de la réserve)' : me.role === 'complet' ? 'Déplacer / donner du stock' : 'Retourner du stock';
+  $('giveWho').innerHTML = (srcs.length > 1 ? '<div class="small" style="margin-bottom:6px">De :</div><div class="who" id="giveFrom">' + srcs.map((id) => '<button data-id="' + id + '" class="' + (give.from === id ? 'on' : '') + '">' + esc(lbl(id)) + ' (' + qty(st(id)) + ')</button>').join('') + '</div><div class="small" style="margin-bottom:6px">Vers :</div>' : '') +
+    '<div class="who" id="giveTo">' + tg.map((id) => '<button data-id="' + id + '" class="' + (give.to === id ? 'on' : '') + '">' + esc(lbl(id)) + '</button>').join('') + '</div>';
+  document.querySelectorAll('#giveFrom button').forEach((b) => { b.onclick = () => { give.from = b.dataset.id; give.to = null; renderStock(); }; });
+  document.querySelectorAll('#giveTo button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
   $('gL').textContent = give.L; $('gXL').textContent = give.XL;
-  $('gGo').textContent = isOwner() || me.role === 'complet' ? 'Donner' + (give.to ? ' à ' + nomDe(give.to) : '') : 'Retourner' + (give.to ? ' à ' + nomDe(give.to) : '');
+  $('gGo').textContent = (me.role === 'limite' ? 'Retourner' : me.role === 'complet' && (give.to === me.mid || give.to === DEP(me.mid)) ? 'Déplacer' : 'Donner') + (give.to ? ' → ' + lbl(give.to) : '');
   $('mvts').innerHTML = mvts.map((m) => hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
 }
 document.querySelectorAll('#giveCard .step button').forEach((b) => { b.onclick = () => { give[b.dataset.k] = Math.max(0, give[b.dataset.k] + Number(b.dataset.d)); $('gErr').textContent = ''; renderStock(); }; });
@@ -435,14 +467,14 @@ $('gGo').onclick = async () => {
   $('gErr').textContent = '';
   if (!give.to) return ($('gErr').textContent = 'Choisis à qui.');
   if (!give.L && !give.XL) return ($('gErr').textContent = 'Mets une quantité.');
-  const src = isOwner() ? RESERVE : me.mid;
+  const src = give.from || giveSources()[0];
   if (src !== RESERVE && (give.L > (st(src).L || 0) || give.XL > (st(src).XL || 0))) return ($('gErr').textContent = 'Tu n’as que ' + qty(st(src)) + '.');
   $('gGo').disabled = true;
   try {
     const b = writeBatch(db);
     if (src !== RESERVE) b.set(doc(db, 'stocks', src), { L: increment(-give.L), XL: increment(-give.XL) }, { merge: true });
     b.set(doc(db, 'stocks', give.to), { L: increment(give.L), XL: increment(give.XL) }, { merge: true });
-    b.set(doc(collection(db, 'mouvements')), { de: src, vers: give.to, L: give.L, XL: give.XL, type: me.role === 'limite' ? 'retour' : 'don', par: me.mid, le: serverTimestamp() });
+    b.set(doc(collection(db, 'mouvements')), { de: src, vers: give.to, L: give.L, XL: give.XL, type: me.role === 'limite' ? 'retour' : (isDep(src) || isDep(give.to)) && !isOwner() ? 'depot' : 'don', par: me.mid, le: serverTimestamp() });
     await b.commit();
     give.L = 0; give.XL = 0; renderStock();
   } catch (e) { $('gErr').textContent = msg(e); }
@@ -462,9 +494,10 @@ function renderSoiree() {
       '<div id="ciSugs"></div>' +
       '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>' +
       ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
+      (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser avant que tu puisses faire le dispatch.</p>' : '') +
       '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
   } else if (s.statut === 'demande') {
-    h = '<div class="card"><div class="wait"><span class="dot"></span><b>En attente du dispatch…</b></div>' +
+    h = '<div class="card"><div class="wait"><span class="dot"></span><b>' + (me.role === 'limite' ? 'En attente de MOUSSE ou du propriétaire…' : 'En attente du dispatch…') + '</b></div>' +
       '<p class="small">Adresse envoyée : ' + esc(s.adresse) + '</p><div class="err" id="ciErr"></div><button class="btn ghost" id="ciCancel">Annuler ma demande</button></div>';
   } else if (s.statut === 'load') {
     const L = s.load || {};
