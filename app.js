@@ -1,4 +1,4 @@
-// Version 16 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
+// Version 17 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus, fin de soirée, historique, pastille sur l'icône (Firebase) — app « Gotham ».
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -370,6 +370,7 @@ function renderDirect() {
   const att = list.filter((s) => s.statut === 'load');
   const srv = list.filter((s) => s.statut === 'ouverte');
   $('todoN').textContent = todo.length; $('todoN').classList.toggle('hide', !todo.length);
+  if ($('todoCard')) $('todoCard').classList.toggle('hide', !todo.length && !att.length);
   // Ne pas redessiner une demande pendant qu'on tape dedans.
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('#todo');
   if (!focused) {
@@ -1347,11 +1348,12 @@ function drawDm() {
     const mid = dm.open, list = dm.all.filter((m) => m.mid === mid);
     if (unreadFor(mid)) markRead(mid, 'dispatch');
     if (typing('dmCard') && $('dmFeed')) { $('dmFeed').innerHTML = bubbles(list, 'dispatch') || '<div class="small">Pas encore de message.</div>'; $('dmFeed').scrollTop = 1e6; return; }
-    box.innerHTML = '<div class="card"><button class="linkbtn" id="dmBack">‹ Tous les livreurs</button><div class="label" style="margin-top:6px">💬 ' + esc(nomDe(mid)) + '</div>' +
+    box.innerHTML = '<div class="card"><div class="dmhead"><button class="linkbtn" id="dmBack" style="font-size:17px">‹ Tous les livreurs</button></div><div class="label" style="margin-top:6px">💬 ' + esc(nomDe(mid)) + '</div>' +
       '<div class="cfeed" id="dmFeed">' + (bubbles(list, 'dispatch') || '<div class="small">Pas encore de message.</div>') + '</div>' +
       '<div class="seg" style="margin:6px 0">' + DQ.map((q) => '<button data-dq="' + esc(q) + '">' + esc(q) + '</button>').join('') + '</div>' +
-      '<div class="crow"><input id="dmTxt" maxlength="300" placeholder="Écrire à ' + esc(nomDe(mid)) + '…"><label class="cpic">📷<input type="file" id="dmPic" accept="image/*" class="hide"></label><button class="btn sm" id="dmSend">➤</button></div><div class="err" id="dmErr"></div></div>';
+      '<div class="crow"><input id="dmTxt" maxlength="300" placeholder="Écrire à ' + esc(nomDe(mid)) + '…"><label class="cpic">📷<input type="file" id="dmPic" accept="image/*" class="hide"></label><button class="btn sm" id="dmSend">➤</button></div><div class="err" id="dmErr"></div><button class="fback" id="dmBack2">‹ Fermer la conversation</button></div>';
     $('dmFeed').scrollTop = 1e6;
+    $('dmBack2').onclick = () => { dm.open = null; drawDm(); };
     const go = (t, img) => sendMsg(mid, 'dispatch', t, img).catch((e) => { $('dmErr').textContent = msg(e); });
     $('dmBack').onclick = () => { dm.open = null; drawDm(); };
     box.querySelectorAll('[data-dq]').forEach((b) => { b.onclick = () => go(b.dataset.dq); });
@@ -1840,8 +1842,9 @@ function drawFocusDock() {
   const d = $('focusDock'); if (!d) return;
   const rest = focusList().filter((x) => x.c.id !== fx.id);
   d.innerHTML = '<div class="small" style="margin:0 4px 6px">En attente (' + rest.length + ')</div><div class="fchips">' + (rest.map((x) =>
-    '<span class="fchip ' + UI[x.k][0] + '" data-fk="' + x.c.id + '">' + UI[x.k][1] + ' <b>' + esc(x.k === 'new' ? x.c.client : (x.c.livreurNom || nomDe(x.c.livreur)) + ' · ' + x.c.client) + '</b>' + (x.k === 'ici' ? ' ' + x.min + 'm' : '') + '</span>').join('') || '<span class="small">Rien d’autre. 👍</span>') + '</div>';
+    '<span class="fchip ' + UI[x.k][0] + '" data-fk="' + x.c.id + '">' + UI[x.k][1] + ' <b>' + esc(x.k === 'new' ? x.c.client : (x.c.livreurNom || nomDe(x.c.livreur)) + ' · ' + x.c.client) + '</b>' + (x.k === 'ici' ? ' ' + x.min + 'm' : '') + '</span>').join('') || '<span class="small">Rien d’autre. 👍</span>') + '</div><button class="fback" id="fxBack2">‹ Retour à la liste</button>';
   d.querySelectorAll('[data-fk]').forEach((el) => { el.onclick = () => openFocus(el.dataset.fk); });
+  if ($('fxBack2')) $('fxBack2').onclick = closeFocus;
 }
 async function focusAssign(c, opt) {
   if (!opt || !opt.ok) return;
