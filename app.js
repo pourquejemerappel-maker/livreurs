@@ -1,8 +1,8 @@
-// Version 2 : connexion + test en direct + onglet Équipe (Firebase).
+// Version 3 : connexion, équipe, stock des dispatchs et check-in (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection }
+import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const firebaseConfig = {
@@ -74,18 +74,15 @@ onAuthStateChanged(auth, async (user) => {
   const data = u && u.exists() ? u.data() : null;
   if (!data || data.actif === false) { $('lErr').textContent = 'Ce compte n’est pas actif.'; await signOut(auth); return; }
   me = Object.assign({ uid: user.uid }, data);
+  me.mid = data.mid || 'proprietaire';
   $('who').textContent = data.nom;
-  $('role').textContent = ROLES[data.role] || data.role;
-  $('hello').textContent = 'Salut ' + data.nom + ' !';
-  $('tabs').classList.toggle('hide', data.role !== 'proprio');
-  setTab('accueil');
+  buildTabs();
   show('home');
   // Si le compte est désactivé ou son mot de passe changé, il est déconnecté tout de suite.
   stops.push(onSnapshot(doc(db, 'users', user.uid), (s) => {
     if (!s.exists() || s.data().actif === false) { $('lErr').textContent = 'Ce compte n’est plus actif.'; signOut(auth); }
   }, () => {}));
-  stops.push(onSnapshot(doc(db, 'test', 'compteur'), (s) => { $('count').textContent = s.exists() ? s.data().n : 0; }, () => {}));
-  if (data.role === 'proprio') watchTeam();
+  startLive();
 });
 
 // ---------- Connexion ----------
@@ -120,25 +117,33 @@ $('sGo').onclick = async () => {
   } catch (e) { creating = false; $('sErr').textContent = msg(e); $('sGo').disabled = false; if (auth.currentUser) signOut(auth); }
 };
 
-$('plus').onclick = () => setDoc(doc(db, 'test', 'compteur'), { n: increment(1) }, { merge: true });
 $('logout').onclick = () => signOut(auth);
 
-// ---------- Onglets ----------
-function setTab(t) {
-  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
-  $('tabAccueil').classList.toggle('hide', t !== 'accueil');
-  $('tabEquipe').classList.toggle('hide', t !== 'equipe');
+// ---------- Onglets (selon le rôle) ----------
+const isOwner = () => me && me.role === 'proprio';
+const isStaff = () => me && (me.role === 'complet' || me.role === 'limite');
+const delivers = () => me && (me.role === 'livreur' || me.livre);
+function buildTabs() {
+  const t = [];
+  if (isOwner() || isStaff()) t.push(['direct', 'En direct'], ['stock', 'Stock']);
+  if (delivers()) t.push(['soiree', 'Ma soirée']);
+  if (isOwner()) t.push(['equipe', 'Équipe']);
+  $('tabs').innerHTML = t.map((x) => '<button data-t="' + x[0] + '">' + x[1] + '</button>').join('');
+  $('tabs').classList.toggle('hide', t.length < 2);
+  document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => setTab(b.dataset.t); });
+  setTab(t[0][0]);
 }
-document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => setTab(b.dataset.t); });
+let curTab = '';
+function setTab(t) {
+  curTab = t;
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+  ['direct', 'stock', 'soiree', 'equipe'].forEach((x) => $('tab' + x[0].toUpperCase() + x.slice(1)).classList.toggle('hide', x !== t));
+}
 
 // ---------- Équipe (propriétaire seulement) ----------
 // members/{id} : nom, rôle, fait aussi des livraisons, actif, compte de connexion actuel.
 // paies/{id}   : paie par livraison (seulement le propriétaire et la personne elle-même la voient).
 let team = {}, paies = {};
-function watchTeam() {
-  stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); }, () => {}));
-  stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
-}
 const paieTxt = (p) => (p == null ? 'paie à entrer' : p + ' $ / livraison');
 function renderTeam() {
   const ids = Object.keys(team).sort((a, b) => (team[a].nom || '').localeCompare(team[b].nom || '', 'fr'));
@@ -286,4 +291,257 @@ async function changePwd() {
   b.set(doc(db, 'logins', F.id), { email });
   await b.commit();
   F.nom = p.nom; F.mode = 'give'; drawSheet();
+}
+
+// =====================================================================
+// Version 3 : stock des dispatchs + check-in
+// =====================================================================
+// stocks/{id}     : { L, XL } ce que chaque personne a sur elle (id = nom simplifié).
+// mouvements/{…}  : historique : de → vers, quantités, par qui.
+// soirees/{…}     : la soirée d'un livreur : demande → load → ouverte (ou refusée / annulée).
+
+const RESERVE = 'reserve';
+const ACTIVES = ['demande', 'load', 'ouverte'];
+let stocks = {}, soirees = {}, mySoiree = null, mvts = [];
+const nomDe = (id) => (id === RESERVE ? 'Réserve' : id === 'proprietaire' ? 'Propriétaire' : (team[id] && team[id].nom) || id);
+const hhmm = (ts) => { const d = ts && ts.toDate ? ts.toDate() : (ts ? new Date(ts) : null); return d ? d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0') : ''; };
+const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
+
+function startLive() {
+  stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
+  if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
+  // Stock : le propriétaire et le dispatch complet voient tout ; les autres seulement le leur.
+  if (isOwner() || me.role === 'complet') {
+    stops.push(onSnapshot(collection(db, 'stocks'), (qs) => { stocks = {}; qs.forEach((d) => { stocks[d.id] = d.data(); }); renderAll(); }, () => {}));
+  } else {
+    stops.push(onSnapshot(doc(db, 'stocks', me.mid), (s) => { stocks = {}; if (s.exists()) stocks[me.mid] = s.data(); renderAll(); }, () => {}));
+  }
+  if (isOwner() || isStaff()) {
+    stops.push(onSnapshot(query(collection(db, 'soirees'), where('statut', 'in', ACTIVES)), (qs) => { soirees = {}; qs.forEach((d) => { soirees[d.id] = d.data(); }); renderAll(); }, (e) => console.warn(e)));
+    stops.push(onSnapshot(query(collection(db, 'mouvements'), orderBy('le', 'desc'), limit(15)), (qs) => { mvts = []; qs.forEach((d) => mvts.push(d.data())); renderAll(); }, () => {}));
+  }
+  if (delivers()) {
+    stops.push(onSnapshot(query(collection(db, 'soirees'), where('mid', '==', me.mid), where('statut', 'in', ACTIVES)), (qs) => {
+      mySoiree = null; qs.forEach((d) => { mySoiree = Object.assign({ id: d.id }, d.data()); }); renderSoiree();
+    }, (e) => console.warn(e)));
+  }
+  renderAll(); renderSoiree();
+}
+function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } }
+const st = (id) => stocks[id] || { L: 0, XL: 0 };
+
+// ---------- En direct (dispatch) ----------
+const drafts = {}; // load en cours de préparation par demande
+function renderDirect() {
+  const mine = st(me.mid);
+  $('myStockCard').classList.toggle('hide', isOwner());
+  $('msL').textContent = mine.L || 0; $('msXL').textContent = mine.XL || 0;
+  const list = Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).sort((a, b) => ((a.demandeLe && a.demandeLe.seconds) || 0) - ((b.demandeLe && b.demandeLe.seconds) || 0));
+  const todo = list.filter((s) => s.statut === 'demande');
+  const att = list.filter((s) => s.statut === 'load');
+  const srv = list.filter((s) => s.statut === 'ouverte');
+  $('todoN').textContent = todo.length; $('todoN').classList.toggle('hide', !todo.length);
+  // Ne pas redessiner une demande pendant qu'on tape dedans.
+  const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('#todo');
+  if (!focused) {
+    $('todo').innerHTML = (todo.map(reqHtml).join('') + att.map((s) => '<div class="item"><div class="wait"><span class="dot"></span><b>' + esc(s.nom) + '</b>&nbsp;vérifie son load…</div><div class="small">' + qty(s.load || {}) + ' de ' + esc(nomDe(s.load && s.load.de)) + '</div></div>').join('')) ||
+      '<div class="small">Rien pour l’instant. Les demandes de check-in apparaissent ici toutes seules.</div>';
+    todo.forEach(bindReq);
+  }
+  $('service').innerHTML = srv.map((s) => '<div class="item"><b>' + esc(s.nom) + '</b> <span class="small">· depuis ' + hhmm(s.ouverteLe) + '</span><div class="small">' +
+    ((isOwner() || me.role === 'complet') ? qty(st(s.mid)) + ' · ' : '') + esc(s.adresse || '') + '</div></div>').join('') || '<div class="small">Personne pour l’instant.</div>';
+}
+function canAuthorize(s) { return isOwner() || me.role === 'complet' || s.mid !== me.mid; }
+function reqHtml(s) {
+  const d = drafts[s.id] || (drafts[s.id] = { L: (s.load && s.load.L) || 0, XL: (s.load && s.load.XL) || 0, adr: s.adresse || '' });
+  const self = s.mid === me.mid;
+  if (self && !canAuthorize(s)) return '<div class="item"><div class="wait"><span class="dot"></span><b>Ta soirée</b>&nbsp;attend MOUSSE ou le propriétaire.</div></div>';
+  const src = isOwner() ? RESERVE : me.mid;
+  const have = st(src);
+  const over = !isOwner() && (d.L > (have.L || 0) || d.XL > (have.XL || 0));
+  const gard = st(s.mid);
+  return '<div class="item" data-sid="' + s.id + '"><b>' + esc(s.nom) + ' veut commencer</b> <span class="small">· ' + hhmm(s.demandeLe) + '</span>' +
+    (s.refusLe ? '<div class="small" style="color:var(--danger)">A refusé le dernier load (pas le bon compte).</div>' : '') +
+    '<div class="label" style="margin-top:10px">Adresse de départ (tu peux corriger)</div><input class="rAdr" value="' + esc(d.adr) + '">' +
+    ((isOwner() || me.role === 'complet') && (gard.L || gard.XL) ? '<div class="small" style="margin:-2px 0 8px">Il a déjà sur lui : ' + qty(gard) + '</div>' : '') +
+    (self ? '<div class="small" style="margin-bottom:8px">C’est toi : ta soirée s’ouvre avec ton stock.</div>' :
+      '<div class="label">Load à lui envoyer' + (isOwner() ? ' (de la réserve)' : ' (de ton stock)') + '</div>' +
+      '<div class="step"><span>L</span><button data-k="L" data-d="-1">−</button><div class="v">' + d.L + '</div><button data-k="L" data-d="1">+</button></div>' +
+      '<div class="step"><span>XL</span><button data-k="XL" data-d="-1">−</button><div class="v">' + d.XL + '</div><button data-k="XL" data-d="1">+</button></div>' +
+      (over ? '<div class="err">Tu n’as que ' + qty(have) + '.</div>' : '') +
+      (!d.L && !d.XL ? '<div class="small" style="margin-bottom:8px">Sans load, il part avec ce qu’il a déjà.</div>' : '')) +
+    (canAuthorize(s) ? '<div class="two"><button class="btn red rNo">Refuser</button><button class="btn ok rYes" ' + (over ? 'disabled' : '') + '>' + (self ? 'Ouvrir ma soirée' : 'Autoriser + envoyer') + '</button></div>'
+      : '<div class="small">MOUSSE ou le propriétaire doit autoriser ta propre soirée.</div>') +
+    '<div class="err rErr"></div></div>';
+}
+function bindReq(s) {
+  const el = document.querySelector('#todo [data-sid="' + s.id + '"]'); if (!el || !el.querySelector('.rAdr')) return;
+  const d = drafts[s.id];
+  el.querySelector('.rAdr').oninput = (e) => { d.adr = e.target.value; };
+  el.querySelectorAll('.step button').forEach((b) => { b.onclick = () => { d[b.dataset.k] = Math.max(0, d[b.dataset.k] + Number(b.dataset.d)); document.activeElement.blur(); renderDirect(); }; });
+  const yes = el.querySelector('.rYes'), no = el.querySelector('.rNo');
+  if (yes) yes.onclick = () => run(el, () => authorize(s, d));
+  if (no) no.onclick = () => run(el, () => refuseReq(s));
+}
+async function run(el, fn) {
+  el.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  try { await fn(); } catch (e) { const er = el.querySelector('.rErr'); if (er) er.textContent = msg(e); el.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }
+}
+async function authorize(s, d) {
+  const b = writeBatch(db);
+  const ref = doc(db, 'soirees', s.id);
+  if (s.mid === me.mid || (!d.L && !d.XL)) {
+    // Sa propre soirée, ou aucun load à envoyer (il part avec ce qu'il a déjà) : ouverte tout de suite.
+    b.update(ref, { statut: 'ouverte', adresse: d.adr, autorisePar: me.mid, ouverteLe: serverTimestamp() });
+  } else {
+    const src = isOwner() ? RESERVE : me.mid;
+    b.update(ref, { statut: 'load', adresse: d.adr, autorisePar: me.mid, autoriseLe: serverTimestamp(), load: { L: d.L, XL: d.XL, de: src } });
+    if (src !== RESERVE && (d.L || d.XL)) b.set(doc(db, 'stocks', src), { L: increment(-d.L), XL: increment(-d.XL) }, { merge: true });
+  }
+  await b.commit();
+  delete drafts[s.id];
+}
+async function refuseReq(s) {
+  await writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'refusee', refuseePar: me.mid, finLe: serverTimestamp() }).commit();
+  delete drafts[s.id];
+}
+
+// ---------- Stock (propriétaire et dispatchs) ----------
+const give = { to: null, L: 0, XL: 0 };
+function giveTargets() {
+  const disp = Object.keys(team).filter((id) => team[id].actif && (team[id].role === 'complet' || team[id].role === 'limite'));
+  if (isOwner()) return disp;                                                   // propriétaire → un dispatch (de la réserve)
+  if (me.role === 'complet') return disp.filter((id) => id !== me.mid);         // MOUSSE → Lost (ou un autre dispatch)
+  return disp.filter((id) => team[id].role === 'complet');                      // Lost → seulement retourner à MOUSSE
+}
+function renderStock() {
+  const all = isOwner() || me.role === 'complet';
+  const ids = all ? Object.keys(team).filter((id) => team[id].actif || (stocks[id] && (stocks[id].L || stocks[id].XL)))
+    .sort((a, b) => ({ complet: 0, limite: 1, livreur: 2 }[team[a].role] - { complet: 0, limite: 1, livreur: 2 }[team[b].role]) || team[a].nom.localeCompare(team[b].nom, 'fr')) : [me.mid];
+  $('stockList').innerHTML = ids.map((id) => '<div class="srow"><span>' + esc(nomDe(id)) + (id === me.mid ? ' (moi)' : '') + '</span><b>' + qty(st(id)) + '</b></div>').join('');
+  const tg = giveTargets();
+  $('giveCard').classList.toggle('hide', !tg.length);
+  if (give.to && tg.indexOf(give.to) < 0) give.to = null;
+  if (!give.to && tg.length === 1) give.to = tg[0];
+  $('giveTitle').textContent = isOwner() ? 'Donner du stock (de la réserve)' : me.role === 'complet' ? 'Donner de mon stock' : 'Retourner du stock';
+  $('giveWho').innerHTML = '<div class="who">' + tg.map((id) => '<button data-id="' + id + '" class="' + (give.to === id ? 'on' : '') + '">' + esc(nomDe(id)) + '</button>').join('') + '</div>';
+  document.querySelectorAll('#giveWho button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
+  $('gL').textContent = give.L; $('gXL').textContent = give.XL;
+  $('gGo').textContent = isOwner() || me.role === 'complet' ? 'Donner' + (give.to ? ' à ' + nomDe(give.to) : '') : 'Retourner' + (give.to ? ' à ' + nomDe(give.to) : '');
+  $('mvts').innerHTML = mvts.map((m) => hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
+}
+document.querySelectorAll('#giveCard .step button').forEach((b) => { b.onclick = () => { give[b.dataset.k] = Math.max(0, give[b.dataset.k] + Number(b.dataset.d)); $('gErr').textContent = ''; renderStock(); }; });
+$('gGo').onclick = async () => {
+  $('gErr').textContent = '';
+  if (!give.to) return ($('gErr').textContent = 'Choisis à qui.');
+  if (!give.L && !give.XL) return ($('gErr').textContent = 'Mets une quantité.');
+  const src = isOwner() ? RESERVE : me.mid;
+  if (src !== RESERVE && (give.L > (st(src).L || 0) || give.XL > (st(src).XL || 0))) return ($('gErr').textContent = 'Tu n’as que ' + qty(st(src)) + '.');
+  $('gGo').disabled = true;
+  try {
+    const b = writeBatch(db);
+    if (src !== RESERVE) b.set(doc(db, 'stocks', src), { L: increment(-give.L), XL: increment(-give.XL) }, { merge: true });
+    b.set(doc(db, 'stocks', give.to), { L: increment(give.L), XL: increment(give.XL) }, { merge: true });
+    b.set(doc(collection(db, 'mouvements')), { de: src, vers: give.to, L: give.L, XL: give.XL, type: me.role === 'limite' ? 'retour' : 'don', par: me.mid, le: serverTimestamp() });
+    await b.commit();
+    give.L = 0; give.XL = 0; renderStock();
+  } catch (e) { $('gErr').textContent = msg(e); }
+  $('gGo').disabled = false;
+};
+
+// ---------- Ma soirée (livreur) ----------
+const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
+function renderSoiree() {
+  if (!me || !delivers()) return;
+  const s = mySoiree, mine = st(me.mid);
+  let h = '';
+  if (!s) {
+    h = '<div class="card"><div class="label">Commencer ma soirée</div>' +
+      '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>' +
+      '<input id="ciAdr" placeholder="Ex. 1400 Sainte-Catherine" autocomplete="off" value="' + esc(ci.q) + '">' +
+      '<div id="ciSugs"></div>' +
+      '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>' +
+      ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
+      '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
+  } else if (s.statut === 'demande') {
+    h = '<div class="card"><div class="wait"><span class="dot"></span><b>En attente du dispatch…</b></div>' +
+      '<p class="small">Adresse envoyée : ' + esc(s.adresse) + '</p><div class="err" id="ciErr"></div><button class="btn ghost" id="ciCancel">Annuler ma demande</button></div>';
+  } else if (s.statut === 'load') {
+    const L = s.load || {};
+    h = '<div class="card alert"><div class="label">Ton load est arrivé</div>' +
+      '<p style="margin:0 0 10px">' + esc(nomDe(L.de)) + ' t’envoie <b>' + (L.L || 0) + ' L</b> et <b>' + (L.XL || 0) + ' XL</b>.</p>' +
+      '<p class="small" style="margin-top:0">Compte avant d’accepter. Avec ce que tu as déjà, tu auras ' + ((L.L || 0) + (mine.L || 0)) + ' L · ' + ((L.XL || 0) + (mine.XL || 0)) + ' XL.</p>' +
+      '<div class="err" id="ciErr"></div><div class="two"><button class="btn red" id="ciRefuse">Pas le bon compte</button><button class="btn ok" id="ciAccept">J’accepte</button></div></div>';
+  } else if (s.statut === 'ouverte') {
+    h = '<div class="card"><div class="label">Soirée ouverte ✓ <span class="small" style="text-transform:none;letter-spacing:0">depuis ' + hhmm(s.ouverteLe) + '</span></div>' +
+      '<div class="stock"><div><b>' + (mine.L || 0) + '</b>L</div><div><b>' + (mine.XL || 0) + '</b>XL</div></div>' +
+      '<p class="small">Départ : ' + esc(s.adresse) + '</p><p class="small" style="margin-bottom:0">Prochaine étape : ta file de commandes apparaîtra ici.</p></div>';
+  }
+  const keepFocus = document.activeElement && document.activeElement.id === 'ciAdr';
+  const pos = keepFocus ? document.activeElement.selectionStart : null;
+  $('soiree').innerHTML = h;
+  if ($('ciAdr')) {
+    $('ciAdr').oninput = (e) => { ci.q = e.target.value; ci.pick = null; lookup(); };
+    if (keepFocus) { $('ciAdr').focus(); try { $('ciAdr').setSelectionRange(pos, pos); } catch (e) {} }
+    drawSugs();
+    $('ciGo').onclick = () => soirAct(requestStart);
+  }
+  if ($('ciCancel')) $('ciCancel').onclick = () => soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'annulee', finLe: serverTimestamp() }).commit());
+  if ($('ciAccept')) $('ciAccept').onclick = () => soirAct(() => acceptLoad(s));
+  if ($('ciRefuse')) $('ciRefuse').onclick = () => soirAct(() => refuseLoad(s));
+}
+async function soirAct(fn) {
+  document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; });
+  try { await fn(); } catch (e) { if ($('ciErr')) $('ciErr').textContent = msg(e); }
+  document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; });
+}
+// Suggestions d'adresses (Photon / OpenStreetMap, gratuit) : on attend que la personne arrête de taper.
+function lookup() {
+  clearTimeout(ci.timer);
+  const q = ci.q.trim();
+  if (q.length < 4) { ci.sugs = []; drawSugs(); return; }
+  ci.timer = setTimeout(async () => {
+    const my = ++ci.seq;
+    try {
+      const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=fr&lat=45.52&lon=-73.6&bbox=-79.8,44.9,-57.1,62.6&q=' + encodeURIComponent(q));
+      const j = await r.json();
+      if (my !== ci.seq) return;
+      const seen = {};
+      ci.sugs = (j.features || []).map((f) => {
+        const p = f.properties || {};
+        const l1 = [p.housenumber, p.street || p.name].filter(Boolean).join(' ');
+        const l2 = [p.city || p.town || p.village || p.district, 'QC', p.postcode].filter(Boolean).join(' ').replace(' QC ', ', QC ');
+        return { l1, l2, lat: f.geometry && f.geometry.coordinates[1], lon: f.geometry && f.geometry.coordinates[0], st: p.state };
+      }).filter((x) => x.l1 && (!x.st || /qu[ée]bec/i.test(x.st))).filter((x) => { const k = x.l1 + x.l2; if (seen[k]) return false; seen[k] = 1; return true; }).slice(0, 5);
+    } catch (e) { ci.sugs = []; }
+    drawSugs();
+  }, 350);
+}
+function drawSugs() {
+  const box = $('ciSugs'); if (!box) return;
+  box.innerHTML = ci.sugs.length && !ci.pick ? '<div class="sugs">' + ci.sugs.map((x, i) => '<div data-i="' + i + '">' + esc(x.l1) + '<div class="s2">' + esc(x.l2) + '</div></div>').join('') + '</div>' : '';
+  box.querySelectorAll('[data-i]').forEach((d) => { d.onclick = () => { const x = ci.sugs[+d.dataset.i]; ci.pick = x; ci.q = x.l1 + ', ' + x.l2; $('ciAdr').value = ci.q; drawSugs(); }; });
+}
+async function requestStart() {
+  const adr = ci.q.trim();
+  if (adr.length < 4) { $('ciErr').textContent = 'Écris où tu es.'; return; }
+  const data = { mid: me.mid, nom: me.nom, statut: 'demande', adresse: adr, demandeLe: serverTimestamp() };
+  if (ci.pick && ci.pick.lat) { data.lat = ci.pick.lat; data.lon = ci.pick.lon; }
+  await setDoc(doc(collection(db, 'soirees')), data);
+  ci.q = ''; ci.pick = null; ci.sugs = [];
+}
+async function acceptLoad(s) {
+  const L = s.load || {};
+  const b = writeBatch(db);
+  b.update(doc(db, 'soirees', s.id), { statut: 'ouverte', ouverteLe: serverTimestamp() });
+  b.set(doc(db, 'stocks', me.mid), { L: increment(L.L || 0), XL: increment(L.XL || 0), via: s.id }, { merge: true });
+  b.set(doc(collection(db, 'mouvements')), { de: L.de || RESERVE, vers: me.mid, L: L.L || 0, XL: L.XL || 0, type: 'load', par: me.mid, soiree: s.id, le: serverTimestamp() });
+  await b.commit();
+}
+async function refuseLoad(s) {
+  const L = s.load || {};
+  const b = writeBatch(db);
+  b.update(doc(db, 'soirees', s.id), { statut: 'demande', refusLe: serverTimestamp() });
+  if (L.de && L.de !== RESERVE && (L.L || L.XL)) b.set(doc(db, 'stocks', L.de), { L: increment(L.L || 0), XL: increment(L.XL || 0), via: s.id }, { merge: true });
+  await b.commit();
 }
