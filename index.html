@@ -129,11 +129,13 @@
   .cpic{display:flex;align-items:center;justify-content:center;padding:0 12px;background:var(--card);border:1px solid var(--line);border-radius:10px;font-size:18px;cursor:pointer}
   .notif{border-color:#3d3a1a;background:#1a1910}
   pre.fin { white-space: pre-wrap; font: 14px/1.45 inherit; font-family: inherit; background: rgba(127,127,127,.08); border-radius: 10px; padding: 10px; margin: 0 0 10px; }
+  .cm.call { align-self: center; background: #3a2f0b; color: #ffd866; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header><b>LIVREURS</b><span><span id="who" class="small"></span> <button id="logout" class="hide">Déconnexion</button></span></header>
+  <header><b>LIVREURS</b><span><span id="who" class="small"></span> <button id="cashBtn" class="hide" title="Ma soirée" style="background:none;border:0;font-size:16px;padding:0 6px;opacity:.6;cursor:pointer">💰</button> <button id="logout" class="hide">Déconnexion</button></span></header>
+  <div id="cashPop" class="hide" style="position:fixed;top:44px;right:12px;z-index:50;background:#1f2530;border:1px solid #333b48;border-radius:12px;padding:8px 12px;font-size:14px;box-shadow:0 6px 24px #0008"></div>
   <div id="loading" class="center small" style="padding:40px 0">Chargement…</div>
 
   <section id="login" class="hide">
@@ -166,6 +168,7 @@
       <div class="err" id="dErr"></div>
       <div class="card hide" id="freeCard"><div class="label">À assigner</div><div id="freeList"></div></div>
       <div class="card"><div class="label">Livreurs en service</div><div id="service"></div></div>
+      <div id="dmCard"></div>
       <div id="finTeam"></div>
     </div>
 
@@ -185,6 +188,7 @@
     <!-- Ma soirée (livreur, ou dispatch qui livre aussi) -->
     <div id="tabSoiree" class="tab hide">
       <div id="soiree"></div>
+      <div id="dmMe"></div>
       <div id="finMe"></div>
       <div class="card small">
         <b style="color:var(--text)">Installer sur iPhone :</b> dans Safari, Partager → « Sur l'écran d'accueil ».<br>
@@ -196,6 +200,7 @@
       <button class="btn ok" id="addBtn" style="margin-bottom:12px">＋ Ajouter quelqu'un</button>
       <div class="card"><div class="label">Dispatchs</div><div id="lDisp"></div></div>
       <div class="card"><div class="label">Livreurs</div><div id="lLiv"></div></div>
+      <div id="archCard"></div>
       <p class="small">Touche une personne pour changer son rôle, sa paie ou son mot de passe, ou pour la désactiver.</p>
       <div class="card" id="cfgCard"><div class="label">Réglages</div>
         <div class="two"><div><div class="small">Prix L ($)</div><input id="cfgL" type="number" inputmode="numeric"></div><div><div class="small">Prix XL ($)</div><input id="cfgXL" type="number" inputmode="numeric"></div></div>
@@ -209,7 +214,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=9"></script>
+<script type="module" src="app.js?v=10"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
