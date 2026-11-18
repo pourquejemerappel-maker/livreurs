@@ -335,6 +335,7 @@ function startLive() {
       if (locked()) setTab('soiree'); else if (wasLocked) setTab('direct');
     }, (e) => console.warn(e)));
   }
+  startOrders();
   renderAll(); renderSoiree();
 }
 function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } }
@@ -361,8 +362,8 @@ function renderDirect() {
       '<div class="small">Rien pour l’instant. Les demandes de check-in apparaissent ici toutes seules.</div>';
     todo.forEach(bindReq);
   }
-  $('service').innerHTML = srv.map((s) => '<div class="item"><b>' + esc(s.nom) + '</b> <span class="small">· depuis ' + hhmm(s.ouverteLe) + '</span><div class="small">' +
-    ((isOwner() || me.role === 'complet') ? qty(st(s.mid)) + ' · ' : '') + esc(s.adresse || '') + '</div></div>').join('') || '<div class="small">Personne pour l’instant.</div>';
+  if (!NF) renderNew();
+  renderQueues();
 }
 function loadSrc(d) { return isOwner() ? RESERVE : me.role === 'complet' && d.src === DEP(me.mid) ? DEP(me.mid) : me.mid; }
 function canAuthorize(s) { return isOwner() || me.role === 'complet' || s.mid !== me.mid; }
@@ -485,6 +486,7 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
+  if (document.activeElement && document.activeElement.id === 'mcCash') return; // ne pas effacer le montant qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
   if (!s) {
@@ -506,9 +508,7 @@ function renderSoiree() {
       '<p class="small" style="margin-top:0">Compte avant d’accepter. Avec ce que tu as déjà, tu auras ' + ((L.L || 0) + (mine.L || 0)) + ' L · ' + ((L.XL || 0) + (mine.XL || 0)) + ' XL.</p>' +
       '<div class="err" id="ciErr"></div><div class="two"><button class="btn red" id="ciRefuse">Pas le bon compte</button><button class="btn ok" id="ciAccept">J’accepte</button></div></div>';
   } else if (s.statut === 'ouverte') {
-    h = '<div class="card"><div class="label">Soirée ouverte ✓ <span class="small" style="text-transform:none;letter-spacing:0">depuis ' + hhmm(s.ouverteLe) + '</span></div>' +
-      '<div class="stock"><div><b>' + (mine.L || 0) + '</b>L</div><div><b>' + (mine.XL || 0) + '</b>XL</div></div>' +
-      '<p class="small">Départ : ' + esc(s.adresse) + '</p><p class="small" style="margin-bottom:0">Prochaine étape : ta file de commandes apparaîtra ici.</p></div>';
+    h = myOrdersHtml(s);
   }
   const keepFocus = document.activeElement && document.activeElement.id === 'ciAdr';
   const pos = keepFocus ? document.activeElement.selectionStart : null;
@@ -522,6 +522,7 @@ function renderSoiree() {
   if ($('ciCancel')) $('ciCancel').onclick = () => soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'annulee', finLe: serverTimestamp() }).commit());
   if ($('ciAccept')) $('ciAccept').onclick = () => soirAct(() => acceptLoad(s));
   if ($('ciRefuse')) $('ciRefuse').onclick = () => soirAct(() => refuseLoad(s));
+  if (s && s.statut === 'ouverte') bindMyOrders(s);
 }
 async function soirAct(fn) {
   document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; });
@@ -578,3 +579,392 @@ async function refuseLoad(s) {
   if (L.de && L.de !== RESERVE && (L.L || L.XL)) b.set(doc(db, 'stocks', L.de), { L: increment(L.L || 0), XL: increment(L.XL || 0), via: s.id }, { merge: true });
   await b.commit();
 }
+
+// =====================================================================
+// Version 5 : commandes, file 1-2-3, temps de route (Google Maps)
+// =====================================================================
+// commandes/{id}   : ce que le livreur a besoin de voir (client, adresse, L/XL, ce qu'il doit encaisser, bloqué ou non).
+// cmdPrive/{id}    : montants et paiement complet (Interac) : propriétaire et dispatchs seulement.
+// config/app       : prix et clé Google Maps (entrés par le propriétaire).
+// Règles de temps (décidées par le propriétaire) : 4 min de marge pour partir sur la 1re commande,
+// 2 min pour chacune des suivantes, 7 min sur place. Retard : gris jusqu'à 10 min, rouge après.
+// « Sur son chemin » : proposé si le détour est de 10 min ou moins, jamais avant la commande où il s'en va.
+
+const SUR_PLACE = 7, MARGE1 = 4, MARGE = 2, DETOUR_MAX = 10;
+let cfg = { prixL: 150, prixXL: 220, mapsKey: '' };
+let cmds = {}, prive = {}, myCmds = [], myDone = 0;
+const ttMem = {}; // mémoire des temps de route (15 min)
+
+function startOrders() {
+  stops.push(onSnapshot(doc(db, 'config', 'app'), (s) => { if (s.exists()) cfg = Object.assign({ prixL: 150, prixXL: 220, mapsKey: '' }, s.data()); renderAll(); renderSoiree(); renderCfg(); }, () => {}));
+  if (isOwner() || isStaff()) {
+    stops.push(onSnapshot(query(collection(db, 'commandes'), where('statut', 'in', ['attente', 'assignee', 'ici'])), (qs) => {
+      cmds = {}; qs.forEach((d) => { cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll();
+    }, (e) => console.warn(e)));
+    stops.push(onSnapshot(query(collection(db, 'cmdPrive'), where('actif', '==', true)), (qs) => {
+      prive = {}; qs.forEach((d) => { prive[d.id] = d.data(); }); renderAll();
+    }, (e) => console.warn(e)));
+  }
+  if (delivers()) {
+    stops.push(onSnapshot(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', 'in', ['assignee', 'ici'])), (qs) => {
+      myCmds = []; qs.forEach((d) => myCmds.push(Object.assign({ id: d.id }, d.data()))); myCmds.sort((a, b) => a.ordre - b.ordre); renderSoiree();
+    }, (e) => console.warn(e)));
+  }
+}
+
+// ---------- Temps de route ----------
+function km(a, b) {
+  const R = 6371, dl = (b.lat - a.lat) * Math.PI / 180, dg = (b.lon - a.lon) * Math.PI / 180;
+  const x = Math.sin(dl / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dg / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+const rive = (p) => (p.lon > -73.52 ? 's' : p.lat > 45.55 && p.lon < -73.66 ? 'l' : 'm'); // Rive-Sud / Laval / Montréal (ponts)
+function estime(a, b) { if (!a || !b || a.lat == null || b.lat == null) return 15; return Math.round(km(a, b) * 2.2 + 3 + (rive(a) !== rive(b) ? 8 : 0)); }
+const kOf = (a, b) => [a.lat, a.lon, b.lat, b.lon].map((x) => Number(x).toFixed(3)).join(',');
+// Demande à Google le temps de route de plusieurs départs vers une arrivée (avec ou sans trafic).
+async function googleTimes(origins, dest, trafic) {
+  const out = origins.map((o) => { const m = ttMem[kOf(o, dest)]; return m && Date.now() - m.t < 15 * 60000 ? m.min : null; });
+  const need = origins.map((o, i) => (out[i] == null && o && o.lat != null ? i : -1)).filter((i) => i >= 0);
+  if (!need.length || !cfg.mapsKey || dest.lat == null) return out.map((v, i) => (v == null ? estime(origins[i], dest) : v));
+  try {
+    const body = {
+      origins: need.map((i) => ({ waypoint: { location: { latLng: { latitude: origins[i].lat, longitude: origins[i].lon } } } })),
+      destinations: [{ waypoint: { location: { latLng: { latitude: dest.lat, longitude: dest.lon } } } }],
+      travelMode: 'DRIVE', routingPreference: trafic ? 'TRAFFIC_AWARE' : 'TRAFFIC_UNAWARE', regionCode: 'CA'
+    };
+    const r = await fetch('https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': cfg.mapsKey, 'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,condition' }, body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    (Array.isArray(j) ? j : []).forEach((e) => {
+      const i = need[e.originIndex || 0];
+      if (e.condition === 'ROUTE_EXISTS' && e.duration) { const min = Math.max(1, Math.round(parseInt(e.duration, 10) / 60)); out[i] = min; ttMem[kOf(origins[i], dest)] = { min, t: Date.now() }; }
+    });
+  } catch (e) { console.warn('Google Maps', e); }
+  return out.map((v, i) => (v == null ? estime(origins[i], dest) : v));
+}
+
+// ---------- Plan d'un livreur : heures d'arrivée ----------
+const pos = (c) => (c && c.lat != null ? { lat: c.lat, lon: c.lon } : null);
+const tsMs = (t) => (t && t.toMillis ? t.toMillis() : t || Date.now());
+function queueOf(mid) { return Object.values(cmds).filter((c) => c.livreur === mid && (c.statut === 'assignee' || c.statut === 'ici')).sort((a, b) => a.ordre - b.ordre); }
+function soireeOf(mid) { return Object.values(soirees).find((s) => s.mid === mid && s.statut === 'ouverte'); }
+// trajet = minutes depuis l'arrêt d'avant (enregistré à l'assignation) ; depart = quand la 1re commande a commencé.
+function planOf(list) {
+  const out = []; let t = null;
+  list.forEach((c, i) => {
+    if (c.statut === 'ici') { t = tsMs(c.iciLe); out.push(t); t += SUR_PLACE * 60000; return; }
+    if (i === 0) t = tsMs(c.depart) + MARGE1 * 60000;
+    else t += MARGE * 60000;
+    t += ((c.trajet || 15) + (c.retard || 0)) * 60000;
+    out.push(t); t += SUR_PLACE * 60000;
+  });
+  return out;
+}
+const hm = (ms) => { const d = new Date(ms); return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); };
+const lateTag = (m) => (m > 10 ? '<span class="late">+' + m + ' min retard</span>' : '<span class="small">+' + m + ' min</span>');
+
+// ---------- Prix et paiement ----------
+const totalOf = (o) => (o.L || 0) * cfg.prixL + (o.XL || 0) * cfg.prixXL + (o.frais || 0);
+function payTag(c) {
+  const p = prive[c.id] || {};
+  if (c.bloque) return '<span class="pay p-no">' + (p.mode === 'mix' ? p.cash + ' $ cash + Interac pas reçu' : 'Interac pas reçu') + '</span>';
+  if (p.mode === 'mix') return '<span class="pay p-cash">' + p.cash + ' $ cash</span><span class="pay p-int">+ Interac reçu</span>';
+  if (p.mode === 'int') return '<span class="pay p-int">Interac reçu</span>';
+  return '<span class="pay p-cash">Cash ' + (c.encaisser || 0) + ' $</span>';
+}
+
+// ---------- Créer une commande (dispatch) ----------
+let NF = null; // formulaire en cours
+const nf = { timer: null, seq: 0, sugs: [] };
+function newOrder() { NF = { client: '', tel: '', q: '', pick: null, L: 1, XL: 0, frais: 0, meth: 'cash', recu: false, cashPart: 0, note: '', plus: false, more: false, opts: null, busy: false }; renderNew(); }
+function renderNew() {
+  const box = $('cmdNew'); if (!box) return;
+  if (!NF) { box.innerHTML = '<button class="btn ok" id="nfOpen" style="margin-bottom:12px">＋ Créer une commande</button>'; $('nfOpen').onclick = newOrder; return; }
+  const f = NF, tot = totalOf(f);
+  const focusId = document.activeElement && document.activeElement.id;
+  box.innerHTML = '<div class="card"><div class="label">Nouvelle commande</div>' +
+    '<input id="nfClient" placeholder="Nom du client" value="' + esc(f.client) + '">' +
+    '<input id="nfAdr" placeholder="Adresse (ex. 5000 jean-talon)" autocomplete="off" value="' + esc(f.q) + '"><div id="nfSugs"></div>' +
+    '<div class="step"><span>L</span><button data-k="L" data-d="-1">−</button><div class="v">' + f.L + '</div><button data-k="L" data-d="1">+</button>' +
+    '<span style="margin-left:10px">XL</span><button data-k="XL" data-d="-1">−</button><div class="v">' + f.XL + '</div><button data-k="XL" data-d="1">+</button></div>' +
+    '<div class="small" style="margin-bottom:4px">Comment le client paie ?</div><div class="seg" id="nfMeth">' + [['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['mix', '🔵🟡 Les deux']].map((x) => '<button data-m="' + x[0] + '" class="' + (f.meth === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    (f.meth === 'mix' ? '<div class="mixbox"><div class="two"><div><div class="small">Partie cash ($)</div><input id="nfCash" type="number" inputmode="numeric" value="' + f.cashPart + '"></div><div><div class="small">Partie Interac</div><div class="mixv" id="nfInt">' + Math.max(0, tot - f.cashPart) + ' $</div></div></div></div>' : '') +
+    (f.meth !== 'cash' ? '<label class="chk"><input type="checkbox" id="nfRecu" ' + (f.recu ? 'checked' : '') + '> Interac déjà reçu' + (f.recu ? '' : ' <span class="small">(sinon le livreur attend ta confirmation)</span>') + '</label>' : '') +
+    (f.plus ? '<input id="nfTel" placeholder="Téléphone du client (optionnel)" inputmode="tel" value="' + esc(f.tel) + '">' +
+      '<div class="small" style="margin-bottom:4px">Frais de livraison</div><div class="seg" id="nfFee">' + [0, 20, 30, 40].map((v) => '<button data-v="' + v + '" class="' + (f.frais === v ? 'on' : '') + '">' + (v ? '+' + v + ' $' : 'Aucun') + '</button>').join('') + '</div>' +
+      '<input id="nfNote" placeholder="Note pour le livreur (optionnel)" value="' + esc(f.note) + '">'
+      : '<button class="linkbtn" id="nfPlus">+ Téléphone, frais, note</button>') +
+    '<div class="small" style="margin-bottom:8px">Total : <b style="color:var(--text)">' + tot + ' $</b></div>' +
+    '<div id="nfAssign"></div><div class="err" id="nfErr"></div>' +
+    '<div class="two"><button class="btn ghost" id="nfCancel">Annuler</button><button class="btn ghost" id="nfKeep">Garder sans assigner</button></div></div>';
+  const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
+  on('nfClient', 'oninput', (e) => { f.client = e.target.value; });
+  on('nfAdr', 'oninput', (e) => { f.q = e.target.value; f.pick = null; f.opts = null; drawAssign(); nfLookup(); });
+  on('nfTel', 'oninput', (e) => { f.tel = e.target.value; });
+  on('nfNote', 'oninput', (e) => { f.note = e.target.value; });
+  on('nfCash', 'oninput', (e) => { f.cashPart = Math.max(0, Math.min(totalOf(f), Number(e.target.value) || 0)); $('nfInt').textContent = (totalOf(f) - f.cashPart) + ' $'; });
+  on('nfRecu', 'onchange', (e) => { f.recu = e.target.checked; renderNew(); });
+  on('nfPlus', 'onclick', () => { f.plus = true; renderNew(); });
+  on('nfCancel', 'onclick', () => { NF = null; renderNew(); });
+  on('nfKeep', 'onclick', () => saveOrder(null));
+  document.querySelectorAll('#cmdNew .step button').forEach((b) => { b.onclick = () => { f[b.dataset.k] = Math.max(0, f[b.dataset.k] + Number(b.dataset.d)); f.opts = null; renderNew(); computeOpts(); }; });
+  document.querySelectorAll('#nfMeth button').forEach((b) => { b.onclick = () => { f.meth = b.dataset.m; if (f.meth === 'mix' && !f.cashPart) f.cashPart = Math.round(totalOf(f) / 20) * 10; renderNew(); }; });
+  document.querySelectorAll('#nfFee button').forEach((b) => { b.onclick = () => { f.frais = Number(b.dataset.v); renderNew(); }; });
+  if (focusId && $(focusId) && focusId.indexOf('nf') === 0) { const el = $(focusId); el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} }
+  drawNfSugs(); drawAssign();
+}
+function nfLookup() {
+  clearTimeout(nf.timer);
+  const q = NF.q.trim();
+  if (q.length < 4) { nf.sugs = []; drawNfSugs(); return; }
+  nf.timer = setTimeout(async () => { const my = ++nf.seq; const s = await photon(q); if (my === nf.seq) { nf.sugs = s; drawNfSugs(); } }, 350);
+}
+async function photon(q) {
+  try {
+    const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=fr&lat=45.52&lon=-73.6&bbox=-79.8,44.9,-57.1,62.6&q=' + encodeURIComponent(q));
+    const j = await r.json(); const seen = {};
+    return (j.features || []).map((f) => {
+      const p = f.properties || {};
+      const l1 = [p.housenumber, p.street || p.name].filter(Boolean).join(' ');
+      const l2 = [p.city || p.town || p.village || p.district, 'QC', p.postcode].filter(Boolean).join(' ').replace(' QC ', ', QC ');
+      return { l1, l2, lat: f.geometry && f.geometry.coordinates[1], lon: f.geometry && f.geometry.coordinates[0], st: p.state };
+    }).filter((x) => x.l1 && (!x.st || /qu[ée]bec/i.test(x.st))).filter((x) => { const k = x.l1 + x.l2; if (seen[k]) return false; seen[k] = 1; return true; }).slice(0, 5);
+  } catch (e) { return []; }
+}
+function drawNfSugs() {
+  const box = $('nfSugs'); if (!box || !NF) return;
+  box.innerHTML = nf.sugs.length && !NF.pick ? '<div class="sugs">' + nf.sugs.map((x, i) => '<div data-i="' + i + '">' + esc(x.l1) + '<div class="s2">' + esc(x.l2) + '</div></div>').join('') + '</div>' : '';
+  box.querySelectorAll('[data-i]').forEach((d) => { d.onclick = () => { const x = nf.sugs[+d.dataset.i]; NF.pick = x; NF.q = x.l1 + ', ' + x.l2; $('nfAdr').value = NF.q; drawNfSugs(); computeOpts(); }; });
+}
+
+// Options : pour chaque livreur en service, à la fin de sa file, ou « sur son chemin » (détour ≤ 10 min).
+function stockLeft(mid) { const s = st(mid); const q = queueOf(mid); return { L: (s.L || 0) - q.reduce((a, c) => a + (c.L || 0), 0), XL: (s.XL || 0) - q.reduce((a, c) => a + (c.XL || 0), 0) }; }
+async function optionsFor(o, skipId) {
+  const X = pos(o);
+  const people = Object.values(soirees).filter((s) => s.statut === 'ouverte');
+  const cand = [];
+  people.forEach((s) => {
+    const q = queueOf(s.mid).filter((c) => c.id !== skipId), plan = planOf(q);
+    const left = stockLeft(s.mid); if (skipId && cmds[skipId] && cmds[skipId].livreur === s.mid) { left.L += cmds[skipId].L || 0; left.XL += cmds[skipId].XL || 0; }
+    const ok = left.L >= (o.L || 0) && left.XL >= (o.XL || 0);
+    const start = pos(s) || X;
+    const lastPos = q.length ? pos(q[q.length - 1]) : start;
+    const endBase = q.length ? plan[plan.length - 1] + SUR_PLACE * 60000 + MARGE * 60000 : Date.now() + MARGE1 * 60000;
+    cand.push({ mid: s.mid, nom: s.nom, kind: 'fin', idx: q.length, from: lastPos, base: endBase, est: estime(lastPos, X), ok, left, avant: q.length });
+    for (let k = 1; k < q.length; k++) {
+      const A = pos(q[k - 1]), B = pos(q[k]); if (!A || !B || !X) continue;
+      const det = estime(A, X) + estime(X, B) - estime(A, B);
+      if (det <= DETOUR_MAX) cand.push({ mid: s.mid, nom: s.nom, kind: 'chemin', idx: k, from: A, to: B, base: plan[k - 1] + SUR_PLACE * 60000 + MARGE * 60000, est: estime(A, X), detour: det, apres: q[k - 1].client, avantDe: q[k].client, ok, left, prevOrdre: q[k - 1].ordre, nextOrdre: q[k].ordre, nextId: q[k].id });
+    }
+  });
+  cand.forEach((c) => { c.arr = c.base + c.est * 60000; });
+  cand.sort((a, b) => (b.ok - a.ok) || (a.arr - b.arr));
+  // Google (avec trafic) seulement pour les 2 meilleurs choix.
+  const top = cand.filter((c) => c.ok).slice(0, 2);
+  if (top.length && X) {
+    const g = await googleTimes(top.map((c) => c.from), X, true);
+    top.forEach((c, i) => { c.trajet = g[i]; c.arr = c.base + g[i] * 60000; });
+    cand.sort((a, b) => (b.ok - a.ok) || (a.arr - b.arr));
+  }
+  cand.forEach((c) => { if (c.trajet == null) c.trajet = c.est; });
+  return cand;
+}
+async function computeOpts() {
+  if (!NF || !NF.pick || !(NF.L || NF.XL)) { if (NF) { NF.opts = null; drawAssign(); } return; }
+  const f = NF; f.opts = 'calc'; drawAssign();
+  const o = await optionsFor({ lat: f.pick.lat, lon: f.pick.lon, L: f.L, XL: f.XL });
+  if (NF === f) { f.opts = o; drawAssign(); }
+}
+function optLine(c, best, i) {
+  const title = c.kind === 'chemin' ? '🛣️ ' + esc(c.nom) + ' — sur son chemin' : esc(c.nom) + (c.avant ? ' — à la fin de sa file' : ' — libre');
+  const det = !c.ok ? 'pas assez de stock (' + c.left.L + ' L, ' + c.left.XL + ' XL)' : c.kind === 'chemin' ? 'entre ' + esc(c.apres) + ' et ' + esc(c.avantDe) + ' · détour +' + c.detour + ' min · arriverait ~' + hm(c.arr) : 'arriverait ~' + hm(c.arr) + (c.avant ? ' · après ' + c.avant + ' commande' + (c.avant > 1 ? 's' : '') : '');
+  return '<div class="sugg' + (best ? ' best' : '') + (c.kind === 'chemin' ? ' road' : '') + '"><div><b>' + title + '</b><div class="t">' + det + '</div></div><button class="btn ' + (best ? 'ok' : 'ghost') + ' sm" data-o="' + i + '" ' + (c.ok ? '' : 'disabled') + '>' + (c.kind === 'chemin' ? 'Insérer' : 'Assigner') + '</button></div>';
+}
+function drawAssign() {
+  const box = $('nfAssign'); if (!box || !NF) return;
+  const f = NF;
+  if (!f.pick) { box.innerHTML = '<div class="small" style="margin-bottom:8px">Choisis une adresse dans la liste : l’app trouve le livreur qui arrive le plus vite.</div>'; return; }
+  if (f.opts === 'calc') { box.innerHTML = '<div class="small" style="margin-bottom:8px">Calcul des temps de route…</div>'; return; }
+  const o = f.opts || [];
+  if (!o.length) { box.innerHTML = '<div class="small" style="margin-bottom:8px">Aucun livreur en service. Tu peux garder la commande sans l’assigner.</div>'; return; }
+  const b = o[0];
+  if (!b.ok) { box.innerHTML = '<div class="small" style="color:var(--danger);margin-bottom:8px">Aucun livreur n’a assez de stock.</div>' + o.map((c, i) => optLine(c, false, i)).join(''); }
+  else {
+    const why = b.kind === 'chemin' ? '🛣️ sur son chemin, entre ' + esc(b.apres) + ' et ' + esc(b.avantDe) + ' (détour +' + b.detour + ' min)' : b.avant ? 'après ses ' + b.avant + ' commande' + (b.avant > 1 ? 's' : '') : 'il est libre';
+    box.innerHTML = '<button class="btn ok big" data-o="0" style="margin-bottom:6px">Assigner à ' + esc(b.nom) + ' · arrivée ~' + hm(b.arr) + '</button>' +
+      '<div class="small" style="margin-bottom:8px">Le plus rapide : ' + why + '.</div>' +
+      (f.more ? '<div class="label">Autres choix</div>' + o.slice(1).map((c, i) => optLine(c, false, i + 1)).join('') : (o.length > 1 ? '<button class="linkbtn" id="nfMore">Autre livreur ▾</button>' : ''));
+  }
+  box.querySelectorAll('[data-o]').forEach((el) => { el.onclick = () => saveOrder(o[+el.dataset.o]); });
+  if ($('nfMore')) $('nfMore').onclick = () => { f.more = true; drawAssign(); };
+}
+// Enregistre la commande (et l'assigne si un choix est donné).
+async function saveOrder(opt) {
+  const f = NF; if (!f || f.busy) return;
+  $('nfErr').textContent = '';
+  if (!f.q.trim()) return ($('nfErr').textContent = 'Écris l’adresse.');
+  if (!f.L && !f.XL) return ($('nfErr').textContent = 'Mets au moins 1 L ou 1 XL.');
+  f.busy = true;
+  try {
+    const tot = totalOf(f);
+    const mode = f.meth, recu = f.meth === 'cash' ? true : f.recu;
+    const encaisser = mode === 'cash' ? tot : mode === 'mix' ? f.cashPart : 0;
+    const ref = doc(collection(db, 'commandes'));
+    const data = { client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim(), L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
+      encaisser, paye: mode !== 'cash' && recu && mode === 'int', bloque: !recu, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: me.mid };
+    if (f.pick && f.pick.lat != null) { data.lat = f.pick.lat; data.lon = f.pick.lon; }
+    const b = writeBatch(db);
+    if (opt) Object.assign(data, await assignFields(opt, data));
+    b.set(ref, data);
+    b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: tot, mode, cash: encaisser, interac: tot - encaisser, recu, prixL: cfg.prixL, prixXL: cfg.prixXL, le: serverTimestamp() });
+    if (opt) await nextFix(b, opt, data);
+    await b.commit();
+    NF = null; nf.sugs = []; renderNew();
+  } catch (e) { $('nfErr').textContent = msg(e); f.busy = false; }
+}
+// Champs d'assignation : ordre dans la file, temps de route depuis l'arrêt d'avant, départ si c'est la 1re.
+async function assignFields(opt, c) {
+  const q = queueOf(opt.mid);
+  const ordre = opt.kind === 'chemin' ? (opt.prevOrdre + opt.nextOrdre) / 2 : (q.length ? q[q.length - 1].ordre + 1 : 1);
+  const out = { livreur: opt.mid, livreurNom: opt.nom, statut: 'assignee', ordre, trajet: opt.trajet, assigneLe: serverTimestamp(), assignePar: me.mid };
+  if (!q.length) out.depart = Date.now();
+  return out;
+}
+// Quand on insère « sur le chemin », la commande d'après part maintenant du nouvel arrêt.
+async function nextFix(b, opt, c) {
+  if (opt.kind !== 'chemin' || !opt.nextId) return;
+  const g = await googleTimes([pos(c)], opt.to, false);
+  b.update(doc(db, 'commandes', opt.nextId), { trajet: g[0] });
+}
+
+// ---------- Files des livreurs (dispatch) ----------
+let menuOpen = null, msgOpen = null, reassign = null;
+function renderQueues() {
+  const box = $('service'); if (!box) return;
+  const people = Object.values(soirees).filter((s) => s.statut === 'ouverte').sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
+  const seeStock = isOwner() || me.role === 'complet';
+  let h = '';
+  people.forEach((s) => {
+    const q = queueOf(s.mid), plan = planOf(q), left = stockLeft(s.mid);
+    const low = seeStock && (left.L <= 2 && left.XL <= 1);
+    h += '<div class="item"><div class="qhead"><b>' + esc(s.nom) + '</b><span class="small">' + (seeStock ? qty(st(s.mid)) + ' sur lui' : '') + (low ? ' <span class="pay p-int">stock bas</span>' : '') + '</span></div>';
+    if (!q.length) h += '<div class="small">Libre · ' + esc(s.adresse || '') + '</div>';
+    q.forEach((c, i) => {
+      h += '<div class="q"><span class="num">' + (i + 1) + '</span><b>' + esc(c.client) + '</b>' + payTag(c) +
+        '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL · ' + (c.statut === 'ici' ? '<b style="color:var(--cash)">sur place</b>' : 'arrivée ~' + hm(plan[i])) + (c.retard ? ' ' + lateTag(c.retard) : '') + (c.note ? '<br>📝 ' + esc(c.note) : '') + '</div>' +
+        '<div class="seg" style="margin:0">' + (c.bloque ? '<button class="on" data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') +
+        '<button data-a="msg" data-id="' + c.id + '">💬 Client</button>' +
+        (menuOpen === c.id ? '<button data-a="unassign" data-id="' + c.id + '">Retirer</button><button data-a="cancel" data-id="' + c.id + '">Annuler</button>' : '<button data-a="menu" data-id="' + c.id + '" style="flex:0 0 46px">⋯</button>') + '</div>' +
+        (msgOpen === c.id ? msgBox(c, plan[i]) : '') + '</div>';
+    });
+    h += '</div>';
+  });
+  box.innerHTML = h || '<div class="small">Personne en service pour l’instant.</div>';
+  // Commandes pas assignées
+  const free = Object.values(cmds).filter((c) => c.statut === 'attente');
+  $('freeCard').classList.toggle('hide', !free.length);
+  $('freeList').innerHTML = free.map((c) => '<div class="q"><b>' + esc(c.client) + '</b>' + payTag(c) + '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
+    (reassign && reassign.id === c.id ? (reassign.opts === 'calc' ? '<div class="small">Calcul…</div>' : (reassign.opts || []).map((o, i) => optLine(o, i === 0 && o.ok, i)).join('') || '<div class="small">Aucun livreur en service.</div>') :
+      '<div class="seg" style="margin:0"><button class="on" data-a="assign" data-id="' + c.id + '">Assigner</button>' + (c.bloque ? '<button data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') + '<button data-a="cancel" data-id="' + c.id + '">Annuler</button></div>') + '</div>').join('');
+  document.querySelectorAll('#service [data-a], #freeList [data-a]').forEach((el) => { el.onclick = () => qAct(el.dataset.a, el.dataset.id); });
+  document.querySelectorAll('#freeList [data-o]').forEach((el) => { el.onclick = () => assignExisting(reassign.id, reassign.opts[+el.dataset.o]); });
+  document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
+}
+function msgBox(c, eta) {
+  const t = 'Salut ' + c.client + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.';
+  return '<div class="msgc">' + esc(t) + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-copy="' + esc(t) + '">Copier</button>' +
+    (c.tel ? '<a class="btn ok sm" style="text-align:center;text-decoration:none" href="sms:' + encodeURIComponent(c.tel) + '?&body=' + encodeURIComponent(t) + '">Texto à ' + esc(c.tel) + '</a>' : '<span class="small" style="align-self:center">Pas de téléphone : copie-le où tu parles au client.</span>') + '</div></div>';
+}
+async function qAct(a, id) {
+  const c = cmds[id]; if (!c) return;
+  try {
+    if (a === 'menu') { menuOpen = id; return renderQueues(); }
+    if (a === 'msg') { msgOpen = msgOpen === id ? null : id; return renderQueues(); }
+    if (a === 'paid') {
+      const b = writeBatch(db);
+      b.update(doc(db, 'commandes', id), { bloque: false, paye: !(c.encaisser > 0), confirmePar: me.mid, confirmeLe: serverTimestamp() });
+      b.update(doc(db, 'cmdPrive', id), { recu: true });
+      return await b.commit();
+    }
+    if (a === 'unassign') { menuOpen = null; return await writeBatch(db).update(doc(db, 'commandes', id), { statut: 'attente', livreur: null, livreurNom: null, retard: 0 }).commit(); }
+    if (a === 'cancel') {
+      menuOpen = null;
+      const b = writeBatch(db);
+      b.update(doc(db, 'commandes', id), { statut: 'annulee', annuleePar: me.mid, finLe: serverTimestamp() });
+      b.update(doc(db, 'cmdPrive', id), { actif: false });
+      return await b.commit();
+    }
+    if (a === 'assign') {
+      reassign = { id, opts: 'calc' }; renderQueues();
+      const o = await optionsFor(c, id);
+      if (reassign && reassign.id === id) { reassign.opts = o; renderQueues(); }
+    }
+  } catch (e) { alertBar(msg(e)); }
+}
+async function assignExisting(id, opt) {
+  const c = cmds[id]; if (!c || !opt || !opt.ok) return;
+  try {
+    const b = writeBatch(db);
+    b.update(doc(db, 'commandes', id), await assignFields(opt, c));
+    await nextFix(b, opt, c);
+    await b.commit(); reassign = null;
+  } catch (e) { alertBar(msg(e)); }
+}
+function alertBar(t) { const el = $('dErr'); if (el) { el.textContent = t; setTimeout(() => { el.textContent = ''; }, 6000); } }
+
+// ---------- Ma file (livreur) ----------
+const mapsUrl = (c) => 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + encodeURIComponent(c.lat != null ? c.lat + ',' + c.lon : c.adresse);
+function myOrdersHtml(s) {
+  const mine = st(me.mid);
+  let h = '<div class="card"><div class="stock"><div><b>' + (mine.L || 0) + '</b>L sur toi</div><div><b>' + (mine.XL || 0) + '</b>XL sur toi</div><div><b>' + (s.livrees || 0) + '</b>livraisons</div></div></div>';
+  if (!myCmds.length) return h + '<div class="card"><div class="small">Aucune commande pour l’instant. Elles apparaissent ici toutes seules.</div><p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse) + '</p></div>';
+  const plan = planOf(myCmds), c = myCmds[0];
+  const banner = c.bloque ? '<div class="banner b-no">🔴 PAS ENCORE PAYÉ — ne livre pas, attends que le dispatch confirme</div>'
+    : c.encaisser > 0 ? '<div class="banner b-cash">🔵 À ENCAISSER : <b>' + c.encaisser + ' $</b> cash' + (c.paye === false && c.encaisser && !c.paye ? '' : '') + '</div>'
+    : '<div class="banner b-int">🟡 DÉJÀ PAYÉ — rien à encaisser</div>';
+  h += '<div class="card now"><div class="label">Maintenant · commande 1 sur ' + myCmds.length + '</div><div class="client">' + esc(c.client) + '</div>' +
+    '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b><br><u>Ouvrir dans Google Maps</u></span></a>' +
+    '<div class="chips"><span class="chip">' + c.L + ' × L</span><span class="chip">' + c.XL + ' × XL</span><span class="chip eta">' + (c.statut === 'ici' ? 'Sur place' : 'Arrivée ~' + hm(plan[0]) + (c.retard ? ' (+' + c.retard + ' min)' : ' si tu pars maintenant')) + '</span></div>' +
+    banner + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') + '<div class="err" id="mcErr"></div>';
+  if (c.statut !== 'ici') h += '<div class="two"><button class="btn ghost" id="mcLate" style="color:var(--danger);border-color:var(--danger)">⏱ +5 min</button><button class="btn" id="mcHere">Je suis arrivé</button></div>';
+  else if (c.bloque) h += '<button class="btn" disabled>🔒 Attends l’Interac</button>';
+  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + c.encaisser + '">' : '') + '<button class="btn ok big" id="mcDone">✓ Livrée</button>';
+  h += '</div>';
+  if (myCmds.length > 1) {
+    h += '<div class="card"><div class="label">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + '</span>' +
+      (d.bloque ? '<span class="pay p-no">Pas payé</span>' : d.encaisser > 0 ? '<span class="pay p-cash">Cash ' + d.encaisser + ' $</span>' : '<span class="pay p-int">Payé</span>') +
+      '<div class="small" style="margin-top:3px"><a href="' + mapsUrl(d) + '" target="_blank" rel="noopener" style="color:var(--blue)">📍 ' + esc(d.adresse) + '</a> · ' + d.L + ' L · ' + d.XL + ' XL</div></div>').join('') + '</div>';
+  }
+  return h;
+}
+function bindMyOrders(s) {
+  const c = myCmds[0]; if (!c) return;
+  const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
+  if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
+  if ($('mcHere')) $('mcHere').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }).commit());
+  if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
+    const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
+    const b = writeBatch(db);
+    b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id });
+    b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
+    b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+    const nx = myCmds[1];
+    if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 }); // la suivante part maintenant (2 min de marge)
+    await b.commit();
+  });
+}
+
+// ---------- Réglages (propriétaire) : prix + clé Google Maps ----------
+function renderCfg() {
+  if (!isOwner() || !$('cfgCard')) return;
+  if (document.activeElement && document.activeElement.closest && document.activeElement.closest('#cfgCard')) return;
+  $('cfgL').value = cfg.prixL; $('cfgXL').value = cfg.prixXL;
+  $('cfgKeyState').textContent = cfg.mapsKey ? '✓ Clé Google Maps enregistrée (temps de route avec trafic).' : 'Pas encore de clé : les temps de route sont estimés.';
+}
+if ($('cfgSave')) $('cfgSave').onclick = async () => {
+  $('cfgErr').textContent = '';
+  const d = { prixL: Number($('cfgL').value) || 0, prixXL: Number($('cfgXL').value) || 0 };
+  const k = $('cfgKey').value.trim(); if (k) d.mapsKey = k;
+  try { await setDoc(doc(db, 'config', 'app'), d, { merge: true }); $('cfgKey').value = ''; $('cfgErr').textContent = 'Enregistré ✓'; } catch (e) { $('cfgErr').textContent = msg(e); }
+};
