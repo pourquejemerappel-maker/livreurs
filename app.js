@@ -1,4 +1,4 @@
-// Version 12 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes (Firebase).
+// Version 13 : connexion, équipe, stock, check-in, commandes, notifications, lien client, résumé, messages, remises de cash, dettes, mode focus (Firebase).
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
@@ -142,6 +142,7 @@ function buildTabs() {
 }
 let curTab = '';
 function setTab(t) {
+  if (typeof fx !== 'undefined' && fx.id && t !== 'direct') closeFocus();
   if (locked() && (t === 'direct' || t === 'stock')) t = 'soiree';
   curTab = t;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
@@ -874,7 +875,8 @@ async function nextFix(b, opt, c) {
 let menuOpen = null, msgOpen = null, reassign = null;
 function renderQueues() {
   const box = $('service'); if (!box) return;
-  const people = Object.values(soirees).filter(working).sort((a, b) => a.nom.localeCompare(b.nom, 'fr'));
+  const rk = (s) => { const q0 = queueOf(s.mid)[0]; return q0 ? urgOf(q0).r : 9; };
+  const people = Object.values(soirees).filter(working).sort((a, b) => rk(a) - rk(b) || a.nom.localeCompare(b.nom, 'fr'));
   const seeStock = isOwner() || me.role === 'complet';
   let h = '';
   people.forEach((s) => {
@@ -883,12 +885,12 @@ function renderQueues() {
     h += '<div class="item"><div class="qhead"><b>' + esc(s.nom) + '</b><span class="small">' + (seeStock ? qty(st(s.mid)) + ' sur lui' : '') + (low ? ' <span class="pay p-int">stock bas</span>' : '') + '</span></div>';
     if (!q.length) h += '<div class="small">Libre · ' + esc(s.adresse || '') + '</div>';
     q.forEach((c, i) => {
-      h += '<div class="q"><span class="num">' + (i + 1) + '</span><b>' + esc(c.client) + '</b>' + payTag(c) +
+      h += '<div class="q"><span class="qtap" data-focus="' + c.id + '"><span class="num">' + (i + 1) + '</span><b>' + esc(c.client) + '</b>' + payTag(c) + (i === 0 ? urgChip(c) : '') + ' <span class="small">⤢</span></span>' +
         '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL · ' + (c.statut === 'ici' ? '<b style="color:var(--cash)">sur place</b>' : 'arrivée ~' + hm(plan[i])) + (c.retard ? ' ' + lateTag(c.retard) : '') + (c.note ? '<br>📝 ' + esc(c.note) : '') + '</div>' +
         '<div class="seg" style="margin:0">' + (c.bloque ? '<button class="on" data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') +
         '<button data-a="msg" data-id="' + c.id + '">💬 Client</button>' +
         (menuOpen === c.id ? (!c.dette && canDette() ? '<button data-a="dette" data-id="' + c.id + '">📒 Dette</button>' : '') + '<button data-a="unassign" data-id="' + c.id + '">Retirer</button><button data-a="cancel" data-id="' + c.id + '">Annuler</button>' : '<button data-a="menu" data-id="' + c.id + '" style="flex:0 0 46px">⋯</button>') + '</div>' +
-        (msgOpen === c.id ? msgBox(c, plan[i]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') + '</div>';
+        (msgOpen === c.id && !fx.id ? msgBox(c, plan[i]) : '') + (dt.disp && dt.disp.id === c.id && !fx.id ? detteDispForm(c) : '') + '</div>';
     });
     h += '</div>';
   });
@@ -896,13 +898,15 @@ function renderQueues() {
   // Commandes pas assignées
   const free = Object.values(cmds).filter((c) => c.statut === 'attente');
   $('freeCard').classList.toggle('hide', !free.length);
-  $('freeList').innerHTML = free.map((c) => '<div class="q"><b>' + esc(c.client) + '</b>' + payTag(c) + '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
+  $('freeList').innerHTML = free.map((c) => '<div class="q"><span class="qtap" data-focus="' + c.id + '"><b>' + esc(c.client) + '</b>' + payTag(c) + ' <span class="small">⤢</span></span>' + '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
     (reassign && reassign.id === c.id ? (reassign.opts === 'calc' ? '<div class="small">Calcul…</div>' : (reassign.opts || []).map((o, i) => optLine(o, i === 0 && o.ok, i)).join('') || '<div class="small">Aucun livreur en service.</div>') :
       '<div class="seg" style="margin:0"><button class="on" data-a="assign" data-id="' + c.id + '">Assigner</button>' + (c.bloque ? '<button data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') + '<button data-a="cancel" data-id="' + c.id + '">Annuler</button></div>') + '</div>').join('');
   document.querySelectorAll('#service [data-a], #freeList [data-a]').forEach((el) => { el.onclick = () => qAct(el.dataset.a, el.dataset.id); });
   bindDetteDisp();
   document.querySelectorAll('#freeList [data-o]').forEach((el) => { el.onclick = () => assignExisting(reassign.id, reassign.opts[+el.dataset.o]); });
   document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
+  document.querySelectorAll('#service [data-focus], #freeList [data-focus]').forEach((el) => { el.onclick = () => openFocus(el.dataset.focus); });
+  renderFocus();
 }
 function msgBox(c, eta) {
   const t = 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison et écris-lui ici : ' + SUIVI + c.suivi : '');
@@ -1328,6 +1332,7 @@ const typing = (box) => document.activeElement && document.activeElement.closest
 
 // ----- Côté dispatch (propriétaire, MOUSSE, lost quand il est autorisé comme dispatch) -----
 function drawDm() {
+  if (typeof fx !== 'undefined' && fx.id) renderFocus();
   const box = $('dmCard'); if (!box || !me) return;
   if (!isDispatcher()) { box.innerHTML = ''; return; }
   const ids = new Set(Object.values(soirees).filter((s) => working(s) && !isDispPerson(s)).map((s) => s.mid));
@@ -1729,3 +1734,127 @@ function drawDettes() {
   pg.querySelectorAll('[data-ask]').forEach((b) => { b.onclick = () => { dt.ask = b.dataset.ask; drawDettes(); }; });
   pg.querySelectorAll('[data-reg]').forEach((b) => { b.onclick = () => { dt.ask = null; detteRegler(dt.all.find((x) => x.id === b.dataset.id), b.dataset.reg); }; });
 }
+
+// =====================================================================
+// Version 13 : dispatch en mode focus — une commande en plein écran, le reste en petites pastilles en bas
+// =====================================================================
+// Ordre d'urgence : 🔴 livreur sur place chez le client → 🟠 proche (≤ 3 min) → 🟢 nouvelle commande pas assignée → 🔵 en route.
+const fx = { id: null, opts: null, alt: false, cl: [], clSub: null, clFor: null, ask: null, client: false };
+function urgOf(c) {
+  if (c.statut === 'attente') return { k: 'new', r: 2 };
+  if (c.statut === 'ici') return { k: 'ici', r: 0, min: Math.max(0, Math.floor((Date.now() - tsMs(c.iciLe)) / 60000)) };
+  const q = queueOf(c.livreur), i = q.findIndex((x) => x.id === c.id), plan = planOf(q);
+  const eta = i >= 0 ? Math.max(0, Math.round((plan[i] - Date.now()) / 60000)) : 0;
+  return i === 0 && eta <= 3 ? { k: 'proche', r: 1, eta } : { k: 'route', r: 3, eta };
+}
+const UI = { ici: ['s-ici', '🔴', 'Sur place'], proche: ['s-proche', '🟠', 'Proche'], new: ['s-new', '🟢', 'Nouvelle'], route: ['s-route', '🔵', 'En route'] };
+function urgChip(c) { const u = urgOf(c); if (u.k === 'route') return ''; return ' <span class="st ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + UI[u.k][2] + (u.k === 'ici' ? ' · ' + u.min + ' min' : u.k === 'proche' ? ' · ~' + u.eta + ' min' : '') + '</span>'; }
+function focusList() {
+  const out = [];
+  Object.values(soirees).filter(working).forEach((s) => { const q0 = queueOf(s.mid)[0]; if (q0) out.push(q0); });
+  Object.values(cmds).filter((c) => c.statut === 'attente').forEach((c) => out.push(c));
+  return out.map((c) => Object.assign({ c }, urgOf(c))).sort((a, b) => a.r - b.r || (a.k === 'ici' ? tsMs(a.c.iciLe) - tsMs(b.c.iciLe) : 0));
+}
+function openFocus(id) {
+  if (fx.id !== id) { fx.opts = null; fx.alt = false; fx.ask = null; fx.client = false; dt.disp = null; }
+  fx.id = id; menuOpen = null; msgOpen = null;
+  document.body.classList.add('focusing');
+  renderFocus();
+  const c = cmds[id];
+  if (c && c.statut === 'attente' && !fx.opts) { fx.opts = 'calc'; renderFocus(); optionsFor(c, id).then((o) => { if (fx.id === id) { fx.opts = o; renderFocus(); } }).catch(() => { fx.opts = []; renderFocus(); }); }
+}
+function closeFocus() {
+  fx.id = null; dt.disp = null; if (fx.clSub) { fx.clSub(); fx.clSub = null; fx.clFor = null; }
+  document.body.classList.remove('focusing');
+  const v = $('focusView'); if (v) v.innerHTML = '';
+  if (typeof renderQueues === 'function') renderQueues();
+}
+// Après une action finie : la prochaine chose urgente, ou retour à la liste.
+function focusNext() {
+  const n = focusList().find((x) => x.c.id !== fx.id && x.r <= 2);
+  if (n) openFocus(n.c.id); else closeFocus();
+}
+function watchClient(c) {
+  const code = c && c.suivi;
+  if (code === fx.clFor) return;
+  if (fx.clSub) { fx.clSub(); fx.clSub = null; } fx.cl = []; fx.clFor = code;
+  if (!code) return;
+  fx.clSub = onSnapshot(query(collection(db, 'suivi', code, 'msgs'), orderBy('le', 'asc'), limit(60)), (qs) => { fx.cl = []; qs.forEach((d) => fx.cl.push(d.data())); renderFocus(); }, () => {});
+}
+const fBtn = (a, l, cls) => '<button class="btn ' + (cls || 'ghost') + '" data-fa="' + a + '">' + l + '</button>';
+function renderFocus() {
+  const v = $('focusView'); if (!v) return;
+  if (!fx.id) { v.innerHTML = ''; return; }
+  if (v.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') { drawFocusDock(); return; }
+  const c = cmds[fx.id];
+  if (!c || !['attente', 'assignee', 'ici'].includes(c.statut)) { return focusNext(); }
+  const u = urgOf(c);
+  let h = '<div class="fhead"><button class="linkbtn" id="fxBack">‹ Retour</button><span class="st ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + UI[u.k][2] + '</span></div><div class="fbody">';
+  if (u.k === 'new') {
+    h += '<div class="small">Nouvelle commande</div><div class="fclient">' + esc(c.client) + '</div><div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' + '<div style="margin:6px 0">' + payTag(c) + '</div>';
+    if (fx.opts === 'calc' || fx.opts == null) h += '<div class="small" style="margin:10px 0">Calcul du meilleur livreur…</div>';
+    else if (!fx.opts.length) h += '<div class="small" style="margin:10px 0">Aucun livreur en service.</div>';
+    else {
+      const b = fx.opts[0];
+      h += b.ok ? '<button class="btn ok big" data-fo="0">Assigner à ' + esc(b.nom) + ' · arrivée ~' + hm(b.arr) + '</button>' : '<div class="small">Personne n’a assez de stock.</div>';
+      h += fx.alt ? fx.opts.slice(1).map((o, i) => optLine(o, false, i + 1)).join('') : (fx.opts.length > 1 ? '<button class="linkbtn" id="fxAlt">Autre livreur ▾</button>' : '');
+    }
+    h += (c.bloque ? fBtn('paid', '✓ Interac reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Confirmer : annuler' : 'Annuler', 'red') + '</div>';
+  } else {
+    const q = queueOf(c.livreur), plan = planOf(q), nx = q[1];
+    watchClient(c);
+    h += '<div class="small">🚗 <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' +
+      '<div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
+      '<div class="fban ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + (u.k === 'ici' ? 'Sur place depuis ' + u.min + ' min' : u.k === 'proche' ? 'Arrive dans ~' + u.eta + ' min' : 'En route · arrivée ~' + hm(plan[0])) + (c.retard ? ' · ' + lateTag(c.retard) : '') + '</div>' +
+      '<div style="margin:6px 0">Paiement : ' + payTag(c) + (c.note ? '<div class="small">📝 ' + esc(c.note) + '</div>' : '') + '</div>';
+    if (fx.cl.length) h += '<div class="fchat"><div class="small">Livreur ↔ client</div>' + fx.cl.slice(-3).map((m) => '<div><b>' + (m.de === 'client' ? esc(prenom(c.client)) : esc(c.livreurNom || '')) + ' :</b> ' + esc(m.txt || '') + '</div>').join('') + '</div>';
+    // Chat avec le livreur, directement ici
+    const dl = dm.all.filter((m) => m.mid === c.livreur);
+    if (unreadFor(c.livreur)) markRead(c.livreur, 'dispatch');
+    h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
+      '<div class="crow" style="margin-top:6px"><input id="fxTxt" maxlength="300" placeholder="Écrire à ' + esc(c.livreurNom || '') + '…"><button class="btn sm" id="fxSend">➤</button></div></div>';
+    h += (c.bloque ? fBtn('paid', '✓ Interac reçu', 'ok') : '') +
+      '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette ? fBtn('dette', '📒 Dette') : '') + '</div>' +
+      (fx.client ? msgBox(c, plan[0]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') +
+      '<div class="two">' + fBtn('unassign', fx.ask === 'unassign' ? 'Confirmer : retirer' : 'Retirer') + fBtn('cancel', fx.ask === 'cancel' ? 'Confirmer : annuler' : 'Annuler', 'red') + '</div>' +
+      (nx ? '<div class="small" style="margin-top:12px">Ensuite pour ' + esc(c.livreurNom || '') + ' : ' + esc(nx.client) + ' · ~' + hm(plan[1]) + '</div>' : '');
+  }
+  if (u.k === 'new' && fx.client) h += msgBox(c, Date.now() + 20 * 60000);
+  h += '<div class="err" id="fxErr"></div></div><div id="focusDock" class="fdock"></div>';
+  v.innerHTML = h;
+  drawFocusDock();
+  $('fxBack').onclick = closeFocus;
+  if ($('fxAlt')) $('fxAlt').onclick = () => { fx.alt = true; renderFocus(); };
+  v.querySelectorAll('[data-fo]').forEach((el) => { el.onclick = () => focusAssign(c, fx.opts[+el.dataset.fo]); });
+  v.querySelectorAll('[data-o]').forEach((el) => { el.onclick = () => focusAssign(c, fx.opts[+el.dataset.o]); });
+  v.querySelectorAll('[data-fa]').forEach((el) => { el.onclick = () => focusAct(c, el.dataset.fa); });
+  v.querySelectorAll('[data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
+  if ($('fxSend')) { const go = () => { const t = $('fxTxt').value.trim(); if (!t) return; $('fxTxt').value = ''; sendMsg(c.livreur, 'dispatch', t).catch((e) => { $('fxErr').textContent = msg(e); }); }; $('fxSend').onclick = go; $('fxTxt').onkeydown = (e) => { if (e.key === 'Enter') go(); }; }
+  bindDetteDisp();
+}
+function drawFocusDock() {
+  const d = $('focusDock'); if (!d) return;
+  const rest = focusList().filter((x) => x.c.id !== fx.id);
+  d.innerHTML = '<div class="small" style="margin:0 4px 6px">En attente (' + rest.length + ')</div><div class="fchips">' + (rest.map((x) =>
+    '<span class="fchip ' + UI[x.k][0] + '" data-fk="' + x.c.id + '">' + UI[x.k][1] + ' <b>' + esc(x.k === 'new' ? x.c.client : (x.c.livreurNom || nomDe(x.c.livreur)) + ' · ' + x.c.client) + '</b>' + (x.k === 'ici' ? ' ' + x.min + 'm' : '') + '</span>').join('') || '<span class="small">Rien d’autre. 👍</span>') + '</div>';
+  d.querySelectorAll('[data-fk]').forEach((el) => { el.onclick = () => openFocus(el.dataset.fk); });
+}
+async function focusAssign(c, opt) {
+  if (!opt || !opt.ok) return;
+  try {
+    const b = writeBatch(db);
+    b.update(doc(db, 'commandes', c.id), await assignFields(opt, c));
+    if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'assignee', eta: Math.round(opt.arr), luid: uidOf(opt.mid) });
+    await nextFix(b, opt, c);
+    await b.commit(); notifyOrder(c.id); focusNext();
+  } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); }
+}
+async function focusAct(c, a) {
+  if (a === 'msg') { fx.client = !fx.client; return renderFocus(); }
+  if (a === 'dette') { dt.disp = dt.disp ? null : { id: c.id, resp: c.livreur || myMid(), note: '' }; return renderFocus(); }
+  if ((a === 'cancel' || a === 'unassign') && fx.ask !== a) { fx.ask = a; return renderFocus(); }
+  fx.ask = null;
+  await qAct(a, c.id);
+  if (a === 'cancel' || a === 'unassign') focusNext(); else renderFocus();
+}
+setInterval(() => { if (fx.id) renderFocus(); }, 30000);
