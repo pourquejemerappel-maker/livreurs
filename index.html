@@ -79,6 +79,7 @@
   .log{font-size:12px;color:var(--muted);line-height:1.7}
   .who{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
   .who button{padding:9px 12px;background:var(--card2);border:1px solid var(--line);color:var(--muted);font-size:13px;border-radius:10px}
+  .tabs button:disabled{opacity:.35}
   .who button.on{border-color:var(--accent);color:var(--text);background:#2a2a30}
   .srow{display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
   .srow:first-child{border-top:none}
@@ -113,7 +114,7 @@
 
     <!-- Dispatch : demandes de check-in, loads en attente, livreurs en service -->
     <div id="tabDirect" class="tab hide">
-      <div class="card" id="myStockCard"><div class="label">Mon stock</div><div class="stock"><div><b id="msL">0</b>L</div><div><b id="msXL">0</b>XL</div></div></div>
+      <div class="card" id="myStockCard"><div class="label">Sur moi</div><div class="stock"><div><b id="msL">0</b>L</div><div><b id="msXL">0</b>XL</div></div><div class="small hide" id="msDep" style="margin-top:8px"></div></div>
       <div class="card"><div class="label">À faire <span class="badge hide" id="todoN"></span></div><div id="todo"></div></div>
       <div class="card"><div class="label">Livreurs en service</div><div id="service"></div></div>
     </div>
@@ -149,7 +150,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=3"></script>
+<script type="module" src="app.js?v=4"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
