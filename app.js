@@ -704,6 +704,10 @@ function startOrders() {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', 'in', ['assignee', 'ici'])), (qs) => {
       myCmds = []; qs.forEach((d) => myCmds.push(Object.assign({ id: d.id }, d.data()))); myCmds.sort((a, b) => a.ordre - b.ordre); renderSoiree();
     }, (e) => console.warn(e)));
+    // v40 : commandes ajoutées et changements vers cash à approuver
+    stops.push(onSnapshot(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('aValider', '==', true)), (qs) => {
+      av.list = []; qs.forEach((d) => av.list.push(Object.assign({ id: d.id }, d.data()))); av.list.sort((a, b) => tsMs(a.livreeLe) - tsMs(b.livreeLe)); drawVal();
+    }, (e) => console.warn(e)));
   }
 }
 
@@ -2263,10 +2267,10 @@ async function loadHisto() {
   if (cash.length) x += '\n\n💵 Cash remis : ' + cash.map((r) => r.deNom + ' → ' + r.versNom + ' ' + money(r.montant)).join(' · ');
   hs.text = livrees.length || x ? t + x : (hs.week ? 'Semaine du ' + jourTxt(a) : 'Soirée du ' + jourTxt(a)) + '\nAucune livraison.';
   hs.rows = livrees.filter((c) => !c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
-  hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest || c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
+  hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest || c.test || c.statut === 'ajout' || (c.statut === 'refusee' && c.ajoutPar)).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
   hs.sum = rows; hs.extra = x;
   hs.prv = {}; // v36 : montants (Interac / crypto) de chaque livraison, pour toi, MOUSSE et lost
-  await Promise.all(hs.all.filter((c) => !c.test && !c.annuleTest).map((c) => getDoc(doc(db, 'cmdPrive', c.id)).then((d) => { if (d.exists()) hs.prv[c.id] = d.data(); }).catch(() => {})));
+  await Promise.all(hs.all.filter((c) => !c.test && !c.annuleTest && c.statut !== 'refusee').map((c) => getDoc(doc(db, 'cmdPrive', c.id)).then((d) => { if (d.exists()) hs.prv[c.id] = d.data(); }).catch(() => {})));
   hs.busy = false; drawHisto();
 }
 function histoCsv() {
@@ -2288,7 +2292,7 @@ function drawHisto() {
     '<div class="two" style="align-items:center"><button class="btn ghost sm" id="hPrev" style="flex:0 0 52px">‹</button><div style="flex:1;text-align:center;font-weight:700">' + esc(label) + '</div><button class="btn ghost sm" id="hNext" style="flex:0 0 52px"' + (b > new Date() ? ' disabled' : '') + '>›</button></div>' +
     '<input type="date" id="hDate" value="' + a.toISOString().slice(0, 10) + '" style="margin-top:8px">' +
     (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' : histoTotals()) + '</div>' +
-    (!hs.busy && hs.text != null ? histoPeople() + '<div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
+    (!hs.busy && hs.text != null ? histoPeople() + addHtml() + '<div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
       '<div class="small" style="margin-top:6px">Le CSV s’ouvre dans Google Sheets (Fichier → Importer) ou Excel.</div>' : '');
   const move = (n) => { const d = new Date(dayStart(hs.day)); d.setDate(d.getDate() + n * (hs.week ? 7 : 1)); hs.day = d; hs.text = null; loadHisto(); };
   box.querySelectorAll('[data-hm]').forEach((x) => { x.onclick = () => { hs.week = x.dataset.hm === 'sem'; hs.text = null; loadHisto(); }; });
@@ -2296,7 +2300,7 @@ function drawHisto() {
   $('hDate').onchange = (e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split('-').map(Number); hs.day = new Date(y, m - 1, d, 12); hs.text = null; loadHisto(); };
   if ($('hLoad')) $('hLoad').onclick = loadHisto;
   if ($('hCsv')) $('hCsv').onclick = histoCsv;
-  bindHistoPeople();
+  bindHistoPeople(); bindAdd();
   if ($('hShare')) $('hShare').onclick = async () => { try { if (navigator.share) await navigator.share({ text: hs.text }); else { await navigator.clipboard.writeText(hs.text); $('hShare').textContent = 'Copié ✓'; } } catch (e) {} };
 }
 
@@ -2852,7 +2856,7 @@ function histoPeople() {
   return ids.map((k) => {
     const S = (hs.sum || []).find((r) => r.mid === k) || { n: 0, cash: 0, reste: 0, paieOk: true };
     const mine = all.filter((c) => (c.livreur || '?') === k), nom = esc((mine[0] && mine[0].livreurNom) || nomDe(k)), o = hx.open === k;
-    const tot = mine.filter((c) => !c.test && !c.annuleTest).reduce((a2, c) => { const q = payOf(c); return a2 + q.cash + q.int + q.cry; }, 0);
+    const tot = mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').reduce((a2, c) => { const q = payOf(c); return a2 + q.cash + q.int + q.cry; }, 0);
     let h = '<div class="card" style="padding:0;overflow:hidden"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b> <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span><div class="small">reste ' + (S.paieOk ? money(S.reste) : '?') + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</div></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
     if (!o) return h + '</div>';
     mine.forEach((c, i) => {
@@ -2860,7 +2864,8 @@ function histoPeople() {
       const who = c.confirmeLe ? (c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire')) : '';
       const line = '<div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><div><b>' + (c.test ? '🧪' : (i + 1) + '.') + '</b> ' + esc(c.client) + ' <span class="small">· ' + esc(qtyTxt(c)) +
         (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + (hs.week ? ' · ' + t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) : ' · ' + hm(t.getTime())) + (c.ajusteLe ? ' · ✏️' : '') + (c.annuleTest ? ' · annulée' : '') + '</span></div>' +
-        '<b style="white-space:nowrap">' + payHtml(payOf(c)) + '</b></div>' + (c.paieModLe ? '<div class="small" style="text-align:right">✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + '</div>' : who ? '<div class="small" style="text-align:right">confirmé par ' + esc(who) + '</div>' : '') + '</div>';
+        '<b style="white-space:nowrap">' + payHtml(payOf(c)) + '</b></div>' + addNote(c, nom, who) + '</div>';
+      if (c.statut === 'ajout' || c.statut === 'refusee') { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;' + (c.statut === 'refusee' ? 'opacity:.5' : 'background:rgba(245,179,1,.06)') + '">' + line + (isDispatcher() ? '<button class="linkbtn" data-adel="' + c.id + '" style="color:#f87171">Retirer</button>' : '') + '</div>'; return; }
       if (c.annuleTest) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.45;display:flex;gap:8px;align-items:center">' + line + '<span class="small">↩️</span></div>'; return; }
       if (c.test) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.5;display:flex;gap:8px;align-items:center">' + line + '<span class="small">🧪 test<br>effacée après 15 min</span></div>'; return; }
       if (hx.edit !== c.id) { h += '<div ' + (owner ? 'data-he="' + c.id + '" ' : '') + 'style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center' + (owner ? ';cursor:pointer' : '') + '">' + line + '</div>'; return; }
@@ -3013,7 +3018,8 @@ function confLine(c) {
 const PCOL = { cash: '#60a5fa', int: '#fcd34d', cry: '#c4b5fd' };
 const coinIcon = (k) => ({ BTC: '₿ ', ETH: 'Ξ ', USDT: '💲 ', SOL: '◎ ' }[k] || '');
 function payOf(c) {
-  const p = (hs.prv && hs.prv[c.id]) || prive[c.id] || {};
+  let p = (hs.prv && hs.prv[c.id]) || prive[c.id] || {};
+  if (c.chgRep === 'ok' && p.next && p.next.mode === c.paieMode) p = Object.assign({}, p, p.next); // v40
   const mode = c.paieMode || p.mode || ((c.encaisser || 0) > 0 ? 'cash' : 'int');
   const total = p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
   const cash = Number(c.cashRecu) || 0;
@@ -3070,11 +3076,20 @@ function bindPayEdit(C, run) {
     const mode = pe.mode === 'mix' ? (pe.reste === 'cry' ? 'mixc' : 'mix') : pe.mode;
     const cash = mode === 'cash' ? Math.max(tot, Number(c.cashRecu) || 0) : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
     const enc = mode === 'cash' ? tot : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
+    const pv = { total: tot, mode, cash: enc, interac: mode === 'int' ? tot : mode === 'mix' ? tot - cashPart : 0, cryPart: mode === 'cry' ? tot : mode === 'mixc' ? tot - cashPart : 0, crypto: coin || null };
+    // v40 : si le livreur a PLUS de cash à remettre qu'avant, il doit confirmer qu'il l'a reçu.
+    const ask = c.livreur && c.livreur !== myMid() && cash > (Number(c.cashRecu) || 0);
     run(async () => {
-      const b = writeBatch(db);
-      b.update(doc(db, 'commandes', c.id), { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() });
-      b.set(doc(db, 'cmdPrive', c.id), { total: tot, mode, cash: enc, interac: mode === 'int' ? tot : mode === 'mix' ? tot - cashPart : 0, cryPart: mode === 'cry' ? tot : mode === 'mixc' ? tot - cashPart : 0, crypto: coin || null }, { merge: true });
+      const b = writeBatch(db), mod = { paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() };
+      if (ask) {
+        b.update(doc(db, 'commandes', c.id), Object.assign({ chg: { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, avant: Number(c.cashRecu) || 0 }, chgRep: null, aValider: true }, mod));
+        b.set(doc(db, 'cmdPrive', c.id), { next: pv }, { merge: true });
+      } else {
+        b.update(doc(db, 'commandes', c.id), Object.assign({ paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, chg: null, chgRep: null, aValider: false }, mod));
+        b.set(doc(db, 'cmdPrive', c.id), Object.assign(pv, { next: null }), { merge: true });
+      }
       await b.commit();
+      if (ask) notifyMsg(c.livreur, '💳 ' + (me.nom || OWNER) + ' change le paiement de ' + c.client + ' en ' + cash + ' $ cash. Ouvre l’app pour confirmer.');
     });
   }; });
 }
@@ -3125,4 +3140,159 @@ async function lpAct(c, a) {
     lp.id = null;
   } catch (e) { lp.err = msg(e); }
   renderFocus();
+}
+
+
+// =====================================================================
+// v40 : « ➕ Ajouter une commande » dans l'Historique (Wayne + tous les dispatchs), à l'heure choisie.
+//       Elle se place dans l'ordre (les numéros suivent). Le livreur doit TOUJOURS approuver avant
+//       que ça compte (stock, trésorerie, paie). Et : un changement de paiement qui donne PLUS de cash
+//       au livreur (Interac → cash…) doit être confirmé par lui.
+// =====================================================================
+const ad = { open: false, mid: null, client: '', L: 0, XL: 0, mode: 'cash', cash: '', rest: 'int', coin: null, autre: '', heure: '', date: '', err: '', busy: false };
+const av = { list: [], busy: false, err: '' };
+function addNote(c, nom, who) {
+  const r = (t, col) => '<div class="small" style="text-align:right' + (col ? ';color:' + col : '') + '">' + t + '</div>';
+  if (c.statut === 'ajout') return r('⏳ en attente de ' + nom + ' · pas encore comptée', '#fcd34d');
+  if (c.statut === 'refusee') return r('❌ refusée par ' + nom);
+  let h = '';
+  if (c.chg) h += r('⏳ changement vers 🔵 ' + money(c.chg.cashRecu) + ' cash · ' + nom + ' doit confirmer', '#fcd34d');
+  if (c.ajoutPar) h += r('➕ ajoutée par ' + esc(dispName(c.ajoutNom || '')) + (c.ajoutRep === 'ok' ? ' · ✓ approuvée par ' + nom : ''));
+  if (c.paieModLe && !c.chg) h += r('✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + (c.chgRep === 'ok' ? ' · ✓ cash confirmé par ' + nom : ''));
+  if (c.chgRep === 'non' && !c.chg) h += r('❌ cash refusé par ' + nom + ' — paiement pas changé', '#f87171');
+  if (!h && who) h = r('confirmé par ' + esc(who));
+  return h;
+}
+function addMids() {
+  return Object.keys(team).filter((id) => { const p = team[id]; return p && p.actif && (['livreur', 'limite'].includes(p.role) || p.livre || p.uber); })
+    .sort((a, b) => nomDe(a).localeCompare(nomDe(b)));
+}
+function addTotal() { return (Number(ad.L) || 0) * cfg.prixL + (Number(ad.XL) || 0) * cfg.prixXL; }
+function addHtml() {
+  if (!isDispatcher()) return '';
+  if (!ad.open) return '<button class="btn ghost" id="adOpen" style="margin-bottom:12px">➕ Ajouter une commande</button>';
+  const seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0;flex-wrap:wrap">' + list.map((x) => '<button ' + attr + '="' + esc(x[0]) + '" class="' + (cur === x[0] ? 'on' : '') + '">' + esc(x[1]) + '</button>').join('') + '</div>';
+  const tot = addTotal(), needC = ad.mode === 'cry' || (ad.mode === 'mix' && ad.rest === 'cry');
+  let h = '<div class="card" style="border:2px solid #f5b301"><div style="font-weight:800;font-size:17px;margin-bottom:8px">➕ Ajouter une commande</div>' +
+    '<div class="small">Livreur</div>' + seg(addMids().map((id) => [id, nomDe(id)]), ad.mid, 'data-amid') +
+    '<div class="small" style="margin-top:6px">Client</div><input id="adClient" value="' + esc(ad.client) + '" placeholder="Nom du client" maxlength="60">' +
+    '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="adL" type="number" inputmode="numeric" min="0" value="' + esc(ad.L) + '"></div><div style="flex:1"><div class="small">XL</div><input id="adXL" type="number" inputmode="numeric" min="0" value="' + esc(ad.XL) + '"></div></div>' +
+    '<div class="small">Paiement · total <b id="adTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], ad.mode, 'data-amo');
+  if (ad.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="adCash" type="number" inputmode="numeric" value="' + esc(ad.cash) + '"><div class="small">Le reste en :</div>' + seg([['int', '🟡 Interac'], ['cry', '🟣 Crypto']], ad.rest, 'data-are');
+  if (needC) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, ad.coin, 'data-aco') + (ad.coin === 'autre' ? '<input id="adAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(ad.autre) + '">' : '');
+  h += '<div style="display:flex;gap:8px;margin-top:6px"><div style="flex:1"><div class="small">Soirée du</div><input id="adDate" type="date" value="' + esc(ad.date) + '"></div><div style="flex:1"><div class="small"><b style="color:var(--text)">Heure de la livraison</b></div><input id="adHeure" type="time" value="' + esc(ad.heure) + '"></div></div>' +
+    '<div class="small" style="line-height:1.5">Elle se place dans l’ordre selon l’heure (après minuit = même soirée). Le livreur doit approuver : ensuite le stock est enlevé, le cash va dans sa trésorerie et sa paie compte.</div>' +
+    (ad.err ? '<div class="err">' + esc(ad.err) + '</div>' : '') +
+    '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="adX">Fermer</button><button class="btn ok sm" id="adGo"' + (ad.busy ? ' disabled' : '') + '>' + (ad.busy ? '…' : 'Envoyer au livreur') + '</button></div></div>';
+  return h;
+}
+function bindAdd() {
+  const box = $('histo'); if (!box) return;
+  const keep = () => { ['adClient', 'client', 'adL', 'L', 'adXL', 'XL', 'adCash', 'cash', 'adAutre', 'autre', 'adDate', 'date', 'adHeure', 'heure'].reduce((a, k, i, arr) => { if (i % 2 === 0 && $(k)) ad[arr[i + 1]] = $(k).value; return a; }, 0); };
+  if ($('adOpen')) $('adOpen').onclick = () => { const [a] = histoRange(); const d = new Date(a.getTime() - a.getTimezoneOffset() * 60000);
+    Object.assign(ad, { open: true, mid: ad.mid || hx.open || null, client: '', L: 0, XL: 0, mode: 'cash', cash: '', rest: 'int', coin: null, autre: '', heure: '', date: d.toISOString().slice(0, 10), err: '' }); drawHisto();
+    setTimeout(() => { const el = $('adClient'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 50); };
+  if (!ad.open) return;
+  const re = (k, v) => { keep(); ad[k] = v; ad.err = ''; drawHisto(); };
+  box.querySelectorAll('[data-amid]').forEach((el) => { el.onclick = () => re('mid', el.dataset.amid); });
+  box.querySelectorAll('[data-amo]').forEach((el) => { el.onclick = () => re('mode', el.dataset.amo); });
+  box.querySelectorAll('[data-are]').forEach((el) => { el.onclick = () => re('rest', el.dataset.are); });
+  box.querySelectorAll('[data-aco]').forEach((el) => { el.onclick = () => re('coin', el.dataset.aco); });
+  ['adL', 'adXL'].forEach((id) => { if ($(id)) $(id).oninput = () => { keep(); if ($('adTot')) $('adTot').textContent = money(addTotal()); }; });
+  $('adX').onclick = () => { ad.open = false; drawHisto(); };
+  $('adGo').onclick = async () => {
+    keep();
+    const L = Math.round(Number(ad.L) || 0), XL = Math.round(Number(ad.XL) || 0), tot = L * cfg.prixL + XL * cfg.prixXL, client = String(ad.client || '').trim();
+    const fail = (t) => { ad.err = t; drawHisto(); };
+    if (!ad.mid) return fail('Choisis le livreur.');
+    if (!client) return fail('Écris le nom du client.');
+    if (!(L >= 0 && XL >= 0 && L + XL > 0)) return fail('Mets au moins 1 L ou 1 XL.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ad.date || '') || !/^\d{1,2}:\d{2}$/.test(ad.heure || '')) return fail('Choisis la date et l’heure de la livraison.');
+    const mode = ad.mode === 'mix' ? (ad.rest === 'cry' ? 'mixc' : 'mix') : ad.mode, needC = mode === 'cry' || mode === 'mixc';
+    const coin = needC ? coinOf(ad.coin, ad.autre) : '';
+    if (needC && !coin) return fail('Choisis la crypto (BTC, ETH…).');
+    const cashPart = Math.round(Number(ad.cash) || 0);
+    if ((mode === 'mix' || mode === 'mixc') && !(cashPart > 0 && cashPart < tot)) return fail('Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).');
+    const enc = mode === 'cash' ? tot : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
+    const [y, m, d] = ad.date.split('-').map(Number), [hh, mm] = ad.heure.split(':').map(Number);
+    const when = new Date(y, m - 1, d, hh, mm); if (hh < 6) when.setDate(when.getDate() + 1); // après minuit = même soirée
+    if (when.getTime() > Date.now() + 5 * 60000) return fail('L’heure est dans le futur.');
+    const near = (hs.all || []).filter((c) => c.livreur === ad.mid && c.soiree).sort((a, b) => Math.abs(tsMs(a.livreeLe) - when) - Math.abs(tsMs(b.livreeLe) - when))[0];
+    const sv = Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).find((x) => x.mid === ad.mid && working(x));
+    const soiree = (near && near.soiree) || (sv && sv.id) || null, test = isTestName(client);
+    ad.busy = true; ad.err = ''; drawHisto();
+    try {
+      const ref = doc(collection(db, 'commandes')), b = writeBatch(db);
+      b.set(ref, { client: client.slice(0, 60), adresse: '', L, XL, frais: 0, encaisser: enc, paieMode: mode, crypto: coin || null, paye: enc === 0, bloque: false,
+        livreur: ad.mid, livreurNom: nomDe(ad.mid), statut: 'ajout', livreeLe: when, soiree, cashRecu: 0, aValider: true, ajout: true,
+        ajoutPar: myMid(), ajoutNom: me.nom || OWNER, ajoutLe: serverTimestamp(), creeLe: serverTimestamp(), ...(test ? { test: true } : {}) });
+      b.set(doc(db, 'cmdPrive', ref.id), { total: tot, mode, cash: enc, interac: mode === 'int' ? tot : mode === 'mix' ? tot - cashPart : 0, cryPart: mode === 'cry' ? tot : mode === 'mixc' ? tot - cashPart : 0, recu: true, crypto: coin || null });
+      await b.commit();
+      notifyMsg(ad.mid, '➕ ' + (me.nom || OWNER) + ' ajoute une livraison : ' + client + ' · ' + qtyTxt({ L, XL }) + '. Ouvre l’app pour approuver.');
+      ad.open = false; ad.busy = false; hx.open = ad.mid; await loadHisto();
+    } catch (e) { ad.busy = false; fail(msg(e)); }
+  };
+}
+// Retirer une commande ajoutée qui attend encore (ou refusée)
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest && e.target.closest('[data-adel]'); if (!el || !isDispatcher()) return;
+  const c = (hs.all || []).find((x) => x.id === el.dataset.adel); if (!c || !(c.statut === 'ajout' || c.statut === 'refusee')) return;
+  el.disabled = true;
+  try { const b = writeBatch(db); b.delete(doc(db, 'commandes', c.id)); b.delete(doc(db, 'cmdPrive', c.id)); await b.commit(); await loadHisto(); } catch (err) { el.disabled = false; hx.err = msg(err); drawHisto(); }
+});
+
+// ----- Côté livreur : la fenêtre « Tu l'as livrée ? » / « As-tu reçu le cash ? » -----
+function drawVal() {
+  let ov = $('valOv');
+  const c = av.list[0];
+  if (!c) { if (ov) ov.remove(); return; }
+  if (!ov) { ov = document.createElement('div'); ov.id = 'valOv'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:16px;z-index:60'; document.body.appendChild(ov); }
+  const box = (t, body, q, okT, noT) => '<div style="background:#17171b;border:1px solid #4b5563;border-radius:20px;padding:18px;width:100%;max-width:420px">' +
+    '<div style="font-size:18px;font-weight:800;margin-bottom:10px">' + t + '</div>' + body + '<div style="font-weight:800;margin:10px 0 6px">' + q + '</div>' +
+    (av.err ? '<div class="err">' + esc(av.err) + '</div>' : '') +
+    '<button class="btn ok" id="valOk"' + (av.busy ? ' disabled' : '') + '>' + okT + '</button><button class="btn ghost" id="valNo" style="margin-top:8px;border-color:#ff5a5f;color:#ff5a5f"' + (av.busy ? ' disabled' : '') + '>' + noT + '</button>' +
+    (av.list.length > 1 ? '<div class="small" style="margin-top:8px;text-align:center">' + (av.list.length - 1) + ' autre(s) après</div>' : '') + '</div>';
+  const t = new Date(tsMs(c.livreeLe)), jour = t.toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long' });
+  const ban = (x) => '<div style="background:#3a2a0e;color:#fcd34d;border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.5;margin-top:10px">' + x + '</div>';
+  if (c.statut === 'ajout') {
+    const enc = Number(c.encaisser) || 0;
+    ov.innerHTML = box('➕ Livraison ajoutée',
+      '<div style="font-size:15px;line-height:1.6">' + esc(dispName(c.ajoutNom || '')) + ' ajoute une livraison que tu aurais faite :<br><b>' + esc(c.client) + ' · ' + esc(qtyTxt(c)) + '</b><br>' +
+      (enc ? '<span style="color:' + PCOL.cash + '">🔵 ' + money(enc) + ' cash</span>' + (c.paieMode !== 'cash' ? ' <span class="small">(le reste déjà payé)</span>' : '') : '<span style="color:' + PCOL.int + '">déjà payé (rien en cash)</span>') +
+      '<br><span class="small">vers ' + hm(t.getTime()) + ', ' + esc(jour) + '</span></div>' +
+      ban('Si tu dis oui : ' + esc(qtyTxt(c)) + ' enlevé de ton stock' + (enc ? ' et ' + money(enc) + ' ajouté à ta trésorerie' : '') + '.'),
+      'Tu l’as livrée ?', '✓ Oui, je l’ai livrée', '✗ Non');
+  } else if (c.chg) {
+    const plus = (Number(c.chg.cashRecu) || 0) - (Number(c.cashRecu) || 0);
+    ov.innerHTML = box('💳 Changement de paiement',
+      '<div style="font-size:15px;line-height:1.6">' + esc(dispName(c.paieModNom || '')) + ' change le paiement de <b>' + esc(c.client) + '</b> (' + esc(qtyTxt(c)) + ', ' + hm(t.getTime()) + ') :<br>' +
+      'cash : ' + money(Number(c.cashRecu) || 0) + ' → <b style="color:' + PCOL.cash + '">🔵 ' + money(c.chg.cashRecu) + '</b></div>' +
+      ban('Si tu confirmes, ' + money(plus) + ' s’ajoutent à ce que tu dois remettre.'),
+      'As-tu reçu ' + money(c.chg.cashRecu) + ' cash de ' + esc(c.client) + ' ?', '✓ Oui, j’ai reçu le cash', '✗ Non');
+  } else { ov.remove(); return; }
+  $('valOk').onclick = () => valAct(c, true);
+  $('valNo').onclick = () => valAct(c, false);
+}
+async function valAct(c, oui) {
+  if (av.busy) return; av.busy = true; av.err = ''; drawVal();
+  try {
+    const b = writeBatch(db), ref = doc(db, 'commandes', c.id);
+    if (c.statut === 'ajout') {
+      if (oui) {
+        b.update(ref, { statut: 'livree', cashRecu: Number(c.encaisser) || 0, aValider: false, ajoutRep: 'ok', ajoutRepLe: serverTimestamp(), ...(paies[me.mid] != null && !c.test ? { paie: paies[me.mid] } : {}) });
+        if (!c.test) {
+          b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
+          if (mySoiree && c.soiree === mySoiree.id && mySoiree.statut === 'ouverte') b.update(doc(db, 'soirees', mySoiree.id), { livrees: increment(1) });
+        }
+      } else b.update(ref, { statut: 'refusee', aValider: false, ajoutRep: 'non', ajoutRepLe: serverTimestamp() });
+      await b.commit();
+      notifyDispatch((oui ? '✓ ' : '❌ ') + me.nom + (oui ? ' a approuvé' : ' a refusé') + ' la livraison ajoutée : ' + c.client + ' · ' + qtyTxt(c));
+    } else if (c.chg) {
+      if (oui) b.update(ref, { paieMode: c.chg.paieMode, cashRecu: c.chg.cashRecu, encaisser: c.chg.encaisser, crypto: c.chg.crypto || null, chg: null, chgRep: 'ok', chgRepLe: serverTimestamp(), aValider: false });
+      else b.update(ref, { chg: null, chgRep: 'non', chgRepLe: serverTimestamp(), aValider: false });
+      await b.commit();
+      notifyDispatch((oui ? '✓ ' : '❌ ') + me.nom + (oui ? ' confirme ' : ' refuse ') + money(c.chg.cashRecu) + ' cash pour ' + c.client);
+    }
+    av.busy = false; av.list = av.list.filter((x) => x.id !== c.id); drawVal();
+  } catch (e) { av.busy = false; av.err = msg(e); drawVal(); }
 }
