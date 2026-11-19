@@ -563,7 +563,7 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
-  if (document.activeElement && (['mcCash', 'chatTxt', 'dtAmt', 'dtNote', 'lvMix'].includes(document.activeElement.id) || (document.activeElement.tagName === 'INPUT' && /^ub/.test(document.activeElement.id || '')))) return;
+  if (document.activeElement && (['mcCash', 'chatTxt', 'dtAmt', 'dtNote', 'lvMix', 'ciPick'].includes(document.activeElement.id) || (document.activeElement.tagName === 'INPUT' && /^ub/.test(document.activeElement.id || '')))) return;
   if (typeof ret !== 'undefined' && ret.busy) return; // ne pas effacer ce qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
@@ -572,10 +572,10 @@ function renderSoiree() {
     h = '<div class="card"><div class="label">Commencer ma soirée</div>' +
       (me.role === 'limite' ? '<p class="small" style="margin-top:0">Ce soir je fais :</p><div class="seg" id="ciMode">' + [['livreur', '🚗 Livreur'], ['dispatch', '🧭 Dispatch'], ['les2', '🚗+🧭 Les deux']].map((x) =>
         '<button data-m="' + x[0] + '" class="' + ((ci.mode || 'livreur') === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' : '') +
-      (dmode ? '' : '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>' +
+      (dmode ? '' : (me.uber ? ciUberPre() + '<p class="small" style="margin-top:0"><b style="color:var(--text)">1. D’où tu envoies les Uber ?</b><br>Le dispatch s’en sert pour savoir où tu es.</p>' : '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>') +
       '<input id="ciAdr" placeholder="Ex. 1400 Sainte-Catherine" autocomplete="off" value="' + esc(ci.q) + '">' +
       '<div id="ciSugs"></div>' +
-      '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>') +
+      '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>' + (me.uber ? ciPickHtml() : '')) +
       ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
       (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser' + (ci.mode === 'dispatch' || ci.mode === 'les2' ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
       '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
@@ -608,6 +608,8 @@ function renderSoiree() {
     drawSugs();
     $('ciGo').onclick = () => soirAct(requestStart);
   }
+  if ($('ciSame')) $('ciSame').onchange = (e) => { ci.same = e.target.checked; renderSoiree(); };
+  if ($('ciPick')) $('ciPick').oninput = (e) => { ci.pickQ = e.target.value; };
   if ($('ciCancel')) $('ciCancel').onclick = () => soirAct(() => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'annulee', finLe: serverTimestamp() }).commit());
   if ($('ciAccept')) $('ciAccept').onclick = () => soirAct(() => acceptLoad(s));
   if ($('ciRefuse')) $('ciRefuse').onclick = () => soirAct(() => refuseLoad(s));
@@ -639,12 +641,17 @@ function drawSugs() {
 async function requestStart() {
   const mode = me.role === 'limite' && (ci.mode === 'dispatch' || ci.mode === 'les2') ? ci.mode : 'livreur';
   const adr = mode === 'dispatch' ? 'Dispatch' : ci.q.trim();
-  if (adr.length < 4) { $('ciErr').textContent = 'Écris où tu es.'; return; }
+  if (adr.length < 4) { $('ciErr').textContent = me.uber ? 'Écris d’où tu envoies les Uber.' : 'Écris où tu es.'; return; }
+  if (me.uber) { // v31 : Samuel donne aussi son adresse de pick-up (gardée pour la prochaine fois)
+    const pk = (ci.same ? adr : String(ci.pickQ || '')).trim();
+    if (pk.length < 6) { $('ciErr').textContent = 'Écris l’adresse de pick-up (où les clients viennent chercher).'; return; }
+    await setDoc(doc(db, 'reglages', me.mid), { pickAdr: pk.slice(0, 200), uberAdr: adr.slice(0, 200) });
+  }
   const data = { mid: me.mid, nom: me.nom, statut: 'demande', mode, adresse: adr, demandeLe: serverTimestamp() };
   if (ci.pick && ci.pick.lat) { data.lat = ci.pick.lat; data.lon = ci.pick.lon; }
   await setDoc(doc(collection(db, 'soirees')), data);
   notifyDispatch('🙋 ' + me.nom + ' veut commencer' + (mode === 'dispatch' ? ' (dispatch)' : mode === 'les2' ? ' (livrer + dispatch)' : ' sa soirée'));
-  ci.q = ''; ci.pick = null; ci.sugs = [];
+  ci.q = ''; ci.pick = null; ci.sugs = []; ci.pre = false;
 }
 async function acceptLoad(s) {
   const L = s.load || {};
@@ -2702,7 +2709,8 @@ function uberHtml(s) {
   if (!myCmds.length) h += '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🚕</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’enverra un Uber ou un pick-up ici.</div></div>';
   else h += myCmds.slice().sort((a, b) => (a.accepte ? 1 : 0) - (b.accepte ? 1 : 0) || a.ordre - b.ordre).map(ubCard).join('');
   h += '<details class="card" style="margin-top:4px"' + (ub.defOpen || !pickDef() ? ' open' : '') + '><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' faite' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
-    '<div class="label" style="margin-top:10px">Mon adresse de pick-up habituelle</div>' +
+    '<div class="small" style="margin-top:10px">🚕 Uber depuis : <b style="color:var(--text)">' + esc(s.adresse || '') + '</b></div>' +
+    '<div class="label" style="margin-top:10px">📍 Mon adresse de pick-up</div>' +
     (ub.defOpen ? '<input id="ubDef" placeholder="Ex. 4500 rue Saint-Denis, Montréal, QC H2J 2L3" value="' + esc(ub.def) + '"><div class="two"><button class="btn ghost sm" id="ubDefX">Annuler</button><button class="btn sm" id="ubDefGo">Enregistrer</button></div>'
       : '<div>' + (pickDef() ? esc(pickDef()) : '<span class="small">Pas encore entrée</span>') + '</div><button class="linkbtn" id="ubDefOpen">✏️ ' + (pickDef() ? 'Modifier' : 'Entrer mon adresse') + '</button>') +
     '<div class="err" id="ubDefErr"></div></details>';
@@ -2784,7 +2792,7 @@ function bindUber(s) {
   if ($('ubDef')) $('ubDef').oninput = (e) => { ub.def = e.target.value; };
   if ($('ubDefX')) $('ubDefX').onclick = () => { ub.defOpen = false; renderSoiree(); };
   if ($('ubDefGo')) $('ubDefGo').onclick = () => { const a = String(ub.def || '').trim(); if (a.length < 6) { $('ubDefErr').textContent = 'Écris l’adresse complète.'; return; }
-    ub.defOpen = false; ubAct('', async () => { await setDoc(doc(db, 'reglages', me.mid), { pickAdr: a.slice(0, 200) }); renderSoiree(); }).then(() => { if ($('ubDefErr') && $('ubDefErr').textContent) { ub.defOpen = true; } }); };
+    ub.defOpen = false; ubAct('', async () => { await setDoc(doc(db, 'reglages', me.mid), Object.assign({}, myReg && myReg.uberAdr ? { uberAdr: myReg.uberAdr } : {}, { pickAdr: a.slice(0, 200) })); renderSoiree(); }).then(() => { if ($('ubDefErr') && $('ubDefErr').textContent) { ub.defOpen = true; } }); };
 }
 
 // =====================================================================
@@ -2908,3 +2916,21 @@ async function sweepTests() {
   } catch (e) { console.warn('tests', e); }
 }
 function startTestSweep() { if (testSweepOn) return; testSweepOn = true; setTimeout(sweepTests, 5000); setInterval(sweepTests, 60000); }
+
+// v31 : check-in de Samuel (mode Uber) — 2 adresses : d'où partent les Uber + où les clients viennent chercher (pick-up).
+// Pré-remplies avec celles de la dernière fois (reglages/{mid} : uberAdr, pickAdr).
+function ciUberPre() {
+  if (!ci.pre && myReg) { ci.pre = true;
+    if (!ci.q && myReg.uberAdr) ci.q = myReg.uberAdr;
+    if (ci.pickQ == null) ci.pickQ = myReg.pickAdr || '';
+    if (ci.same == null) ci.same = !myReg.pickAdr || !myReg.uberAdr || myReg.pickAdr === myReg.uberAdr;
+  }
+  if (ci.same == null) ci.same = true;
+  return '';
+}
+function ciPickHtml() {
+  return '<p class="small" style="margin:14px 0 4px"><b style="color:var(--text)">2. Où les clients viennent chercher (pick-up) ?</b></p>' +
+    '<label class="chk"><input type="checkbox" id="ciSame" ' + (ci.same ? 'checked' : '') + '> Même adresse que les Uber</label>' +
+    (ci.same ? '' : '<input id="ciPick" placeholder="Adresse de pick-up avec code postal" autocomplete="off" value="' + esc(ci.pickQ || '') + '">') +
+    '<p class="small" style="margin-top:0">Gardée pour la prochaine fois. Tu peux la changer pour un seul pick-up plus tard.</p>';
+}
