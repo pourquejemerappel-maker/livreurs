@@ -678,6 +678,7 @@ let cmds = {}, prive = {}, myCmds = [], myDone = 0;
 const ttMem = {}; // mémoire des temps de route (15 min)
 
 function startOrders() {
+  startTestSweep();
   stops.push(onSnapshot(doc(db, 'config', 'app'), (s) => { if (s.exists()) cfg = Object.assign({ prixL: 150, prixXL: 220, mapsKey: '' }, s.data()); renderAll(); renderSoiree(); renderCfg(); }, () => {}));
   if (isOwner() || isStaff()) {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('statut', 'in', ['attente', 'assignee', 'ici'])), (qs) => {
@@ -940,7 +941,7 @@ async function saveOrder(opt) {
     const encaisser = mode === 'cash' ? tot : mode === 'mix' ? f.cashPart : 0;
     const ref = doc(collection(db, 'commandes'));
     const code = newCode();
-    const data = { suivi: code, client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim() || 'Pick-up', L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
+    const data = { test: isTestName(f.client), suivi: code, client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim() || 'Pick-up', L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
       encaisser, paye: mode !== 'cash' && recu && mode === 'int', bloque: !recu, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: me.mid };
     if (f.pick && f.pick.lat != null) { data.lat = f.pick.lat; data.lon = f.pick.lon; }
     const b = writeBatch(db);
@@ -1144,7 +1145,7 @@ function myOrdersHtml(s) {
     : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
     : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
     : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
-  let h = '<div class="card now"><div class="small">Commande 1 sur ' + myCmds.length + (myCmds[1] ? ' · ensuite : ' + esc(myCmds[1].client) : '') + '</div><div class="client">' + esc(c.client) + '</div>' +
+  let h = '<div class="card now"><div class="small">Commande 1 sur ' + myCmds.length + (myCmds[1] ? ' · ensuite : ' + esc(myCmds[1].client) : '') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) +
     '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b></span></a>' +
     '<div class="small">' + esc(qtyTxt(c)) + '</div>' + when + band + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') +
     '<div class="err" id="mcErr"></div>' +
@@ -1193,9 +1194,11 @@ function bindMyOrders(s) {
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
     const b = writeBatch(db);
-    b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null ? { paie: paies[me.mid] } : {}) });
-    b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
-    b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+    b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null && !c.test ? { paie: paies[me.mid] } : {}) });
+    if (!c.test) { // v30 : une commande test ne touche pas au stock ni au compteur
+      b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
+      b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+    }
     const nx = myCmds[1];
     if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 }); // la suivante part maintenant (2 min de marge)
     await b.commit();
@@ -1416,6 +1419,7 @@ const money = (n) => Math.round(n).toLocaleString('fr-CA').replace(/\u202f|\u00a
 function sumUp(list, remis) {
   const by = {};
   list.forEach((c) => {
+    if (c.test) return; // v30 : les commandes test ne comptent nulle part
     const k = c.livreur || '?';
     const r = by[k] || (by[k] = { mid: k, nom: c.livreurNom || nomDe(k), n: 0, cash: 0, frais: 0, tips: 0, manque: 0, paie: 0, paieOk: true });
     const cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
@@ -2012,7 +2016,7 @@ function renderFocus() {
   const u = urgOf(c);
   let h = '<div class="fhead"><button class="linkbtn" id="fxBack">‹ Retour</button><span class="st ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + UI[u.k][2] + '</span></div><div class="fbody">';
   if (u.k === 'new') {
-    h += '<div class="small">Nouvelle commande</div><div class="fclient">' + esc(c.client) + '</div><div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' + '<div style="margin:6px 0">' + payTag(c) + '</div>';
+    h += '<div class="small">Nouvelle commande</div><div class="fclient">' + esc(c.client) + '</div>' + testTag(c) + '<div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' + '<div style="margin:6px 0">' + payTag(c) + '</div>';
     if (fx.opts === 'calc' || fx.opts == null) h += '<div class="small" style="margin:10px 0">Calcul du meilleur livreur…</div>';
     else if (!fx.opts.length) h += '<div class="small" style="margin:10px 0">Aucun livreur en service.</div>';
     else {
@@ -2024,7 +2028,7 @@ function renderFocus() {
     h += (c.bloque ? fBtn('paid', '✓ Interac reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
   } else {
     const q = queueOf(c.livreur), plan = planOf(q), nx = q[1];
-    h += '<div class="small">' + (c.type === 'uber' ? '🚕' : c.type === 'pickup' ? '📍' : '🚗') + ' <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (c.type === 'uber' ? 'envoie un Uber à' : c.type === 'pickup' ? 'attend au pick-up' : u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' +
+    h += '<div class="small">' + (c.type === 'uber' ? '🚕' : c.type === 'pickup' ? '📍' : '🚗') + ' <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (c.type === 'uber' ? 'envoie un Uber à' : c.type === 'pickup' ? 'attend au pick-up' : u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' + testTag(c) +
       '<div class="faddr">📍 ' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL</div>' +
       (c.type ? uberInfo(c) : '<div class="fban ' + UI[u.k][0] + '">' + UI[u.k][1] + ' ' + (u.k === 'ici' ? 'Sur place depuis ' + u.min + ' min' : u.k === 'proche' ? 'Arrive dans ~' + u.eta + ' min' : 'En route · arrivée ~' + hm(plan[0])) + (c.retard ? ' · ' + lateTag(c.retard) : '') + '</div>') +
       '<div style="margin:6px 0">Paiement : ' + payTag(c) + (c.note ? '<div class="small">📝 ' + esc(c.note) + '</div>' : '') + '</div>';
@@ -2224,8 +2228,8 @@ async function loadHisto() {
   const cash = rems.filter((r) => r.statut === 'recue');
   if (cash.length) x += '\n\n💵 Cash remis : ' + cash.map((r) => r.deNom + ' → ' + r.versNom + ' ' + money(r.montant)).join(' · ');
   hs.text = livrees.length || x ? t + x : (hs.week ? 'Semaine du ' + jourTxt(a) : 'Soirée du ' + jourTxt(a)) + '\nAucune livraison.';
-  hs.rows = livrees.sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
-  hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
+  hs.rows = livrees.filter((c) => !c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
+  hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest || c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
   hs.sum = rows; hs.extra = x;
   hs.busy = false; drawHisto();
 }
@@ -2654,7 +2658,7 @@ function bandOf(c) {
 }
 function ubCard(c) {
   const up = c.type === 'pickup';
-  let h = '<div class="card now"><div class="small">' + (up ? '📍 Pick-up' : '🚕 Uber') + '</div><div class="client">' + esc(c.client) + '</div><div class="small">' + esc(qtyTxt(c)) + '</div>' + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '');
+  let h = '<div class="card now"><div class="small">' + (up ? '📍 Pick-up' : '🚕 Uber') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) + '<div class="small">' + esc(qtyTxt(c)) + '</div>' + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '');
   if (!c.accepte) {
     return h + '<div class="banner" style="background:#3a2a05;color:#fcd34d">Nouveau ' + (up ? 'pick-up : le client vient chez toi' : 'Uber') + '</div><div class="two"><button class="btn red" data-ua="no:' + c.id + '">Refuser</button><button class="btn ok" data-ua="ok:' + c.id + '">✓ Accepter</button></div></div>';
   }
@@ -2767,9 +2771,11 @@ function bindUber(s) {
     ubAct(id, async () => {
       if (c.statut !== 'ici') await upd(id, { statut: 'ici', iciLe: serverTimestamp() });
       const b = writeBatch(db);
-      b.update(doc(db, 'commandes', id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null ? { paie: paies[me.mid] } : {}) });
-      b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: id }, { merge: true });
-      b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+      b.update(doc(db, 'commandes', id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null && !c.test ? { paie: paies[me.mid] } : {}) });
+      if (!c.test) {
+        b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: id }, { merge: true });
+        b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+      }
       await b.commit(); delete ub.cash[id];
       closeSuivi(c.suivi, 'livree');
       notifyDispatch('✓ ' + me.nom + ' : ' + c.client + (c.type === 'uber' ? ' livré (Uber)' : ' remis (pick-up)') + (cash ? ' · ' + cash + ' $ cash' : ''));
@@ -2808,10 +2814,11 @@ function histoPeople() {
     if (!o) return h + '</div>';
     mine.forEach((c, i) => {
       const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
-      const line = '<div style="flex:1;min-width:0"><b>Livraison ' + (i + 1) + (c.annuleTest ? ' · annulée' : '') + '</b> · ' + (hs.week ? t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' : '') + hm(t.getTime()) +
+      const line = '<div style="flex:1;min-width:0"><b>' + (c.test ? '🧪 Test' : 'Livraison ' + (i + 1)) + (c.annuleTest ? ' · annulée' : '') + '</b> · ' + (hs.week ? t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' : '') + hm(t.getTime()) +
         '<div class="small">' + esc(c.client) + ' · ' + esc(qtyTxt(c)) + (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + ' · cash ' + money(cash) + (cash > enc ? ' (pourboire ' + money(cash - enc) + ')' : '') +
         (c.paie != null ? ' · paie ' + money(c.paie) : '') + (c.ajusteLe ? ' · ✏️ ajustée' : '') + '</div></div>';
       if (c.annuleTest) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.45;display:flex;gap:8px;align-items:center">' + line + '<span class="small">↩️</span></div>'; return; }
+      if (c.test) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.5;display:flex;gap:8px;align-items:center">' + line + '<span class="small">🧪 test<br>effacée après 15 min</span></div>'; return; }
       if (hx.edit !== c.id) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center">' + line + (owner ? '<button class="btn ghost sm" data-he="' + c.id + '" style="width:auto;margin:0;padding:8px 12px">✏️ Modifier</button>' : '') + '</div>'; return; }
       h += '<div style="padding:10px 14px;border-top:1px solid var(--line);background:var(--card2)"><div style="display:flex">' + line + '</div>' +
         '<div class="seg" style="margin:10px 0">' + [['adj', 'Ajuster'], ['ann', 'Annuler (test)']].map((x) => '<button data-hm2="' + x[0] + '" class="' + (hx.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
@@ -2879,3 +2886,25 @@ function openDmWith(mid) {
   setTab('direct'); dm.open = mid; drawDm();
   setTimeout(() => { const el = $('dmCard'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); if ($('dmTxt')) $('dmTxt').focus(); }, 250);
 }
+
+// =====================================================================
+// v30 : commandes test (le nom du client contient « test »)
+// =====================================================================
+// La commande marche comme une vraie (étiquette 🧪 TEST), mais à la livraison : pas de stock enlevé, pas de compteur,
+// pas de paie, et elle ne compte dans aucun total (résumés, bulle 💰, historique). Elle reste visible en gris dans
+// l'historique, puis le propriétaire ou MOUSSE l'efface toute seule 15 minutes après (commande + montants + lien client).
+const isTestName = (n) => /test/i.test(String(n || ''));
+function testTag(c) { return c && c.test ? '<div style="display:inline-block;margin:4px 0;padding:3px 10px;border-radius:999px;background:#3a2a05;color:#fcd34d;font-size:13px;font-weight:700">🧪 TEST — ne compte pas</div>' : ''; }
+let testSweepOn = false;
+async function sweepTests() {
+  if (!me || !(isOwner() || me.role === 'complet')) return;
+  try {
+    const qs = await getDocs(query(collection(db, 'commandes'), where('test', '==', true)));
+    const lim = Date.now() - 15 * 60000, b = writeBatch(db); let n = 0;
+    qs.forEach((d) => { const c = d.data(); const t = tsMs(c.livreeLe || c.annuleLe);
+      if (['livree', 'annulee'].includes(c.statut) && t < lim && n < 150) {
+        b.delete(d.ref); b.delete(doc(db, 'cmdPrive', d.id)); if (c.suivi) b.delete(doc(db, 'suivi', c.suivi)); n++; } });
+    if (n) await b.commit();
+  } catch (e) { console.warn('tests', e); }
+}
+function startTestSweep() { if (testSweepOn) return; testSweepOn = true; setTimeout(sweepTests, 5000); setInterval(sweepTests, 60000); }
