@@ -904,7 +904,7 @@ async function optionsFor(o, skipId) {
     const q = queueOf(s.mid).filter((c) => c.id !== skipId), plan = planOf(q);
     const left = stockLeft(s.mid); if (skipId && cmds[skipId] && cmds[skipId].livreur === s.mid) { left.L += cmds[skipId].L || 0; left.XL += cmds[skipId].XL || 0; }
     const ok = left.L >= (o.L || 0) && left.XL >= (o.XL || 0);
-    const start = pos(s) || X;
+    const start = pos(s.dernier) || pos(s) || X; // v45 : file vide = part de sa dernière livraison (sinon du check-in)
     const lastPos = q.length ? pos(q[q.length - 1]) : start;
     const endBase = q.length ? plan[plan.length - 1] + SUR_PLACE * 60000 + MARGE * 60000 : Date.now() + MARGE1 * 60000;
     cand.push({ mid: s.mid, nom: s.nom, kind: 'fin', idx: q.length, from: lastPos, base: endBase, est: estime(lastPos, X), ok, left, avant: q.length });
@@ -1233,10 +1233,11 @@ function bindMyOrders(s) {
     const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
     const b = writeBatch(db);
     b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null && !c.test ? { paie: paies[me.mid] } : {}) });
+    const der = c.lat != null ? { dernier: { lat: c.lat, lon: c.lon, adresse: c.adresse || '', le: Date.now() } } : {}; // v45 : sa position = la dernière livraison
     if (!c.test) { // v30 : une commande test ne touche pas au stock ni au compteur
       b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
-      b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
-    }
+      b.update(doc(db, 'soirees', s.id), Object.assign({ livrees: increment(1) }, der));
+    } else if (c.lat != null) b.update(doc(db, 'soirees', s.id), der);
     const nx = myCmds[1];
     if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 }); // la suivante part maintenant (2 min de marge)
     await b.commit();
