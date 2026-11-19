@@ -2574,18 +2574,24 @@ function drawHisto() {
   if (!(isOwner() || isStaff())) { box.innerHTML = ''; return; }
   const [a, b] = histoRange();
   const label = hs.week ? 'Semaine du ' + jourTxt(a) : jourTxt(a);
-  box.innerHTML = nrHtml() + '<div class="card"><div class="label">📅 Historique</div>' +
-    '<div class="seg" style="margin-bottom:8px">' + [['jour', 'Une soirée'], ['sem', 'Une semaine']].map((x) => '<button data-hm="' + x[0] + '" class="' + ((x[0] === 'sem') === hs.week ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
-    '<div class="two" style="align-items:center"><button class="btn ghost sm" id="hPrev" style="flex:0 0 52px">‹</button><div style="flex:1;text-align:center;font-weight:700">' + esc(label) + '</div><button class="btn ghost sm" id="hNext" style="flex:0 0 52px"' + (b > new Date() ? ' disabled' : '') + '>›</button></div>' +
-    '<input type="date" id="hDate" value="' + a.toISOString().slice(0, 10) + '" style="margin-top:8px">' +
-    (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' : '') + '</div>' +
+  hsCss();
+  if (hs.text == null && !hs.busy) setTimeout(() => { if (hs.text == null && !hs.busy) loadHisto(); }, 0); // v55 : plus de bouton « Voir »
+  const lab2 = hs.week ? jourTxt(a) + ' → ' + jourTxt(new Date(b.getTime() - 86400000)) : jourTxt(a);
+  const nrN = isDispatcher() ? nr.list.length : 0;
+  box.innerHTML = '<div class="card" style="padding:10px 12px"><div class="hsBar"><button class="hsArr" id="hPrev">‹</button>' +
+    '<label class="hsDate">' + esc(lab2) + ' <span class="small">📅</span><input type="date" id="hDate" value="' + a.toISOString().slice(0, 10) + '"></label>' +
+    '<button class="hsArr" id="hNext"' + (b > new Date() ? ' disabled' : '') + '>›</button>' +
+    '<div class="hsTog">' + [['jour', 'Soirée'], ['sem', 'Semaine']].map((x) => '<button data-hm="' + x[0] + '" class="' + ((x[0] === 'sem') === hs.week ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div></div>' +
+    '<div class="hsChips">' + [['tout', 'Tout'], ['cash', '🔵 Cash'], ['emt', '🟡 EMT'], ['ver', '⚠️ À vérifier']].map((x) => '<button data-hf="' + x[0] + '" class="' + ((hs.f || 'tout') === x[0] ? 'on' : '') + '"' + (x[0] === 'ver' && nrN ? ' style="border-color:#ef4444"' : '') + '>' + x[1] + (x[0] === 'ver' && nrN ? ' <span class="hsDot">' + nrN + '</span>' : '') + '</button>').join('') + '</div>' +
+    (nrN && hs.f !== 'ver' ? '<div class="hsPop" data-hf="ver">🔴 ' + nrN + ' paiement' + (nrN > 1 ? 's' : '') + ' à vérifier — touche ici</div>' : '') +
+    (hs.busy ? '<div class="small" style="margin-top:6px">Chargement…</div>' : '') + '</div>' + (hs.f === 'ver' ? nrHtml() : '') +
     (!hs.busy && hs.text != null ? histoPeople() + histoTotals() + addHtml() + '<div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
       '<div class="small" style="margin-top:6px">Le CSV s’ouvre dans Google Sheets (Fichier → Importer) ou Excel.</div>' : '');
   const move = (n) => { const d = new Date(dayStart(hs.day)); d.setDate(d.getDate() + n * (hs.week ? 7 : 1)); hs.day = d; hs.text = null; loadHisto(); };
   box.querySelectorAll('[data-hm]').forEach((x) => { x.onclick = () => { hs.week = x.dataset.hm === 'sem'; hs.text = null; loadHisto(); }; });
   $('hPrev').onclick = () => move(-1); $('hNext').onclick = () => move(1);
   $('hDate').onchange = (e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split('-').map(Number); hs.day = new Date(y, m - 1, d, 12); hs.text = null; loadHisto(); };
-  if ($('hLoad')) $('hLoad').onclick = loadHisto;
+  box.querySelectorAll('[data-hf]').forEach((x) => { x.onclick = () => { hs.f = x.dataset.hf; hx.det = null; drawHisto(); }; });
   if ($('hCsv')) $('hCsv').onclick = histoCsv;
   bindHistoPeople(); bindAdd();
   if ($('hTot')) $('hTot').onclick = () => { hs.totOpen = !hs.totOpen; drawHisto(); };
@@ -3139,6 +3145,57 @@ function histoTotals() { // v43 : en bas, petit, s'ouvre au toucher
     (hs.extra ? '<div class="small" style="margin-top:6px;white-space:pre-line">' + esc(hs.extra.trim()) + '</div>' : '') + '</div>';
   return h + '</div>';
 }
+function hsTags(c, nom) {
+  const t = [];
+  if (c.statut === 'ajout') t.push('⏳ attend ' + nom);
+  if (c.type === 'uber') t.push('🚕 Uber'); else if (c.type === 'pickup') t.push('📍 pick-up');
+  if (c.envoyePar) t.push('✓ EMT de ' + String(c.envoyePar).trim().split(/\s+/)[0]);
+  if (c.nonRecu) t.push('🔴 pas reçu');
+  if (c.paieModLe && !c.chg) t.push('✏️ modifié');
+  if (c.qtyAvant) t.push('✏️ quantité');
+  if (c.chg) t.push('⏳ changement');
+  if (c.ajoutPar) t.push('➕ ajoutée');
+  if (c.vente) t.push('🛒 vente');
+  if (c.dette) t.push('📒 dette');
+  if (c.ajusteLe) t.push('✏️ ajustée');
+  return t;
+}
+function hsRow(c, i, nom, owner) {
+  const q = payOf(c), t = new Date(tsMs(c.livreeLe)), who = c.confirmeLe ? (c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire')) : '';
+  const parts = [[q.cash, 'cash', PCOL.cash], [q.int, 'EMT', PCOL.int], [q.cry, 'crypto' + (q.coin ? ' ' + q.coin : ''), PCOL.cry], [q.no || 0, (q.noKind === 'cry' ? 'crypto' : 'EMT') + ' pas reçu', '#f87171'], [q.dette || 0, 'dette', '#f87171']].filter((x) => x[0] > 0);
+  const tot = parts.reduce((a, x) => a + x[0], 0);
+  const col = parts.length === 1 ? parts[0][2] : 'var(--text)';
+  const word = parts.length === 1 ? '<span style="color:' + parts[0][2] + '">' + esc(parts[0][1]) + '</span>' : parts.map((x) => '<span style="color:' + x[2] + '">' + x[0] + ' ' + esc(x[1]) + '</span>').join(' + ');
+  const bar = parts.length ? (parts.length === 1 ? parts[0][2] : 'linear-gradient(' + parts.map((x, k) => x[2] + ' ' + (k * 100 / parts.length) + '% ' + ((k + 1) * 100 / parts.length) + '%').join(',') + ')') : '#4b5563';
+  const tags = hsTags(c, nom), when = hs.week ? t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' + hm(t.getTime()) : hm(t.getTime());
+  const open = hx.det === c.id;
+  let h = '<div class="hsRow" data-hdet="' + c.id + '"' + (c.statut === 'ajout' ? ' style="background:rgba(245,179,1,.06)"' : '') + '><div class="hsBarC" style="background:' + bar + '"></div>' +
+    '<div style="flex:1;min-width:0"><div><span class="hsNum">' + (i + 1) + '</span> <b>' + esc(c.client) + '</b> <span class="small">' + esc(qtyTxt(c)) + ' · ' + esc(when) + '</span></div>' +
+    (tags.length ? '<div class="hsTg">' + tags.map((x) => '<span>' + esc(x) + '</span>').join('') + '</div>' : '') + '</div>' +
+    '<div style="text-align:right;white-space:nowrap"><div class="hsAmt" style="color:' + col + '">' + money(tot) + '</div><div class="small">' + word + '</div></div></div>';
+  if (c.nonRecu && c.statut === 'livree') h += '<div style="padding:0 14px 8px 28px">' + nrBtn(c) + '</div>';
+  if (open) h += '<div class="hsDet">' + payHtml(q) + '<div style="text-align:left">' + addNote(c, nom, who).replace(/text-align:right/g, 'text-align:left') + '</div>' +
+    (who && !c.paieModLe ? '<div class="small">✓ confirmé par ' + esc(who) + '</div>' : '') +
+    '<div class="small">Cash reçu ' + money(Number(c.cashRecu) || 0) + (c.paie != null ? ' · paie ' + money(c.paie) : '') + '</div>' +
+    (c.statut === 'ajout' || c.statut === 'refusee' ? (isDispatcher() ? '<button class="linkbtn" data-adel="' + c.id + '" style="color:#f87171">Retirer</button>' : '') : owner ? '<button class="btn ghost sm" style="width:auto;margin-top:6px" data-he="' + c.id + '">✏️ Modifier</button>' : '') + '</div>';
+  return h;
+}
+function hsCss() {
+  if (document.getElementById('hsCss')) return; const st2 = document.createElement('style'); st2.id = 'hsCss'; st2.textContent =
+  '.hsBar{display:flex;align-items:center;gap:6px}.hsArr{width:36px;height:36px;border-radius:10px;background:var(--card2);border:1px solid var(--line);color:var(--text);font-weight:900;font-size:18px;padding:0}.hsArr:disabled{opacity:.35}' +
+  '.hsDate{flex:1;text-align:center;font-weight:800;font-size:15px;position:relative;cursor:pointer}.hsDate input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}' +
+  '.hsTog{display:flex;background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:2px}.hsTog button{border:0;background:none;color:var(--muted);padding:6px 10px;border-radius:999px;font-size:12px;width:auto;margin:0}.hsTog button.on{background:#f5c518;color:#111;font-weight:800}' +
+  '.hsChips{display:flex;gap:6px;overflow-x:auto;margin-top:8px}.hsChips button{flex:none;width:auto;margin:0;border:1px solid var(--line);background:var(--card2);color:var(--text);border-radius:999px;padding:5px 11px;font-size:12.5px}.hsChips button.on{background:#2a303a;border-color:#4b5563;font-weight:800}' +
+  '.hsMini{display:flex;gap:10px;flex-wrap:wrap;padding:6px 14px 8px;font-size:12.5px;color:var(--muted);border-top:1px solid var(--line)}' +
+  '.hsRow{display:flex;gap:10px;align-items:center;padding:9px 14px;border-top:1px solid var(--line);cursor:pointer;font-size:15px}' +
+  '.hsBarC{width:4px;align-self:stretch;border-radius:4px;flex:none}.hsNum{color:var(--muted);font-size:11.5px}.hsAmt{font-weight:900;font-size:16px}' +
+  '.hsTg{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}.hsTg span{font-size:11px;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--text)}' +
+  '.hsDet{margin:0 14px 10px 28px;background:var(--card2);border-radius:10px;padding:8px 10px;font-size:13px;line-height:1.6}' +
+  '.hsDot{display:inline-block;min-width:18px;height:18px;line-height:18px;border-radius:9px;background:#ef4444;color:#fff;font-size:11px;font-weight:800;text-align:center;padding:0 5px;margin-left:2px}' +
+  '.hsPop{margin-top:8px;background:#3a1517;border:1px solid #7f1d1d;color:#fca5a5;border-radius:10px;padding:8px 10px;font-size:13px;font-weight:700;cursor:pointer}' +
+  '.hsAnn{padding:8px 14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);cursor:pointer}';
+  document.head.appendChild(st2);
+}
 function histoPeople() {
   const all = hs.all || [], ids = [];
   all.forEach((c) => { const k = c.livreur || '?'; if (!ids.includes(k)) ids.push(k); });
@@ -3151,10 +3208,17 @@ function histoPeople() {
     let h = '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:13px 14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b>' + alphaTag(k) + ' <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
     if (!o) return h + '</div>';
     { const P = { cash: 0, int: 0, cry: 0 }; mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').forEach((c) => { const q = payOf(c); P.cash += q.cash; P.int += q.int; P.cry += q.cry; }); // v43
-      h += '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--line);background:var(--card2);font-size:12.5px">' +
-        '<span style="color:' + PCOL.cash + '">🔵 <b>' + money(P.cash) + '</b> cash</span><span style="color:' + PCOL.int + '">🟡 <b>' + money(P.int) + '</b> EMT</span><span style="color:' + PCOL.cry + '">🟣 <b>' + money(P.cry) + '</b> crypto</span>' +
-        '<span class="small" style="width:100%">reste à remettre <b style="color:var(--text)">' + (S.paieOk ? money(S.reste) : '?') + '</b>' + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</span></div>'; }
+      h += '<div class="hsMini"><span style="color:' + PCOL.cash + '">🔵 ' + money(P.cash) + '</span><span style="color:' + PCOL.int + '">🟡 ' + money(P.int) + '</span><span style="color:' + PCOL.cry + '">🟣 ' + money(P.cry) + '</span>' +
+        '<span>· à remettre <b style="color:var(--text)">' + (S.paieOk ? money(S.reste) : '?') + '</b></span>' + (S.tips ? '<span>· pourboires ' + money(S.tips) + '</span>' : '') + (S.dette ? '<span style="color:#f87171">📒 ' + money(S.dette) + '</span>' : '') + '</div>'; }
+    // v55 : une livraison = 2 lignes courtes (barre de couleur, client, montant ; en petit l'heure + petits mots). Toucher = détails.
+    const F = hs.f || 'tout', isAnn = (c) => c.annuleTest || c.statut === 'refusee';
+    const okF = (c) => { if (F === 'tout') return true; const q = payOf(c); if (F === 'cash') return q.cash > 0; if (F === 'emt') return q.int > 0 || q.cry > 0 || (q.no || 0) > 0; return !!(c.paieModLe || c.ajoutPar || c.dette || c.nonRecu || c.qtyAvant || c.chg || c.statut === 'ajout' || c.vente); };
+    const anns = mine.filter(isAnn);
     mine.forEach((c, i) => {
+      if (isAnn(c) && !hs.anOpen) return;
+      if (!isAnn(c) && !okF(c)) return;
+      if (isAnn(c) && F !== 'tout') return;
+      if (!c.test && !isAnn(c) && hx.edit !== c.id) { h += hsRow(c, i, nom, owner); return; }
       const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
       const who = c.confirmeLe ? (c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire')) : '';
       const line = '<div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><div><b>' + (c.test ? '🧪' : (i + 1) + '.') + '</b> ' + esc(c.client) + ' <span class="small">· ' + esc(qtyTxt(c)) +
@@ -3178,7 +3242,8 @@ function histoPeople() {
       if (hx.err) h += '<div class="err">' + esc(hx.err) + '</div>';
       h += '</div>';
     });
-    if (owner && k !== '?') h += '<div class="small" style="padding:8px 14px;border-top:1px solid var(--line)">Touche une livraison pour la modifier. · 📦 Stock de ' + nom + ' : ' + esc(qty(st(k))) + '</div>';
+    if (anns.length && F === 'tout') h += '<div class="hsAnn" data-hann2="1">⊘ ' + anns.length + ' annulée' + (anns.length > 1 ? 's' : '') + ' ' + (hs.anOpen ? '▴' : '▾') + '</div>';
+    if (owner && k !== '?') h += '<div class="small" style="padding:8px 14px;border-top:1px solid var(--line)">Touche une livraison pour voir les détails. · 📦 Stock de ' + nom + ' : ' + esc(qty(st(k))) + '</div>';
     return h + '</div>';
   }).join('');
 }
@@ -3186,8 +3251,10 @@ function bindHistoPeople() {
   const box = $('histo'); if (!box) return;
   const C = (id) => (hs.all || []).find((x) => x.id === id);
   box.querySelectorAll('[data-hp]').forEach((el) => { el.onclick = () => { hx.open = hx.open === el.dataset.hp ? null : el.dataset.hp; hx.edit = null; drawHisto(); }; });
-  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = (ev) => { if (ev && ev.target.closest && ev.target.closest('[data-nrok],[data-nrc],[data-nrbox]')) return; const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: 'pay', L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); payInit(c); drawHisto(); }; });
+  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); if (ev && ev.target.closest && ev.target.closest('[data-nrok],[data-nrc],[data-nrbox]')) return; const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: 'pay', L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); payInit(c); drawHisto(); }; });
   box.querySelectorAll('[data-hm2]').forEach((el) => { el.onclick = () => { hx.mode = el.dataset.hm2; hx.err = ''; drawHisto(); }; });
+  box.querySelectorAll('[data-hdet]').forEach((el) => { el.onclick = (ev) => { if (ev && ev.target.closest && ev.target.closest('[data-nrok],[data-nrc],[data-nrbox],[data-nrnom],[data-nrgo],[data-nrx],input,button')) return; hx.det = hx.det === el.dataset.hdet ? null : el.dataset.hdet; drawHisto(); }; });
+  box.querySelectorAll('[data-hann2]').forEach((el) => { el.onclick = () => { hs.anOpen = !hs.anOpen; drawHisto(); }; });
   box.querySelectorAll('[data-hx]').forEach((el) => { el.onclick = () => { hx.edit = null; hx.mode = null; drawHisto(); }; });
   [['hxL', 'L'], ['hxXL', 'XL'], ['hxCash', 'cash']].forEach(([id, k]) => { if ($(id)) $(id).oninput = (e) => { hx[k] = e.target.value; }; });
   const run = async (fn) => { if (hx.busy || !canEditH()) return; hx.busy = true; hx.err = ''; drawHisto();
@@ -3925,7 +3992,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 54;
+const APP_V = 55;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
