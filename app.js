@@ -27,6 +27,8 @@ const app2 = initializeApp(firebaseConfig, 'creation');
 const auth2 = initializeAuth(app2, { persistence: inMemoryPersistence });
 
 const $ = (id) => document.getElementById(id);
+const OWNER = 'Wayne'; // v33 : nom affiché du propriétaire
+const dispName = (n) => (n === 'Propriétaire' ? OWNER : n);
 const ROLES = { proprio: 'Propriétaire', complet: 'Dispatch complet', limite: 'Dispatch limité', livreur: 'Livreur' };
 const DESC = {
   complet: 'Tout sauf les prix, les paies, les mots de passe, l’équipe et les ajouts à la réserve.',
@@ -77,6 +79,7 @@ onAuthStateChanged(auth, async (user) => {
   const data = u && u.exists() ? u.data() : null;
   if (!data || data.actif === false) { $('lErr').textContent = 'Ce compte n’est pas actif.'; await signOut(auth); return; }
   me = Object.assign({ uid: user.uid }, data);
+  if (me.role === 'proprio') me.nom = OWNER; // v33 : le propriétaire s'appelle Wayne
   me.mid = data.mid || 'proprietaire';
   $('who').textContent = data.nom;
   // lost (dispatch limité) : on lit sa soirée avant tout, pour savoir s'il fait le dispatch ce soir (les règles le vérifient aussi).
@@ -334,7 +337,7 @@ const DEP = (id) => id + '-depot';
 const isDep = (id) => /-depot$/.test(id || '');
 const ACTIVES = ['demande', 'load', 'ouverte'];
 let stocks = {}, soirees = {}, mySoiree = null, mvts = [];
-const nomDe = (id) => (id === RESERVE ? 'Réserve' : id === 'proprietaire' ? 'Propriétaire' : isDep(id) ? 'Dépôt de ' + nomDe(id.replace(/-depot$/, '')) : (team[id] && team[id].nom) || id);
+const nomDe = (id) => (id === RESERVE ? 'Réserve' : id === 'proprietaire' ? OWNER : isDep(id) ? 'Dépôt de ' + nomDe(id.replace(/-depot$/, '')) : (team[id] && team[id].nom) || id);
 const hhmm = (ts) => { const d = ts && ts.toDate ? ts.toDate() : (ts ? new Date(ts) : null); return d ? d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0') : ''; };
 const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 
@@ -422,7 +425,7 @@ function reqHtml(s) {
   if (isDispMode(s) && !self) return '<div class="item" data-sid="' + s.id + '"><b>' + esc(s.nom) + ' veut faire le 🧭 DISPATCH</b> <span class="small">· ' + hhmm(s.demandeLe) + '</span>' +
     '<input class="rAdr hide" value="' + esc(d.adr) + '"><p class="small">Il pourra voir les commandes, les messages et faire des loads de son stock.</p>' +
     '<div class="two"><button class="btn red rNo">Refuser</button><button class="btn ok rYes">Autoriser</button></div><div class="err rErr"></div></div>';
-  if (self && !canAuthorize(s)) return '<div class="item"><div class="wait"><span class="dot"></span><b>Ta soirée</b>&nbsp;attend MOUSSE ou le propriétaire.</div></div>';
+  if (self && !canAuthorize(s)) return '<div class="item"><div class="wait"><span class="dot"></span><b>Ta soirée</b>&nbsp;attend MOUSSE ou Wayne.</div></div>';
   const src = loadSrc(d);
   const have = st(src);
   const over = !isOwner() && (d.L > (have.L || 0) || d.XL > (have.XL || 0));
@@ -440,7 +443,7 @@ function reqHtml(s) {
       (over ? '<div class="err">Tu n’as que ' + qty(have) + '.</div>' : '') +
       (!d.L && !d.XL ? '<div class="small" style="margin-bottom:8px">Sans load, il part avec ce qu’il a déjà.</div>' : '')) +
     (canAuthorize(s) ? '<div class="two"><button class="btn red rNo">Refuser</button><button class="btn ok rYes" ' + (over ? 'disabled' : '') + '>' + (self ? 'Ouvrir ma soirée' : 'Autoriser + envoyer') + '</button></div>'
-      : '<div class="small">MOUSSE ou le propriétaire doit autoriser ta propre soirée.</div>') +
+      : '<div class="small">MOUSSE ou Wayne doit autoriser ta propre soirée.</div>') +
     '<div class="err rErr"></div></div>';
 }
 function bindReq(s) {
@@ -577,10 +580,10 @@ function renderSoiree() {
       '<div id="ciSugs"></div>' +
       '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>' + (me.uber ? ciPickHtml() : '')) +
       ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
-      (me.role === 'limite' ? '<p class="small">MOUSSE ou le propriétaire doit t’autoriser' + (ci.mode === 'dispatch' || ci.mode === 'les2' ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
+      (me.role === 'limite' ? '<p class="small">MOUSSE ou Wayne doit t’autoriser' + (ci.mode === 'dispatch' || ci.mode === 'les2' ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
       '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
   } else if (s.statut === 'demande') {
-    h = '<div class="card"><div class="wait"><span class="dot"></span><b>' + (me.role === 'limite' ? 'En attente de MOUSSE ou du propriétaire…' : 'En attente du dispatch…') + '</b></div>' +
+    h = '<div class="card"><div class="wait"><span class="dot"></span><b>' + (me.role === 'limite' ? 'En attente de MOUSSE ou de Wayne…' : 'En attente du dispatch…') + '</b></div>' +
       '<p class="small">Adresse envoyée : ' + esc(s.adresse) + '</p><div class="err" id="ciErr"></div><button class="btn ghost" id="ciCancel">Annuler ma demande</button></div>';
   } else if (s.statut === 'load') {
     const L = s.load || {};
@@ -1520,7 +1523,7 @@ function startDm() {
       qs.forEach((d) => dm.mine.push(Object.assign({ id: d.id }, d.data())));
       dm.mine.sort((a, b) => tsMs(a.le) - tsMs(b.le));
       if (!first && dm.mine.length > before && dm.mine[dm.mine.length - 1].de === 'dispatch' && chatsDriver()) bip();
-      if (!first && dm.mine.length > before && dm.mine[dm.mine.length - 1].de === 'dispatch' && chatsDriver()) { const m = dm.mine[dm.mine.length - 1]; bulle(m.tous ? '📣 Dispatch' : 'Dispatch', m.txt, () => { setTab('soiree'); const el = $('dmMe'); if (el) el.scrollIntoView({ behavior: 'smooth' }); setTimeout(() => $('lmTxt') && $('lmTxt').focus(), 400); }); }
+      if (!first && dm.mine.length > before && dm.mine[dm.mine.length - 1].de === 'dispatch' && chatsDriver()) { const m = dm.mine[dm.mine.length - 1]; bulle((m.tous ? '📣 ' : '') + dispName(m.nom || 'Dispatch'), m.txt, () => { setTab('soiree'); const el = $('dmMe'); if (el) el.scrollIntoView({ behavior: 'smooth' }); setTimeout(() => $('lmTxt') && $('lmTxt').focus(), 400); }); }
       first = false; drawMine();
     }, () => {}));
     stops.push(onSnapshot(doc(db, 'lus', me.mid), (s) => { dm.myLu = s.exists() ? s.data() : {}; drawMine(); }, () => {}));
@@ -1529,15 +1532,16 @@ function startDm() {
 }
 function bubbles(list, mine) {
   return list.map((m) => { const t = new Date(tsMs(m.le));
-    return '<div class="cm ' + (m.tous ? 'call' : m.de === mine ? 'cme' : 'cthem') + '">' + (m.tous ? '📣 ' : '') + esc(m.txt || '') + (m.img ? '<img src="' + esc(m.img) + '" alt="photo">' : '') +
-      '<div class="ct">' + (m.tous ? 'À tous · ' : m.de === 'dispatch' && mine === 'dispatch' ? esc(m.nom || '') + ' · ' : '') + t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') + '</div></div>'; }).join('');
+    const who = m.par && m.par === myMid() ? 'Toi' : dispName(m.nom || (m.de === 'livreur' ? nomDe(m.mid) : 'Dispatch'));
+    return '<div class="cm ' + (m.tous ? 'call' : m.de === mine ? 'cme' : 'cthem') + '"><div style="font-size:11px;font-weight:700;opacity:.85;margin-bottom:2px">' + esc(who) + '</div>' + (m.tous ? '📣 ' : '') + esc(m.txt || '') + (m.img ? '<img src="' + esc(m.img) + '" alt="photo">' : '') +
+      '<div class="ct">' + (m.tous ? 'À tous · ' : '') + t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') + '</div></div>'; }).join('');
 }
 async function sendMsg(mid, de, txt, img, tous) {
   txt = String(txt || '').trim().slice(0, 300); if (!txt && !img) return;
   const d = { mid, de, par: me.mid, nom: me.nom || 'Dispatch', txt: txt || '📷 Photo', le: serverTimestamp() };
   if (img) d.img = img; if (tous) d.tous = true;
   await setDoc(doc(collection(db, 'messages')), d);
-  if (de === 'dispatch') notifyMsg(mid, d.txt); else notifyDispatch('💬 ' + me.nom + ' : ' + d.txt);
+  if (de === 'dispatch') notifyMsg(mid, (me.nom || 'Dispatch') + ' : ' + d.txt); else notifyDispatch('💬 ' + me.nom + ' : ' + d.txt);
 }
 async function notifyMsg(mid, texte) {
   try { const t = await auth.currentUser.getIdToken();
@@ -1744,11 +1748,11 @@ async function drawPop() {
   dt.mine.filter((x) => x.statut === 'ouverte' && x.responsable === myMid()).forEach((x) => { h += '<div class="small">📒 Ta dette : ' + money(x.montant) + ' (' + esc(x.client) + ')</div>'; });
   att.forEach((r) => { h += '<div class="small" style="margin-top:4px">⏳ ' + money(r.montant) + ' → ' + esc(r.versNom) + ' : en attente <button class="linkbtn" data-ann="' + r.id + '">Annuler</button></div>'; });
   rm.mine.filter((r) => r.statut !== 'attente').slice(-3).forEach((r) => { h += '<div class="small">' + (r.statut === 'recue' ? '✓ ' : '✗ ') + money(r.montant) + ' → ' + esc(r.versNom) + (r.statut === 'recue' ? ' (reçu)' : ' (pas reçu)') + '</div>'; });
-  if (!rm.form) h += '<button class="linkbtn" id="popGive" style="margin-top:6px">↗ Donner du cash ' + (me.role === 'complet' ? 'au propriétaire' : me.role === 'limite' ? 'à MOUSSE' : 'au dispatch') + '</button>';
+  if (!rm.form) h += '<button class="linkbtn" id="popGive" style="margin-top:6px">↗ Donner du cash ' + (me.role === 'complet' ? 'à ' + OWNER : me.role === 'limite' ? 'à MOUSSE' : 'au dispatch') + '</button>';
   else {
     // MOUSSE donne seulement au propriétaire ; lost seulement à MOUSSE ; un livreur à MOUSSE d'abord, puis lost.
     const on = Object.entries(rm.dispos).filter(([id, d]) => d.actif && id !== myMid() && id !== 'proprietaire');
-    const ds = me.role === 'complet' ? [['proprietaire', { nom: 'Propriétaire' }]]
+    const ds = me.role === 'complet' ? [['proprietaire', { nom: OWNER }]]
       : me.role === 'limite' ? on.filter(([id, d]) => d.role === 'complet')
       : on.sort((a, b) => (a[1].role === 'complet' ? 0 : 1) - (b[1].role === 'complet' ? 0 : 1));
     h += '<div style="margin-top:8px;min-width:230px"><div class="small">À qui :</div><div class="seg" style="margin:4px 0">' +
@@ -1769,7 +1773,7 @@ async function drawPop() {
     if (m <= 0) { rm.err = 'Écris le montant.'; return drawPop(); }
     if (m > sur) { rm.err = 'Tu as seulement ' + money(sur) + ' sur toi.'; return drawPop(); }
     try {
-      await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || 'Propriétaire', vers: rm.to, versNom: rm.to === 'proprietaire' ? 'Propriétaire' : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
+      await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || OWNER, vers: rm.to, versNom: rm.to === 'proprietaire' ? OWNER : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
       if (rm.to !== 'proprietaire') notifyDispatch('💵 ' + me.nom + ' te donne ' + money(m) + ' cash', rm.to);
       rm.form = false; rm.err = ''; drawPop();
     } catch (e) { rm.err = msg(e); drawPop(); }
@@ -1812,7 +1816,7 @@ function startDettes() {
   drawDettes();
 }
 const dDate = (t) => { const x = t && t.toDate ? t.toDate() : t ? new Date(t) : null; return x ? x.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }) : ''; };
-const respNom = (x) => (x.responsable === 'dispatch' ? 'le dispatch' : x.responsable === 'proprietaire' ? 'Propriétaire' : nomDe(x.responsable) || x.livreurNom);
+const respNom = (x) => (x.responsable === 'dispatch' ? 'le dispatch' : x.responsable === 'proprietaire' ? OWNER : nomDe(x.responsable) || x.livreurNom);
 function detteSur(c) { const x = dt.mine.find((y) => y.cmd === c.id && y.statut !== 'refusee'); return x && x.montant ? x.montant : 0; }
 async function dettesDepuis(d, mid) {
   const out = {};
@@ -1901,7 +1905,7 @@ async function detteDecide(x, ok) {
   } catch (e) { alertBar(msg(e)); }
 }
 async function detteRegler(x, mode) {
-  try { await writeBatch(db).update(doc(db, 'dettes', x.id), { statut: 'reglee', regleMode: mode, reglePar: myMid(), regleParNom: me.nom || 'Propriétaire', regleLe: serverTimestamp() }).commit(); }
+  try { await writeBatch(db).update(doc(db, 'dettes', x.id), { statut: 'reglee', regleMode: mode, reglePar: myMid(), regleParNom: me.nom || OWNER, regleLe: serverTimestamp() }).commit(); }
   catch (e) { alertBar(msg(e)); }
 }
 // Le livreur nommé responsable par le dispatch : « Je confirme » ou « Pas moi » (alors ça revient au dispatch qui l'a créée).
@@ -2434,7 +2438,7 @@ function drawSess() {
   else h += L.map((x) => {
     const moi = x.uid === me.uid;
     return '<div class="q" style="display:flex;gap:8px;align-items:center;justify-content:space-between">' +
-      '<div><b>' + esc(x.nom || x.mid || '?') + '</b>' + (moi ? ' <span class="small">(toi)</span>' : '') +
+      '<div><b>' + esc(dispName(x.nom || x.mid || '?')) + '</b>' + (moi ? ' <span class="small">(toi)</span>' : '') +
       '<div class="small">' + esc(x.appareil || 'Appareil') + '</div>' +
       '<div class="small">IP ' + esc(x.ip || '?') + ' · ' + ilYa(tsMs(x.vu)) + '</div></div>' +
       (moi ? '' : '<button class="btn ' + (ss.ask === x.uid ? 'red' : 'ghost') + ' sm" data-out="' + esc(x.uid) + '" style="width:auto;white-space:nowrap">' + (ss.ask === x.uid ? 'Sûr ? Appuie encore' : 'Déconnecter') + '</button>') +
