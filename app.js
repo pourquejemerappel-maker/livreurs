@@ -1931,12 +1931,13 @@ const tonight = (r) => { const t = r.le && r.le.toDate ? r.le.toDate() : null; r
 function startRemises() {
   if (!me) return;
   stops.push(onSnapshot(query(collection(db, 'remises'), where('de', '==', myMid())), (qs) => { rm.mine = []; qs.forEach((d) => rm.mine.push(Object.assign({ id: d.id }, d.data()))); rm.mine = rm.mine.filter(tonight); drawPop(); }, () => {}));
-  if (isOwner() || isStaff()) {
+  { // v54 : le livreur aussi (le dispatch lui rend de l'argent → il confirme « Reçu »)
     let n0 = -1;
     stops.push(onSnapshot(query(collection(db, 'remises'), where('vers', '==', myMid())), (qs) => {
       rm.toMe = []; qs.forEach((d) => rm.toMe.push(Object.assign({ id: d.id }, d.data()))); rm.toMe = rm.toMe.filter(tonight);
       const n = rm.toMe.filter((r) => r.statut === 'attente').length; if (n0 >= 0 && n > n0) bip(); n0 = n;
-      drawRemCard(); drawPop();
+      if (isOwner() || isStaff()) drawRemCard(); else drawRemDrv();
+      drawPop();
     }, () => {}));
   }
   stops.push(onSnapshot(collection(db, 'dispos'), (qs) => { rm.dispos = {}; qs.forEach((d) => { rm.dispos[d.id] = d.data(); }); drawPop(); }, () => {}));
@@ -1978,9 +1979,14 @@ async function drawPop() {
     return;
   }
   const att = rm.mine.filter((r) => r.statut === 'attente');
-  let h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> sur toi' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') + ' ce soir' : '') + '</div>';
+  // v54 : il peut donner tout son cash (sa paye comprise) ; s'il donne plus que ce qu'il doit, le dispatch lui doit la différence.
+  const garde = livre && !isStaff() ? Math.max(0, (base.paie || 0) + (base.frais || 0) + (base.tips || 0)) : 0, maxCash = Math.max(0, sur + garde);
+  let h;
+  if (!isStaff() && sur < 0) h = '<div style="cursor:pointer" id="popTop"><div style="font-size:22px;font-weight:900;color:#c4b5fd">' + money(sur) + '</div><b style="color:#c4b5fd">💜 Le dispatch te doit ' + money(-sur) + '</b>' + (livre ? '<div class="small">' + base.n + ' livraison' + (base.n > 1 ? 's' : '') + ' ce soir</div>' : '') + '</div>';
+  else if (!isStaff()) h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> à remettre' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') + ' ce soir' : '') + (garde ? '<div class="small">💵 ' + money(maxCash) + ' cash sur toi, dont ' + money(garde) + ' ta paye</div>' : '') + '</div>';
+  else h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> sur toi' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') + ' ce soir' : '') + '</div>';
   if (so && Math.round(so.avant)) h += '<div class="small">' + money(so.avant) + ' d’avant + ' + money(so.ceSoir) + ' ce soir</div>';
-  if (k.recu) h += '<div class="small">dont ' + money(k.recu) + ' reçus des livreurs</div>';
+  if (k.recu && isStaff()) h += '<div class="small">dont ' + money(k.recu) + ' reçus des livreurs</div>';
   dt.mine.filter((x) => x.statut === 'ouverte' && x.responsable === myMid()).forEach((x) => { h += '<div class="small">📒 Ta dette : ' + money(x.montant) + ' (' + esc(x.client) + ')</div>'; });
   att.forEach((r) => { h += '<div class="small" style="margin-top:4px">⏳ ' + money(r.montant) + ' → ' + esc(r.versNom) + ' : en attente <button class="linkbtn" data-ann="' + r.id + '">Annuler</button></div>'; });
   rm.mine.filter((r) => r.statut !== 'attente').slice(-3).forEach((r) => { h += '<div class="small">' + (r.statut === 'recue' ? '✓ ' : '✗ ') + money(r.montant) + ' → ' + esc(r.versNom) + (r.statut === 'recue' ? ' (reçu)' : ' (pas reçu)') + '</div>'; });
@@ -1994,6 +2000,7 @@ async function drawPop() {
     h += '<div style="margin-top:8px;min-width:230px"><div class="small">À qui :</div><div class="seg" style="margin:4px 0">' +
       (ds.map(([id, d]) => '<button data-to="' + id + '" class="' + (rm.to === id ? 'on' : '') + '">' + esc(d.nom) + '</button>').join('') || '<span class="small">Aucun dispatch en ligne.</span>') + '</div>' +
       '<div class="crow"><input id="popAmt" type="number" inputmode="numeric" placeholder="Montant $"><button class="btn sm" id="popSend">Donner</button></div>' +
+      (!isStaff() ? '<div class="small" id="popPlus" style="color:#c4b5fd"></div>' : '') +
       '<div class="err" id="popErr">' + esc(rm.err) + '</div><button class="linkbtn" id="popX">Fermer</button></div>';
   }
   pop.innerHTML = h + popX;
@@ -2001,13 +2008,14 @@ async function drawPop() {
   if ($('popGive')) $('popGive').onclick = (e) => { e.stopPropagation(); rm.form = true; rm.err = ''; drawPop(); };
   if ($('popTop')) $('popTop').onclick = () => { if (!rm.form) { rm.form = true; drawPop(); } };
   if ($('popX')) $('popX').onclick = () => { rm.form = false; drawPop(); };
+  if ($('popAmt') && $('popPlus')) $('popAmt').oninput = () => { const m = Math.round(Number($('popAmt').value) || 0), x = m - Math.max(0, sur); $('popPlus').textContent = x > 0 && m <= maxCash ? 'Tu donnes ' + money(x) + ' de plus que ce que tu dois → le dispatch te devra ' + money(x) + '.' : ''; };
   pop.querySelectorAll('[data-to]').forEach((b) => { b.onclick = () => { const v = $('popAmt') && $('popAmt').value; rm.to = b.dataset.to; drawPop().then(() => { if (v && $('popAmt')) $('popAmt').value = v; }); }; });
   pop.querySelectorAll('[data-ann]').forEach((b) => { b.onclick = () => deleteDoc(doc(db, 'remises', b.dataset.ann)).catch(() => {}); });
   if ($('popSend')) $('popSend').onclick = async () => {
     const m = Math.round(Number($('popAmt').value) || 0);
     if (!rm.to || (!rm.dispos[rm.to] && rm.to !== 'proprietaire')) { rm.err = 'Choisis à qui.'; return drawPop(); }
     if (m <= 0) { rm.err = 'Écris le montant.'; return drawPop(); }
-    if (m > sur) { rm.err = 'Tu as seulement ' + money(sur) + ' sur toi.'; return drawPop(); }
+    if (m > (isStaff() ? sur : maxCash)) { rm.err = 'Tu as seulement ' + money(isStaff() ? sur : maxCash) + ' sur toi.'; return drawPop(); }
     try {
       await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || OWNER, vers: rm.to, versNom: rm.to === 'proprietaire' ? OWNER : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
       if (rm.to !== 'proprietaire') notifyDispatch('💵 ' + me.nom + ' te donne ' + money(m) + ' cash', rm.to);
@@ -2025,6 +2033,21 @@ function drawRemCard() {
   box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => updRemise(b.dataset.rno, 'refusee'); });
 }
 function updRemise(id, statut) { writeBatch(db).update(doc(db, 'remises', id), { statut, recueLe: serverTimestamp() }).commit().catch((e) => alertBar(msg(e))); }
+// v54 : le livreur a donné plus que ce qu'il devait (sa paye comprise) → le dispatch lui doit la différence.
+function drawRemDrv() {
+  let box = $('remDrv');
+  const att = rm.toMe.filter((r) => r.statut === 'attente');
+  if (!att.length) { if (box) box.remove(); return; }
+  if (!box) { box = document.createElement('div'); box.id = 'remDrv'; box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:60;max-width:460px;margin:0 auto'; document.body.appendChild(box); }
+  box.innerHTML = '<div class="card alert" style="box-shadow:0 10px 30px rgba(0,0,0,.6)"><div class="label">💵 Le dispatch te rend de l’argent</div>' + att.map((r) =>
+    '<div class="item"><b>' + esc(r.deNom) + '</b> dit qu’il t’a donné <b>' + money(r.montant) + '</b><div class="two" style="margin-top:8px"><button class="btn red sm" data-rno="' + r.id + '">Pas reçu</button><button class="btn ok sm" data-ryes="' + r.id + '">Reçu ✓</button></div></div>').join('') + '</div>';
+  box.querySelectorAll('[data-ryes]').forEach((b) => { b.onclick = () => updRemise(b.dataset.ryes, 'recue'); });
+  box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => updRemise(b.dataset.rno, 'refusee'); });
+}
+async function rendreA(mid, nom, m) {
+  await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || OWNER, vers: mid, versNom: nom || nomDe(mid), montant: Math.round(m), statut: 'attente', le: serverTimestamp(), rend: true });
+  notifyMsg(mid, '💵 ' + (me.nom || OWNER) + ' te rend ' + money(Math.round(m)) + ' — confirme « Reçu »');
+}
 
 // =====================================================================
 // Version 12 : dettes (« le client paie plus tard »), surtout pour les EMT pas reçus
@@ -2431,6 +2454,9 @@ function finCard(s) {
   if (!f) return '<button class="btn ghost" id="finOpen" style="margin-top:4px">🌙 Terminer ma soirée</button>';
   const to = me.role === 'complet' ? null : mousseDispo();
   let h = '<div class="card"><div class="label">🌙 Terminer ma soirée</div><div>Il te reste <b>' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL</b>.</div>';
+  if (f.solde != null && Math.round(f.solde)) h += f.solde < 0 // v54 : ce que le dispatch lui doit (ou ce qu'il doit encore)
+    ? '<div style="margin:10px 0;background:#2e1065;border-radius:12px;padding:12px;text-align:center"><div class="small" style="color:#ddd6fe">Argent</div><div style="font-size:21px;font-weight:900;color:#fff">💵 Le dispatch te doit ' + money(-f.solde) + '</div></div>'
+    : '<div style="margin:10px 0;background:#1f2633;border-radius:12px;padding:12px;text-align:center"><div class="small">Argent</div><div style="font-size:21px;font-weight:900">💰 Tu dois encore remettre ' + money(f.solde) + '</div></div>';
   if (to) {
     h += '<div class="seg" id="finMode" style="margin:8px 0">' + [['garde', 'Je garde tout'], ['rends', 'Je rends à ' + esc(to.nom)]].map((x) => '<button data-m="' + x[0] + '" class="' + (f.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
     if (f.mode === 'rends') h += ['L', 'XL'].map((k) => '<div class="step"><span>' + k + '</span><button data-fk="' + k + '" data-d="-1">−</button><div class="v">' + f[k] + '</div><button data-fk="' + k + '" data-d="1">+</button></div>').join('') +
@@ -2441,7 +2467,7 @@ function finCard(s) {
   return h;
 }
 function bindFinCard(s) {
-  if ($('finOpen')) $('finOpen').onclick = () => { const m = st(me.mid); ret.f = { mode: 'garde', L: m.L || 0, XL: m.XL || 0 }; renderSoiree(); };
+  if ($('finOpen')) $('finOpen').onclick = () => { const m = st(me.mid); ret.f = { mode: 'garde', L: m.L || 0, XL: m.XL || 0, solde: null }; renderSoiree(); if (!isStaff()) soldeMoi().then((so) => { if (ret.f) { ret.f.solde = so.tot; renderSoiree(); } }).catch(() => {}); };
   const f = ret.f; if (!f) return;
   document.querySelectorAll('#finMode button').forEach((b) => { b.onclick = () => { f.mode = b.dataset.m; renderSoiree(); }; });
   document.querySelectorAll('[data-fk]').forEach((b) => { b.onclick = () => { const k = b.dataset.fk, m = st(me.mid); f[k] = Math.max(0, Math.min(m[k] || 0, f[k] + Number(b.dataset.d))); renderSoiree(); }; });
@@ -3788,7 +3814,7 @@ async function soldeMoi() {
   let out = 0, outT = 0, inn = 0, innT = 0;
   const rs = await getDocs(query(collection(db, 'remises'), where('de', '==', mid)));
   rs.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime()) return; out += r.montant || 0; if (t >= t0.getTime()) outT += r.montant || 0; });
-  if (isOwner() || isStaff()) {
+  { // v54 : aussi pour le livreur (le dispatch lui rend l'argent qu'il a donné en trop)
     const rv = await getDocs(query(collection(db, 'remises'), where('vers', '==', mid)));
     rv.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; });
   }
@@ -3838,7 +3864,9 @@ function drawCash() {
   L.forEach((p) => {
     const o = cs.sel === p.id, disp = team[p.id] && ['complet', 'limite'].includes(team[p.id].role);
     h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-cs="' + esc(p.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer"><div><b style="font-size:16px">' + esc(p.nom) + '</b> <span class="small">' + (disp ? 'dispatch' : 'livreur') + '</span>' +
-      '<div class="small">' + (Math.round(p.solde) ? (disp ? 'sur lui' : 'à remettre') : '✓ tout remis') + (p.dette ? ' · <span style="color:#f87171">📒 ' + money(p.dette) + ' en dettes</span>' : '') + '</div></div><b style="font-size:19px;color:' + (Math.round(p.solde) ? '#fcd34d' : '#86efac') + '">' + money(p.solde) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+      '<div class="small">' + (Math.round(p.solde) ? (disp ? 'sur lui' : p.solde < 0 ? 'on lui doit' : 'à remettre') : '✓ tout remis') + (p.dette ? ' · <span style="color:#f87171">📒 ' + money(p.dette) + ' en dettes</span>' : '') + '</div></div><b style="font-size:19px;color:' + (Math.round(p.solde) ? '#fcd34d' : '#86efac') + '">' + money(p.solde) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+    if (!disp && Math.round(p.solde) < 0 && (isStaff() || isOwner())) h += '<div style="padding:8px 14px 12px;border-top:1px solid var(--line)"><div style="color:#c4b5fd;font-weight:800;margin-bottom:6px">💜 Tu lui dois ' + money(-p.solde) + '</div>' +
+      (cs.rend === p.id ? '<button class="btn sm" style="background:#7c3aed;color:#fff" data-rend="' + esc(p.id) + '">Sûr ? Appuie encore : je lui ai donné ' + money(-p.solde) + '</button>' : '<button class="btn sm" style="background:#7c3aed;color:#fff" data-rend="' + esc(p.id) + '">💵 Je lui ai donné ' + money(-p.solde) + '</button>') + '<div class="small" style="margin-top:4px">Il devra confirmer « Reçu ✓ ».</div></div>';
     if (o) Object.values(p.days).sort((a, b) => b.k - a.k).forEach((d) => {
       h += '<div style="padding:6px 14px;background:var(--card2);border-top:1px solid var(--line);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">' + esc(new Date(d.k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })) + '</div>';
       const row = (txt, m, sub, col) => '<div style="padding:7px 14px;border-top:1px solid var(--line);font-size:13px;display:flex;justify-content:space-between;gap:8px"><span>' + txt + (sub ? '<div class="small">' + sub + '</div>' : '') + '</span><b style="color:' + col + ';white-space:nowrap">' + m + '</b></div>';
@@ -3852,6 +3880,13 @@ function drawCash() {
   box.innerHTML = h;
   box.querySelectorAll('[data-cs]').forEach((el) => { el.onclick = () => { cs.sel = cs.sel === el.dataset.cs ? null : el.dataset.cs; drawCash(); }; });
   if ($('csReload')) $('csReload').onclick = () => loadCash();
+  box.querySelectorAll('[data-rend]').forEach((el) => { el.onclick = async () => {
+    const id = el.dataset.rend, p = (cs.data || []).find((x) => x.id === id); if (!p) return;
+    if (cs.rend !== id) { cs.rend = id; return drawCash(); }
+    cs.rend = null; el.disabled = true;
+    try { await rendreA(id, p.nom, -p.solde); cs.err = ''; } catch (e) { cs.err = msg(e); }
+    loadCash();
+  }; });
 }
 
 
@@ -3890,7 +3925,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 53;
+const APP_V = 54;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
