@@ -1671,7 +1671,7 @@ async function drawArch() {
 function drawCashBtn() {
   const b = $('cashBtn'); if (!b) return;
   b.classList.toggle('hide', !((delivers() && mySoiree && working(mySoiree)) || isDispatcher()));
-  b.onclick = (e) => { if (e) e.stopPropagation(); const pop = $('cashPop'); if (!pop.classList.contains('hide')) { closePop(); return; } pop.classList.remove('hide'); rm.open = false; rm.form = false; drawPop(); };
+  b.onclick = (e) => { if (e) e.stopPropagation(); const pop = $('cashPop'); if (!pop.classList.contains('hide')) { closePop(); return; } pop.classList.remove('hide'); try { pop.style.top = Math.round(b.getBoundingClientRect().bottom + 8) + 'px'; } catch (x) {} rm.open = false; rm.form = false; drawPop(); }; // v34 : la bulle s'ouvre juste sous le bouton 💰
   if (!drawCashBtn.outside) { drawCashBtn.outside = true;
     // v28 : toucher ailleurs ferme la bulle 💰
     document.addEventListener('click', (e) => { const pop = $('cashPop'); if (!pop || pop.classList.contains('hide')) return; if (pop.contains(e.target) || e.target === $('cashBtn')) return; closePop(); }, true); }
