@@ -96,6 +96,19 @@ onAuthStateChanged(auth, async (user) => {
     const fo = s.data().forceOut, depuis = Date.parse((user.metadata && user.metadata.lastSignInTime) || '') || 0;
     if (fo && fo > depuis) { $('lErr').textContent = 'Tu as été déconnecté. Reconnecte-toi.'; signOut(auth); }
   }, () => {}));
+  // v53 : livreur Uber déconnecté par le dispatch → il doit être accepté pour revenir.
+  if (me.mid) { const depuis2 = Date.parse((user.metadata && user.metadata.lastSignInTime) || '') || 0;
+    stops.push(onSnapshot(doc(db, 'sortis', me.mid), (s) => {
+      const x = s.exists() ? s.data() : null;
+      if (!x) return sortiGate(null);
+      if (x.etat === 'dehors') {
+        if ((Number(x.le) || 0) > depuis2) { $('lErr').textContent = 'Tu as été déconnecté par le dispatch. Reconnecte-toi : le dispatch devra accepter ton retour.'; signOut(auth); return; }
+        sortiGate({ etat: 'attente' });
+        writeBatch(db).update(doc(db, 'sortis', me.mid), { etat: 'attente', demandeLe: Date.now() }).commit().then(() => notifyDispatch('🔒 ' + me.nom + ' veut revenir — à accepter')).catch(() => {});
+        return;
+      }
+      sortiGate(x);
+    }, () => {})); }
   startLive();
 });
 
@@ -355,6 +368,7 @@ function startLive() {
   ret.toMe = []; ret.mine = []; ret.f = null; setTimeout(startRetours, 0);
   dons.list = []; setTimeout(startDons, 0);
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
+  sortis = {}; setTimeout(startSortis, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
@@ -1015,6 +1029,59 @@ let menuOpen = null, msgOpen = null, reassign = null;
 let svcSel = null, nowMore = false, freeMore = false;
 const minDe = (t) => Math.max(0, Math.floor((Date.now() - tsMs(t)) / 60000));
 const attendPaie = (c) => !!(c.bloque || c.demandePaie);
+// v53 : 🔒 retour d'un livreur Uber déconnecté par le dispatch
+let sortis = {}; const sx = { busy: null, ask: null };
+function sortiGate(x) {
+  let ov = $('sortiOv');
+  if (!x || x.etat !== 'attente') { if (ov) ov.remove(); return; }
+  if (!ov) { ov = document.createElement('div'); ov.id = 'sortiOv'; ov.style.cssText = 'position:fixed;inset:0;z-index:70;background:#0b0d11;color:#e8eaed;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px'; document.body.appendChild(ov); }
+  ov.innerHTML = '<div style="font-size:54px">⏳</div><div style="font-size:22px;font-weight:800;margin:10px 0 6px">En attente du dispatch…</div><div style="color:#9aa0a6">Le dispatch doit accepter ton retour.</div><button id="sortiOut" style="margin-top:28px;background:none;border:1px solid #3a414d;color:#cbd5e1;border-radius:12px;padding:10px 16px">Se déconnecter</button>';
+  $('sortiOut').onclick = () => signOut(auth);
+}
+function startSortis() {
+  if (!(isOwner() || isStaff())) return;
+  stops.push(onSnapshot(collection(db, 'sortis'), (qs) => { sortis = {}; qs.forEach((d) => { sortis[d.id] = d.data(); }); renderQueues(); }, () => {}));
+}
+function sortisHtml() {
+  const L = Object.entries(sortis).filter(([, x]) => x.etat === 'attente');
+  return L.map(([mid, x]) => '<div class="item" style="border:1px solid #f5c518"><b>🔒 ' + esc(x.nom || nomDe(mid)) + ' veut revenir</b><div class="small" style="margin:2px 0 8px">Déconnecté par ' + esc(x.parNom || 'le dispatch') + '</div>' +
+    '<div class="two"><button class="btn ok sm" data-srt="ok|' + esc(mid) + '"' + (sx.busy ? ' disabled' : '') + '>✅ Accepter</button><button class="btn ghost sm" data-srt="no|' + esc(mid) + '"' + (sx.busy ? ' disabled' : '') + '>❌ Refuser</button></div></div>').join('');
+}
+function uberAdmin(s) { // ⋯ du dispatch sur un livreur Uber : pas disponible / déconnecter
+  const open = sx.ask && sx.ask.mid === s.mid;
+  let h = '<div style="display:flex;justify-content:flex-end;margin:-2px 0 6px"><button class="btn ghost sm" style="width:auto;padding:4px 12px;margin:0" data-srt="menu|' + esc(s.mid) + '">⋯</button></div>';
+  if (!open) return h;
+  const k = sx.ask.k;
+  return h + '<div class="msgc" style="margin-bottom:8px">' +
+    '<button class="btn ' + (k === 'pause' ? 'red' : 'ghost') + ' sm" style="margin-bottom:6px" data-srt="pause|' + esc(s.mid) + '">' + (s.pause ? '🟢 Mettre disponible' : k === 'pause' ? 'Sûr ? Appuie encore : pas disponible' : '🔴 Mettre pas disponible') + '</button>' +
+    '<button class="btn ' + (k === 'kick' ? 'red' : 'ghost') + ' sm" data-srt="kick|' + esc(s.mid) + '">' + (k === 'kick' ? 'Sûr ? Appuie encore : déconnecter' : '🔒 Déconnecter ' + esc(s.nom)) + '</button>' +
+    '<div class="small" style="margin-top:6px">Déconnecté : son app se ferme et il devra être accepté pour revenir. Ses commandes restent.</div></div>';
+}
+async function sortiAct(a, mid) {
+  const s = Object.keys(soirees).map((id) => Object.assign({ id }, soirees[id])).find((x) => x.mid === mid && working(x));
+  if (a === 'menu') { sx.ask = sx.ask && sx.ask.mid === mid ? null : { mid, k: null }; return renderQueues(); }
+  if ((a === 'pause' || a === 'kick') && s) {
+    if (a === 'pause' && s.pause) { sx.ask = null; await writeBatch(db).update(doc(db, 'soirees', s.id), { pause: false }).commit(); notifyMsg(mid, '🟢 Le dispatch t’a mis disponible'); return renderQueues(); }
+    if (!sx.ask || sx.ask.k !== a) { sx.ask = { mid, k: a }; return renderQueues(); }
+    sx.ask = null; sx.busy = mid; renderQueues();
+    try {
+      const b = writeBatch(db); b.update(doc(db, 'soirees', s.id), { pause: true });
+      if (a === 'kick') b.set(doc(db, 'sortis', mid), { etat: 'dehors', le: Date.now(), par: myMid(), parNom: me.nom || OWNER, nom: s.nom || nomDe(mid) });
+      await b.commit();
+      notifyMsg(mid, a === 'kick' ? '🔒 Tu as été déconnecté par le dispatch' : '🔴 Le dispatch t’a mis pas disponible');
+    } catch (e) { alertErr(e); }
+    sx.busy = null; return renderQueues();
+  }
+  if (a === 'ok' || a === 'no') {
+    sx.busy = mid; renderQueues();
+    try {
+      if (a === 'ok') { await deleteDoc(doc(db, 'sortis', mid)); notifyMsg(mid, '✅ Le dispatch a accepté ton retour. Mets-toi disponible quand tu es prêt.'); }
+      else await writeBatch(db).update(doc(db, 'sortis', mid), { etat: 'dehors', le: Date.now() }).commit();
+    } catch (e) { alertErr(e); }
+    sx.busy = null; renderQueues();
+  }
+}
+function alertErr(e) { console.error('sortiAct', e); const b = $('service'); if (b) { const d = document.createElement('div'); d.className = 'err'; d.textContent = msg(e); b.prepend(d); } }
 function pillOf(s) {
   const q = queueOf(s.mid), q0 = q[0], plan = planOf(q), left = stockLeft(s.mid);
   let dot = '#8b8b94', st = 'en route';
@@ -1026,7 +1093,7 @@ function pillOf(s) {
     nx = '<div style="margin-top:3px">→ ' + esc(q0.client) + ' ~' + hm(plan[0]) + (m <= 3 && m >= 0 ? ' <span style="color:#fcd34d">● proche</span>' : '') + (m < -10 ? ' <span style="color:var(--danger)">+' + (-m) + '</span>' : '') + '</div>';
   }
   if (s.recharge) nx += '<div style="margin-top:3px">📦 recharge en attente</div>';
-  if (isUberMid(s.mid)) { nx = ''; st = s.pause ? '⏸ en pause' : q.length ? q.length + ' en cours' : 'dispo'; dot = s.pause ? '#8b8b94' : q.some((c) => !c.accepte || attendPaie(c)) ? '#f5b301' : 'var(--cash)'; if (q.some((c) => !c.accepte)) nx = '<div style="margin-top:3px">⏳ doit accepter</div>'; }
+  if (isUberMid(s.mid)) { nx = ''; st = sortis[s.mid] ? '🔒 déconnecté' : s.pause ? '🔴 pas disponible' : q.length ? q.length + ' en cours' : 'dispo'; dot = s.pause ? '#8b8b94' : q.some((c) => !c.accepte || attendPaie(c)) ? '#f5b301' : 'var(--cash)'; if (q.some((c) => !c.accepte)) nx = '<div style="margin-top:3px">⏳ doit accepter</div>'; }
   return '<div class="lvp' + (svcSel === s.mid ? ' on' : '') + '" data-pill="' + s.mid + '"><b>' + (isUberMid(s.mid) ? '🚕 ' : '') + esc(s.nom) + '</b><span class="dt" style="background:' + dot + '"></span>' + esc(st) + nx +
     '<div class="small" style="margin-top:3px">' + q.length + ' cmd' + ((isOwner() || me.role === 'complet') ? ' · reste ' + left.L + ' L ' + left.XL + ' XL' : '') + '</div></div>';
 }
@@ -1047,10 +1114,12 @@ function renderQueues() {
   const seeStock = isOwner() || me.role === 'complet';
   if ($('pills')) $('pills').innerHTML = people.map(pillOf).join('') || '<div class="small">Personne en service pour l’instant.</div>';
   let h = '';
+  h += sortisHtml();
   people.filter((s) => s.mid === svcSel).forEach((s) => {
     const q = queueOf(s.mid), plan = planOf(q), left = stockLeft(s.mid);
     const low = seeStock && (left.L <= 2 && left.XL <= 1);
     h += '<div class="item"><div class="qhead"><b>' + esc(s.nom) + '</b><span class="small">' + (seeStock ? qty(st(s.mid)) + ' sur lui' : '') + (low ? ' <span class="pay p-int">stock bas</span>' : '') + '</span></div>';
+    if (isUberMid(s.mid) && (isOwner() || isStaff())) h += uberAdmin(s);
     if (!q.length) h += '<div class="small">Libre · ' + esc(s.adresse || '') + '</div>';
     q.forEach((c, i) => {
       h += '<div class="q"><span class="qtap" data-focus="' + c.id + '"><span class="num">' + (i + 1) + '</span><b>' + esc(c.client) + '</b>' + payTag(c) + (i === 0 ? urgChip(c) : '') + ' <span class="small">⤢</span></span>' +
@@ -1096,6 +1165,7 @@ function renderQueues() {
   document.querySelectorAll('#pills [data-pill]').forEach((el) => { el.onclick = () => { svcSel = svcSel === el.dataset.pill ? null : el.dataset.pill; renderQueues(); }; });
   document.querySelectorAll('[data-more]').forEach((el) => { el.onclick = () => { if (el.dataset.more === 'now') nowMore = !nowMore; else freeMore = !freeMore; renderQueues(); }; });
   document.querySelectorAll('#service [data-a]').forEach((el) => { el.onclick = () => qAct(el.dataset.a, el.dataset.id); });
+  document.querySelectorAll('#service [data-srt]').forEach((el) => { el.onclick = () => { const [a, mid] = el.dataset.srt.split('|'); sortiAct(a, mid); }; });
   bindDetteDisp();
   document.querySelectorAll('#service [data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
   document.querySelectorAll('#service [data-focus], #nowBox [data-focus], #freeList [data-focus]').forEach((el) => { el.onclick = () => openFocus(el.dataset.focus); });
@@ -2856,10 +2926,10 @@ function uberBtns(o) {
   if (!list.length) return '';
   return list.map((s) => {
     const nom = esc(s.nom);
-    if (s.pause) return '<div class="small" style="margin:6px 0">⏸ ' + nom + ' est en pause (pas d’Uber ni de pick-up).</div>';
+    if (s.pause || sortis[s.mid]) return '<div class="small" style="margin:6px 0">🔴 ' + nom + ' n’est pas disponible (pas d’Uber ni de pick-up).</div>';
     const seeSt = isOwner() || me.role === 'complet', left = stockLeft(s.mid), ok = ((o.L || 0) + (o.XL || 0) > 0) && (!seeSt || (left.L >= (o.L || 0) && left.XL >= (o.XL || 0)));
     const uOk = ok && o.int && o.adr;
-    const why = !ok ? 'pas assez de stock (' + left.L + ' L, ' + left.XL + ' XL)' : !o.int ? 'Uber : seulement si tout est payé en EMT' : !o.adr ? 'Uber : écris l’adresse du client' : '';
+    const why = !ok ? 'pas assez de stock (' + left.L + ' L, ' + left.XL + ' XL)' : !o.int ? 'Uber : seulement si tout est payé en EMT ou en crypto (pas de cash, pas de mélange)' : !o.adr ? 'Uber : écris l’adresse du client' : '';
     return '<div class="two" style="margin:6px 0 2px"><button class="btn ghost sm" data-ub="uber:' + esc(s.mid) + '"' + (uOk ? '' : ' disabled') + '>🚕 Uber avec ' + nom + '</button><button class="btn ghost sm" data-ub="pickup:' + esc(s.mid) + '"' + (ok ? '' : ' disabled') + '>📍 Pick-up chez ' + nom + '</button></div>' +
       (why ? '<div class="small" style="margin-bottom:6px">' + why + '</div>' : '');
   }).join('');
@@ -2929,8 +2999,10 @@ function ubCard(c) {
 }
 function uberHtml(s) {
   const mine = st(me.mid);
-  let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:17px">' + (s.pause ? '⏸ En pause' : '🟢 Disponible') + '</b><button class="btn ghost sm" id="ubPause" style="width:auto;padding:10px 16px;margin:0">' + (s.pause ? '▶ Reprendre' : '⏸ Pause') + '</button></div>' +
-    '<div class="small" style="margin-top:6px">' + (s.pause ? 'Le dispatch voit que tu es en pause. Il ne peut pas t’envoyer de commande.' : 'Le dispatch peut t’envoyer des Uber et des pick-up.') + '</div></div>';
+  // v53 : petit interrupteur Disponible / Pas disponible
+  let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><b style="font-size:17px">' + (s.pause ? '🔴 Pas disponible' : '🟢 Disponible') + '</b>' +
+    '<div class="small" style="margin-top:3px">' + (s.pause ? 'Tu ne reçois rien.' : 'Le dispatch peut t’envoyer des Uber et des pick-up.') + '</div></div>' +
+    '<button id="ubPause" aria-label="Disponible" style="flex:none;width:56px;height:32px;border-radius:999px;border:0;position:relative;padding:0;background:' + (s.pause ? '#4b5563' : '#22c55e') + '"><span style="position:absolute;top:4px;left:' + (s.pause ? '4px' : '28px') + ';width:24px;height:24px;border-radius:50%;background:#fff"></span></button></div></div>';
   if (!myCmds.length) h += '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🚕</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’enverra un Uber ou un pick-up ici.</div></div>';
   else h += myCmds.slice().sort((a, b) => (a.accepte ? 1 : 0) - (b.accepte ? 1 : 0) || a.ordre - b.ordre).map(ubCard).join('');
   h += '<details class="card" style="margin-top:4px"' + (ub.defOpen || !pickDef() ? ' open' : '') + '><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' faite' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
@@ -2948,7 +3020,7 @@ function bindUber(s) {
   const C = (id) => myCmds.find((x) => x.id === id);
   const upd = (id, d) => writeBatch(db).update(doc(db, 'commandes', id), d).commit();
   const qa = (sel, fn) => document.querySelectorAll('#soiree [' + sel + ']').forEach((el) => { el.onclick = () => fn(el.getAttribute(sel), el); });
-  if ($('ubPause')) $('ubPause').onclick = () => ubAct('', async () => { const p = !s.pause; await writeBatch(db).update(doc(db, 'soirees', s.id), { pause: p }).commit(); notifyDispatch(p ? '⏸ ' + me.nom + ' est en pause' : '▶ ' + me.nom + ' est disponible'); });
+  if ($('ubPause')) $('ubPause').onclick = () => ubAct('', async () => { const p = !s.pause; await writeBatch(db).update(doc(db, 'soirees', s.id), { pause: p }).commit(); notifyDispatch(p ? '🔴 ' + me.nom + ' n’est plus disponible' : '🟢 ' + me.nom + ' est disponible'); });
   qa('data-ucopy', (t, el) => { try { navigator.clipboard.writeText(t).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; });
   qa('data-ua', (v) => { const [k, id] = v.split(':'), c = C(id); if (!c) return;
     ubAct(id, async () => {
@@ -3818,7 +3890,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 52;
+const APP_V = 53;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
