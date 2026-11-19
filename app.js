@@ -2303,8 +2303,8 @@ function drawHisto() {
     '<div class="seg" style="margin-bottom:8px">' + [['jour', 'Une soirée'], ['sem', 'Une semaine']].map((x) => '<button data-hm="' + x[0] + '" class="' + ((x[0] === 'sem') === hs.week ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
     '<div class="two" style="align-items:center"><button class="btn ghost sm" id="hPrev" style="flex:0 0 52px">‹</button><div style="flex:1;text-align:center;font-weight:700">' + esc(label) + '</div><button class="btn ghost sm" id="hNext" style="flex:0 0 52px"' + (b > new Date() ? ' disabled' : '') + '>›</button></div>' +
     '<input type="date" id="hDate" value="' + a.toISOString().slice(0, 10) + '" style="margin-top:8px">' +
-    (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' : histoTotals()) + '</div>' +
-    (!hs.busy && hs.text != null ? histoPeople() + addHtml() + '<div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
+    (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' : '') + '</div>' +
+    (!hs.busy && hs.text != null ? histoPeople() + histoTotals() + addHtml() + '<div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
       '<div class="small" style="margin-top:6px">Le CSV s’ouvre dans Google Sheets (Fichier → Importer) ou Excel.</div>' : '');
   const move = (n) => { const d = new Date(dayStart(hs.day)); d.setDate(d.getDate() + n * (hs.week ? 7 : 1)); hs.day = d; hs.text = null; loadHisto(); };
   box.querySelectorAll('[data-hm]').forEach((x) => { x.onclick = () => { hs.week = x.dataset.hm === 'sem'; hs.text = null; loadHisto(); }; });
@@ -2313,6 +2313,7 @@ function drawHisto() {
   if ($('hLoad')) $('hLoad').onclick = loadHisto;
   if ($('hCsv')) $('hCsv').onclick = histoCsv;
   bindHistoPeople(); bindAdd();
+  if ($('hTot')) $('hTot').onclick = () => { hs.totOpen = !hs.totOpen; drawHisto(); };
   if ($('hShare')) $('hShare').onclick = async () => { try { if (navigator.share) await navigator.share({ text: hs.text }); else { await navigator.clipboard.writeText(hs.text); $('hShare').textContent = 'Copié ✓'; } } catch (e) {} };
 }
 
@@ -2847,18 +2848,19 @@ function bindUber(s) {
 // Annuler : commande « annulee » (annuleTest), ne compte plus nulle part ; le stock retourne chez le livreur ; son compteur baisse de 1.
 // Ajuster : nouvelles quantités / cash reçu ; la différence de stock retourne chez le livreur (ou est enlevée) ; à encaisser suit le prix si c'était du cash.
 const hx = { open: null, edit: null, mode: null, L: 0, XL: 0, cash: 0, busy: false, err: '' };
-function histoTotals() {
+function histoTotals() { // v43 : en bas, petit, s'ouvre au toucher
   const T = { cash: 0, int: 0, cry: 0, no: 0, coins: {}, n: 0, reste: 0 };
   (hs.rows || []).forEach((c) => { const q = payOf(c); T.cash += q.cash; T.int += q.int; T.cry += q.cry; T.no += q.no || 0; if (q.cry) T.coins[q.coin || '?'] = (T.coins[q.coin || '?'] || 0) + q.cry; });
   (hs.sum || []).forEach((r) => { T.n += r.n; T.reste += r.reste; });
-  const line = (k, v, col) => '<div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid var(--line);font-size:16px"><span>' + k + '</span><b style="color:' + col + '">' + money(v) + '</b></div>';
-  const coins = Object.keys(T.coins);
-  return '<div style="font-size:30px;font-weight:900;margin:10px 0 8px">' + money(T.cash + T.int + T.cry) + '</div>' +
-    line('🔵 Cash', T.cash, PCOL.cash) + line('🟡 Interac', T.int, PCOL.int) + line('🟣 Crypto', T.cry, PCOL.cry) + (T.no ? line('<span style="color:#f87171">🔴 Pas encore reçu</span>', T.no, '#f87171') : '') +
+  const line = (k, v, col) => '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>' + k + '</span><b style="color:' + col + '">' + money(v) + '</b></div>';
+  const coins = Object.keys(T.coins), o = !!hs.totOpen;
+  let h = '<div class="card" id="hTot" style="padding:10px 14px;cursor:pointer"><div style="display:flex;justify-content:space-between;font-size:14px"><span>📊 Total de la ' + (hs.week ? 'semaine' : 'soirée') + '</span><b>' + money(T.cash + T.int + T.cry) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+  if (o) h += '<div style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px">' + line('🔵 Cash', T.cash, PCOL.cash) + line('🟡 Interac', T.int, PCOL.int) + line('🟣 Crypto', T.cry, PCOL.cry) +
+    (T.no ? line('<span style="color:#f87171">🔴 Pas encore reçu</span>', T.no, '#f87171') : '') +
     (coins.length ? '<div class="small" style="text-align:right;color:' + PCOL.cry + '">' + coins.map((k) => esc(coinIcon(k) + k) + ' ' + money(T.coins[k])).join(' · ') + '</div>' : '') +
-    '<div class="small" style="margin-top:6px">' + T.n + ' livraison' + (T.n > 1 ? 's' : '') + ' · reste ' + money(T.reste) + '</div>' +
-    (hs.extra ? '<div class="small" style="margin-top:6px;white-space:pre-line">' + esc(hs.extra.trim()) + '</div>' : '') +
-    '<div class="small" style="margin-top:6px">Touche un livreur pour voir ses livraisons.</div>';
+    '<div class="small" style="margin-top:4px">' + T.n + ' livraison' + (T.n > 1 ? 's' : '') + ' · reste ' + money(T.reste) + '</div>' +
+    (hs.extra ? '<div class="small" style="margin-top:6px;white-space:pre-line">' + esc(hs.extra.trim()) + '</div>' : '') + '</div>';
+  return h + '</div>';
 }
 function histoPeople() {
   const all = hs.all || [], ids = [];
@@ -2869,8 +2871,12 @@ function histoPeople() {
     const S = (hs.sum || []).find((r) => r.mid === k) || { n: 0, cash: 0, reste: 0, paieOk: true };
     const mine = all.filter((c) => (c.livreur || '?') === k), nom = esc((mine[0] && mine[0].livreurNom) || nomDe(k)), o = hx.open === k;
     const tot = mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').reduce((a2, c) => { const q = payOf(c); return a2 + q.cash + q.int + q.cry; }, 0);
-    let h = '<div class="card" style="padding:0;overflow:hidden"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b> <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span><div class="small">reste ' + (S.paieOk ? money(S.reste) : '?') + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</div></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+    let h = '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:13px 14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b> <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
     if (!o) return h + '</div>';
+    { const P = { cash: 0, int: 0, cry: 0 }; mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').forEach((c) => { const q = payOf(c); P.cash += q.cash; P.int += q.int; P.cry += q.cry; }); // v43
+      h += '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--line);background:var(--card2);font-size:12.5px">' +
+        '<span style="color:' + PCOL.cash + '">🔵 <b>' + money(P.cash) + '</b> cash</span><span style="color:' + PCOL.int + '">🟡 <b>' + money(P.int) + '</b> Interac</span><span style="color:' + PCOL.cry + '">🟣 <b>' + money(P.cry) + '</b> crypto</span>' +
+        '<span class="small" style="width:100%">reste à remettre <b style="color:var(--text)">' + (S.paieOk ? money(S.reste) : '?') + '</b>' + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</span></div>'; }
     mine.forEach((c, i) => {
       const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
       const who = c.confirmeLe ? (c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire')) : '';
