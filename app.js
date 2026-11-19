@@ -212,7 +212,9 @@ function drawSheet() {
       '<div class="two"><button class="btn ghost" id="fCancel">Annuler</button><button class="btn ok" id="fSave">Ajouter</button></div>';
   } else if (F.mode === 'edit') {
     const p = team[F.id];
-    h = '<div class="label">' + esc(p.nom) + '</div>' + roleBlock() + '<div class="err" id="fErr"></div>' +
+    h = '<div class="label">' + esc(p.nom) + '</div>' +
+      (p.actif && ['livreur', 'limite'].includes(p.role) ? '<button class="btn" id="fMsg" style="margin-bottom:10px">💬 Envoyer un message à ' + esc(p.nom) + '</button>' : '') +
+      roleBlock() + '<div class="err" id="fErr"></div>' +
       '<button class="btn ok" id="fSave" style="margin-bottom:8px">Enregistrer</button>' +
       '<button class="btn ghost" id="fPwdBtn" style="margin-bottom:8px">🔑 Nouveau mot de passe</button>' +
       (p.actif ? '<button class="btn red" id="fToggle" style="margin-bottom:8px">Désactiver (ne peut plus se connecter)</button>'
@@ -240,6 +242,7 @@ function drawSheet() {
   on('fCancel', 'onclick', closeSheet);
   on('fBack', 'onclick', () => { F.mode = 'edit'; drawSheet(); });
   on('fPwdBtn', 'onclick', () => { F.mode = 'pwd'; F.pwd = ''; drawSheet(); });
+  on('fMsg', 'onclick', () => { const id = F.id; closeSheet(); openDmWith(id); });
   on('fToggle', 'onclick', () => busy(toggleMember));
   on('fCopy', 'onclick', () => { try { navigator.clipboard.writeText($('give').textContent).catch(() => {}); $('fCopy').textContent = 'Copié ✓'; } catch (e) {} });
   on('fSave', 'onclick', () => busy(F.mode === 'add' ? addMember : F.mode === 'edit' ? saveMember : changePwd));
@@ -1542,6 +1545,9 @@ function drawDm() {
   if (!isDispatcher()) { box.innerHTML = ''; return; }
   const ids = new Set(Object.values(soirees).filter((s) => working(s) && !isDispPerson(s)).map((s) => s.mid));
   dm.all.forEach((m) => ids.add(m.mid));
+  // v29 : tous les livreurs actifs de l'équipe, en service ou pas (on peut leur écrire n'importe quand).
+  Object.keys(team).forEach((id) => { const p = team[id]; if (p.actif && ['livreur', 'limite'].includes(p.role) && id !== myMid()) ids.add(id); });
+  const enSvc = (id) => Object.values(soirees).some((s) => s.mid === id && working(s));
   const total = [...ids].reduce((a, id) => a + unreadFor(id), 0);
   const tb = document.querySelector('#tabs button[data-t="direct"]'); if (tb) tb.textContent = 'En direct' + (total ? ' 🔴' + total : '');
   if (dm.open) {
@@ -1563,9 +1569,9 @@ function drawDm() {
     return;
   }
   if (typing('dmCard')) return;
-  const rows = [...ids].sort((a, b) => nomDe(a).localeCompare(nomDe(b), 'fr')).map((id) => {
+  const rows = [...ids].sort((a, b) => (enSvc(b) - enSvc(a)) || (unreadFor(b) - unreadFor(a)) || nomDe(a).localeCompare(nomDe(b), 'fr')).map((id) => {
     const list = dm.all.filter((m) => m.mid === id), last = list[list.length - 1], n = unreadFor(id);
-    return '<div class="q dmrow" data-mid="' + id + '" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center"><div><b>' + esc(nomDe(id)) + '</b><div class="small">' +
+    return '<div class="q dmrow" data-mid="' + id + '" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center"><div><b>' + esc(nomDe(id)) + '</b> <span class="small">' + (enSvc(id) ? '🟢 en service' : '⚪ pas en service') + '</span><div class="small">' +
       (last ? esc((last.de === 'dispatch' ? 'Toi : ' : '') + (last.txt || '')).slice(0, 60) : 'Aucun message') + '</div></div>' + (n ? '<span class="badge">' + n + '</span>' : '') + '</div>';
   }).join('');
   box.innerHTML = '<div class="card"><div class="label">💬 Messages' + (total ? ' <span class="badge">' + total + '</span>' : '') + '</div>' +
@@ -2866,4 +2872,10 @@ function bindHistoPeople() {
       }
       await bt.commit(); });
   }; });
+}
+
+// v29 : écrire à un livreur depuis Équipe (propriétaire) — ouvre sa conversation dans En direct.
+function openDmWith(mid) {
+  setTab('direct'); dm.open = mid; drawDm();
+  setTimeout(() => { const el = $('dmCard'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); if ($('dmTxt')) $('dmTxt').focus(); }, 250);
 }
