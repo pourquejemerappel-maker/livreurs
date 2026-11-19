@@ -515,7 +515,7 @@ function renderStock() {
   document.querySelectorAll('#giveTo button').forEach((b) => { b.onclick = () => { give.to = b.dataset.id; renderStock(); }; });
   $('gL').textContent = give.L; $('gXL').textContent = give.XL;
   $('gGo').textContent = (me.role === 'limite' ? 'Retourner' : me.role === 'complet' && (give.to === me.mid || give.to === DEP(me.mid)) ? 'Déplacer' : 'Donner') + (give.to ? ' → ' + lbl(give.to) : '');
-  $('mvts').innerHTML = mvts.map((m) => m.type === 'correction' ? hhmm(m.le) + ' · ✏️ ' + esc(nomDe(m.de)) + ' corrigé : ' + qty(m.avant || {}) + ' → ' + qty(m.apres || {}) + ' · par ' + esc(nomDe(m.par)) : hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : m.type === 'recharge' ? ' (recharge)' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
+  $('mvts').innerHTML = mvts.map((m) => m.type === 'correction' ? hhmm(m.le) + ' · ✏️ ' + esc(nomDe(m.de)) + ' corrigé : ' + qty(m.avant || {}) + ' → ' + qty(m.apres || {}) + ' · par ' + esc(nomDe(m.par)) : hhmm(m.le) + ' · ' + esc(nomDe(m.de)) + ' → ' + esc(nomDe(m.vers)) + ' : ' + qty(m) + (m.type === 'load' ? ' (load)' : m.type === 'recharge' ? ' (recharge)' : m.type === 'annulation' ? ' (livraison annulée' + (m.client ? ' : ' + esc(m.client) : '') + ')' : m.type === 'ajustement' ? ' (livraison ajustée' + (m.client ? ' : ' + esc(m.client) : '') + ')' : '') + (m.par && m.par !== m.de ? ' · par ' + esc(nomDe(m.par)) : '')).join('<br>') || 'Aucun mouvement pour l’instant.';
 }
 document.querySelectorAll('#giveCard .step button').forEach((b) => { b.onclick = () => { give[b.dataset.k] = Math.max(0, give[b.dataset.k] + Number(b.dataset.d)); $('gErr').textContent = ''; renderStock(); }; });
 $('gGo').onclick = async () => {
@@ -1651,7 +1651,10 @@ async function drawArch() {
 function drawCashBtn() {
   const b = $('cashBtn'); if (!b) return;
   b.classList.toggle('hide', !((delivers() && mySoiree && working(mySoiree)) || isDispatcher()));
-  b.onclick = () => { const pop = $('cashPop'); if (!pop.classList.contains('hide')) { pop.classList.add('hide'); rm.open = false; return; } pop.classList.remove('hide'); rm.open = false; rm.form = false; drawPop(); };
+  b.onclick = (e) => { if (e) e.stopPropagation(); const pop = $('cashPop'); if (!pop.classList.contains('hide')) { closePop(); return; } pop.classList.remove('hide'); rm.open = false; rm.form = false; drawPop(); };
+  if (!drawCashBtn.outside) { drawCashBtn.outside = true;
+    // v28 : toucher ailleurs ferme la bulle 💰
+    document.addEventListener('click', (e) => { const pop = $('cashPop'); if (!pop || pop.classList.contains('hide')) return; if (pop.contains(e.target) || e.target === $('cashBtn')) return; closePop(); }, true); }
 }
 
 // =====================================================================
@@ -1693,6 +1696,8 @@ function syncDispo() {
   if (on === dispoOn) return; dispoOn = on;
   setDoc(doc(db, 'dispos', myMid()), { nom: me.nom, role: me.role, actif: on, le: serverTimestamp() }).catch(() => {});
 }
+function closePop() { const pop = $('cashPop'); if (pop) pop.classList.add('hide'); rm.open = false; rm.form = false; }
+const popX = '<div style="display:flex;justify-content:flex-end;margin-top:8px"><button id="popClose" aria-label="Fermer" style="width:40px;height:40px;border-radius:50%;border:1px solid #4a5363;background:#2b3240;color:#fff;font-size:18px;line-height:1;cursor:pointer">✕</button></div>';
 function cashNow() {
   const remis = rm.mine.filter((r) => r.statut === 'recue').reduce((a, r) => a + r.montant, 0);
   const recu = rm.toMe.filter((r) => r.statut === 'recue').reduce((a, r) => a + r.montant, 0);
@@ -1713,7 +1718,8 @@ async function drawPop() {
   }
   const k = cashNow(), sur = base.cash - k.remis + k.recu;
   if (isOwner()) {
-    pop.innerHTML = '💰 <b>' + money(k.recu) + '</b> reçus de MOUSSE ce soir' + rm.toMe.filter((r) => r.statut === 'recue').slice(-4).map((r) => '<div class="small">✓ ' + money(r.montant) + ' de ' + esc(r.deNom) + '</div>').join('');
+    pop.innerHTML = '💰 <b>' + money(k.recu) + '</b> reçus de MOUSSE ce soir' + rm.toMe.filter((r) => r.statut === 'recue').slice(-4).map((r) => '<div class="small">✓ ' + money(r.montant) + ' de ' + esc(r.deNom) + '</div>').join('') + popX;
+    $('popClose').onclick = (e) => { e.stopPropagation(); closePop(); };
     return;
   }
   const att = rm.mine.filter((r) => r.statut === 'attente');
@@ -1734,7 +1740,8 @@ async function drawPop() {
       '<div class="crow"><input id="popAmt" type="number" inputmode="numeric" placeholder="Montant $"><button class="btn sm" id="popSend">Donner</button></div>' +
       '<div class="err" id="popErr">' + esc(rm.err) + '</div><button class="linkbtn" id="popX">Fermer</button></div>';
   }
-  pop.innerHTML = h;
+  pop.innerHTML = h + popX;
+  if ($('popClose')) $('popClose').onclick = (e) => { e.stopPropagation(); closePop(); };
   if ($('popGive')) $('popGive').onclick = (e) => { e.stopPropagation(); rm.form = true; rm.err = ''; drawPop(); };
   if ($('popTop')) $('popTop').onclick = () => { if (!rm.form) { rm.form = true; drawPop(); } };
   if ($('popX')) $('popX').onclick = () => { rm.form = false; drawPop(); };
@@ -2212,6 +2219,8 @@ async function loadHisto() {
   if (cash.length) x += '\n\n💵 Cash remis : ' + cash.map((r) => r.deNom + ' → ' + r.versNom + ' ' + money(r.montant)).join(' · ');
   hs.text = livrees.length || x ? t + x : (hs.week ? 'Semaine du ' + jourTxt(a) : 'Soirée du ' + jourTxt(a)) + '\nAucune livraison.';
   hs.rows = livrees.sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
+  hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
+  hs.sum = rows; hs.extra = x;
   hs.busy = false; drawHisto();
 }
 function histoCsv() {
@@ -2232,15 +2241,16 @@ function drawHisto() {
     '<div class="seg" style="margin-bottom:8px">' + [['jour', 'Une soirée'], ['sem', 'Une semaine']].map((x) => '<button data-hm="' + x[0] + '" class="' + ((x[0] === 'sem') === hs.week ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
     '<div class="two" style="align-items:center"><button class="btn ghost sm" id="hPrev" style="flex:0 0 52px">‹</button><div style="flex:1;text-align:center;font-weight:700">' + esc(label) + '</div><button class="btn ghost sm" id="hNext" style="flex:0 0 52px"' + (b > new Date() ? ' disabled' : '') + '>›</button></div>' +
     '<input type="date" id="hDate" value="' + a.toISOString().slice(0, 10) + '" style="margin-top:8px">' +
-    (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' :
-      '<pre class="fin" style="margin-top:10px">' + esc(hs.text) + '</pre><div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
-      '<div class="small" style="margin-top:6px">' + hs.rows.length + ' livraison' + (hs.rows.length > 1 ? 's' : '') + '. Le CSV s’ouvre dans Google Sheets (Fichier → Importer) ou Excel.</div>') + '</div>';
+    (hs.busy ? '<div class="small" style="margin-top:8px">Chargement…</div>' : hs.text == null ? '<button class="btn" id="hLoad" style="margin-top:8px">Voir</button>' : histoTotals()) + '</div>' +
+    (!hs.busy && hs.text != null ? histoPeople() + '<div class="two"><button class="btn ghost sm" id="hCsv">⬇️ CSV (Sheet)</button><button class="btn ok sm" id="hShare">Partager</button></div>' +
+      '<div class="small" style="margin-top:6px">Le CSV s’ouvre dans Google Sheets (Fichier → Importer) ou Excel.</div>' : '');
   const move = (n) => { const d = new Date(dayStart(hs.day)); d.setDate(d.getDate() + n * (hs.week ? 7 : 1)); hs.day = d; hs.text = null; loadHisto(); };
   box.querySelectorAll('[data-hm]').forEach((x) => { x.onclick = () => { hs.week = x.dataset.hm === 'sem'; hs.text = null; loadHisto(); }; });
   $('hPrev').onclick = () => move(-1); $('hNext').onclick = () => move(1);
   $('hDate').onchange = (e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split('-').map(Number); hs.day = new Date(y, m - 1, d, 12); hs.text = null; loadHisto(); };
   if ($('hLoad')) $('hLoad').onclick = loadHisto;
   if ($('hCsv')) $('hCsv').onclick = histoCsv;
+  bindHistoPeople();
   if ($('hShare')) $('hShare').onclick = async () => { try { if (navigator.share) await navigator.share({ text: hs.text }); else { await navigator.clipboard.writeText(hs.text); $('hShare').textContent = 'Copié ✓'; } } catch (e) {} };
 }
 
@@ -2763,4 +2773,97 @@ function bindUber(s) {
   if ($('ubDefX')) $('ubDefX').onclick = () => { ub.defOpen = false; renderSoiree(); };
   if ($('ubDefGo')) $('ubDefGo').onclick = () => { const a = String(ub.def || '').trim(); if (a.length < 6) { $('ubDefErr').textContent = 'Écris l’adresse complète.'; return; }
     ub.defOpen = false; ubAct('', async () => { await setDoc(doc(db, 'reglages', me.mid), { pickAdr: a.slice(0, 200) }); renderSoiree(); }).then(() => { if ($('ubDefErr') && $('ubDefErr').textContent) { ub.defOpen = true; } }); };
+}
+
+// =====================================================================
+// v28 : Historique en un seul panel — total, un livreur par ligne, livraisons numérotées,
+//       et (propriétaire seulement) ✏️ Modifier : Ajuster (L, XL, cash reçu) ou Annuler (test).
+// =====================================================================
+// Annuler : commande « annulee » (annuleTest), ne compte plus nulle part ; le stock retourne chez le livreur ; son compteur baisse de 1.
+// Ajuster : nouvelles quantités / cash reçu ; la différence de stock retourne chez le livreur (ou est enlevée) ; à encaisser suit le prix si c'était du cash.
+const hx = { open: null, edit: null, mode: null, L: 0, XL: 0, cash: 0, busy: false, err: '' };
+function histoTotals() {
+  const T = { cash: 0, n: 0, reste: 0 }; (hs.sum || []).forEach((r) => { T.cash += r.cash; T.n += r.n; T.reste += r.reste; });
+  const box = (k, v) => '<div class="lvp" style="flex:1;text-align:center">' + k + '<b style="display:block;font-size:18px">' + v + '</b></div>';
+  return '<div style="display:flex;gap:6px;margin-top:10px">' + box('Cash', money(T.cash)) + box('Livraisons', T.n) + box('Reste', money(T.reste)) + '</div>' +
+    (hs.extra ? '<div class="small" style="margin-top:8px;white-space:pre-line">' + esc(hs.extra.trim()) + '</div>' : '') +
+    '<div class="small" style="margin-top:6px">Touche un livreur pour voir ses livraisons.</div>';
+}
+function histoPeople() {
+  const all = hs.all || [], ids = [];
+  all.forEach((c) => { const k = c.livreur || '?'; if (!ids.includes(k)) ids.push(k); });
+  if (!ids.length) return '<div class="card small">Aucune livraison.</div>';
+  const owner = isOwner();
+  return ids.map((k) => {
+    const S = (hs.sum || []).find((r) => r.mid === k) || { n: 0, cash: 0, reste: 0, paieOk: true };
+    const mine = all.filter((c) => (c.livreur || '?') === k), nom = esc((mine[0] && mine[0].livreurNom) || nomDe(k)), o = hx.open === k;
+    let h = '<div class="card" style="padding:0;overflow:hidden"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:14px;cursor:pointer"><div><b style="font-size:16px">' + nom + '</b><div class="small">' +
+      S.n + ' livraison' + (S.n > 1 ? 's' : '') + ' · cash ' + money(S.cash) + ' · reste ' + (S.paieOk ? money(S.reste) : '?') + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</div></div><span class="small">' + (o ? '▲' : '▼') + '</span></div>';
+    if (!o) return h + '</div>';
+    mine.forEach((c, i) => {
+      const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
+      const line = '<div style="flex:1;min-width:0"><b>Livraison ' + (i + 1) + (c.annuleTest ? ' · annulée' : '') + '</b> · ' + (hs.week ? t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' : '') + hm(t.getTime()) +
+        '<div class="small">' + esc(c.client) + ' · ' + esc(qtyTxt(c)) + (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + ' · cash ' + money(cash) + (cash > enc ? ' (pourboire ' + money(cash - enc) + ')' : '') +
+        (c.paie != null ? ' · paie ' + money(c.paie) : '') + (c.ajusteLe ? ' · ✏️ ajustée' : '') + '</div></div>';
+      if (c.annuleTest) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.45;display:flex;gap:8px;align-items:center">' + line + '<span class="small">↩️</span></div>'; return; }
+      if (hx.edit !== c.id) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center">' + line + (owner ? '<button class="btn ghost sm" data-he="' + c.id + '" style="width:auto;margin:0;padding:8px 12px">✏️ Modifier</button>' : '') + '</div>'; return; }
+      h += '<div style="padding:10px 14px;border-top:1px solid var(--line);background:var(--card2)"><div style="display:flex">' + line + '</div>' +
+        '<div class="seg" style="margin:10px 0">' + [['adj', 'Ajuster'], ['ann', 'Annuler (test)']].map((x) => '<button data-hm2="' + x[0] + '" class="' + (hx.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+      if (hx.mode === 'adj') h += '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="hxL" type="number" inputmode="numeric" min="0" value="' + hx.L + '"></div><div style="flex:1"><div class="small">XL</div><input id="hxXL" type="number" inputmode="numeric" min="0" value="' + hx.XL + '"></div></div>' +
+        '<div class="small">Cash reçu ($)</div><input id="hxCash" type="number" inputmode="numeric" min="0" value="' + hx.cash + '">' +
+        '<div class="small" style="margin:4px 0 8px">Si la quantité baisse, la différence retourne chez ' + nom + ' ; si elle monte, elle est enlevée de son stock.</div>' +
+        '<div class="two"><button class="btn ghost sm" data-hx="1">Fermer</button><button class="btn ok sm" data-hsave="' + c.id + '"' + (hx.busy ? ' disabled' : '') + '>' + (hx.busy ? '…' : 'Enregistrer') + '</button></div>';
+      if (hx.mode === 'ann') h += '<div class="banner b-no" style="text-align:left">Annuler la livraison ' + (i + 1) + ' (' + esc(c.client) + ') ?<div class="small" style="color:inherit;margin-top:6px;line-height:1.6">📦 ' + esc(qtyTxt(c)) + ' retourne chez ' + nom +
+        '<br>💵 ' + money(cash) + ' cash enlevé' + (c.paie != null ? '<br>💸 paie ' + money(c.paie) + ' enlevée' : '') + '<br>🔢 ne compte plus comme livraison</div></div>' +
+        '<div class="two"><button class="btn ghost sm" data-hx="1">Garder</button><button class="btn red sm" data-hann="' + c.id + '"' + (hx.busy ? ' disabled' : '') + '>' + (hx.busy ? '…' : 'Oui, annuler') + '</button></div>';
+      if (hx.err) h += '<div class="err">' + esc(hx.err) + '</div>';
+      h += '</div>';
+    });
+    if (owner && k !== '?') h += '<div class="small" style="padding:8px 14px;border-top:1px solid var(--line)">📦 Stock de ' + nom + ' maintenant : ' + esc(qty(st(k))) + '</div>';
+    return h + '</div>';
+  }).join('');
+}
+function bindHistoPeople() {
+  const box = $('histo'); if (!box) return;
+  const C = (id) => (hs.all || []).find((x) => x.id === id);
+  box.querySelectorAll('[data-hp]').forEach((el) => { el.onclick = () => { hx.open = hx.open === el.dataset.hp ? null : el.dataset.hp; hx.edit = null; drawHisto(); }; });
+  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: null, L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); drawHisto(); }; });
+  box.querySelectorAll('[data-hm2]').forEach((el) => { el.onclick = () => { hx.mode = el.dataset.hm2; hx.err = ''; drawHisto(); }; });
+  box.querySelectorAll('[data-hx]').forEach((el) => { el.onclick = () => { hx.edit = null; hx.mode = null; drawHisto(); }; });
+  [['hxL', 'L'], ['hxXL', 'XL'], ['hxCash', 'cash']].forEach(([id, k]) => { if ($(id)) $(id).oninput = (e) => { hx[k] = e.target.value; }; });
+  const run = async (fn) => { if (hx.busy || !isOwner()) return; hx.busy = true; hx.err = ''; drawHisto();
+    try { await fn(); hx.edit = null; hx.mode = null; hx.busy = false; await loadHisto(); } catch (e) { hx.busy = false; hx.err = msg(e); drawHisto(); } };
+  box.querySelectorAll('[data-hann]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.hann); if (!c) return; run(async () => {
+    const bt = writeBatch(db);
+    bt.update(doc(db, 'commandes', c.id), { statut: 'annulee', annuleTest: true, annuleLe: serverTimestamp(), annulePar: myMid() });
+    if (c.livreur) {
+      bt.set(doc(db, 'stocks', c.livreur), { L: increment(c.L || 0), XL: increment(c.XL || 0) }, { merge: true });
+      bt.set(doc(collection(db, 'mouvements')), { de: 'annulation', vers: c.livreur, L: c.L || 0, XL: c.XL || 0, type: 'annulation', client: c.client || '', cmd: c.id, par: myMid(), le: serverTimestamp() });
+    }
+    if (c.soiree) bt.update(doc(db, 'soirees', c.soiree), { livrees: increment(-1) });
+    await bt.commit(); }); }; });
+  box.querySelectorAll('[data-hsave]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.hsave); if (!c) return;
+    const L = Math.round(Number(hx.L)), XL = Math.round(Number(hx.XL)), cash = Math.round(Number(hx.cash));
+    if (!(L >= 0 && XL >= 0 && L + XL > 0)) { hx.err = 'Mets au moins 1 L ou 1 XL (sinon, annule la livraison).'; return drawHisto(); }
+    if (!(cash >= 0)) { hx.err = 'Écris le cash reçu.'; return drawHisto(); }
+    if (c.livreur) { const have = st(c.livreur), needL = L - (c.L || 0), needXL = XL - (c.XL || 0);
+      if ((needL > 0 && needL > (have.L || 0)) || (needXL > 0 && needXL > (have.XL || 0))) { hx.err = nomDe(c.livreur) + ' n’a pas assez de stock pour ça (il a ' + qty(have) + '). Donne-lui du stock d’abord.'; return drawHisto(); } }
+    run(async () => {
+      const dL = (c.L || 0) - L, dXL = (c.XL || 0) - XL, bt = writeBatch(db);
+      const pr = prive[c.id] || null, pL = (pr && pr.prixL) || cfg.prixL, pXL = (pr && pr.prixXL) || cfg.prixXL, dPrix = -(dL * pL + dXL * pXL);
+      const d = { L, XL, cashRecu: cash, ajusteLe: serverTimestamp(), ajustePar: myMid() };
+      if ((c.encaisser || 0) > 0 && dPrix) d.encaisser = Math.max(0, (c.encaisser || 0) + dPrix);
+      bt.update(doc(db, 'commandes', c.id), d);
+      if (dL || dXL) {
+        if (c.livreur) {
+          bt.set(doc(db, 'stocks', c.livreur), { L: increment(dL), XL: increment(dXL) }, { merge: true });
+          // Un mouvement par sens : ce qui retourne chez le livreur, ce qui est enlevé de son stock.
+          const back = { L: Math.max(0, dL), XL: Math.max(0, dXL) }, out = { L: Math.max(0, -dL), XL: Math.max(0, -dXL) };
+          if (back.L + back.XL) bt.set(doc(collection(db, 'mouvements')), { de: 'ajustement', vers: c.livreur, L: back.L, XL: back.XL, type: 'ajustement', client: c.client || '', cmd: c.id, par: myMid(), le: serverTimestamp() });
+          if (out.L + out.XL) bt.set(doc(collection(db, 'mouvements')), { de: c.livreur, vers: 'ajustement', L: out.L, XL: out.XL, type: 'ajustement', client: c.client || '', cmd: c.id, par: myMid(), le: serverTimestamp() });
+        }
+        try { const sp = await getDoc(doc(db, 'cmdPrive', c.id)); if (sp.exists()) bt.update(doc(db, 'cmdPrive', c.id), { total: (sp.data().total || 0) + dPrix }); } catch (e) {}
+      }
+      await bt.commit(); });
+  }; });
 }
