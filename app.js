@@ -149,6 +149,7 @@ function buildTabs() {
   if (isOwner() || isStaff()) t.push(['direct', 'En direct'], ['stock', 'Stock']);
   if (delivers() && me.role !== 'limite') t.push(['soiree', 'Ma soirée']);
   if (isOwner() || isStaff()) t.push(['histo', 'Historique']); // v36 : lost aussi quand il fait le dispatch
+  if (isOwner() || isStaff()) t.push(['cash', '💵 Cash']); // v44
   if (isOwner()) t.push(['equipe', 'Équipe']);
   $('tabs').innerHTML = t.map((x) => '<button data-t="' + x[0] + '">' + x[1] + '</button>').join('');
   $('tabs').classList.toggle('hide', t.length < 2);
@@ -159,11 +160,12 @@ function buildTabs() {
 let curTab = '';
 function setTab(t) {
   if (t === 'histo' && typeof drawHisto === 'function') setTimeout(drawHisto, 0);
+  if (t === 'cash') setTimeout(() => loadCash(), 0);
   if (typeof fx !== 'undefined' && fx.id && t !== 'direct') closeFocus();
-  if (locked() && (t === 'direct' || t === 'stock')) t = 'soiree';
+  if (locked() && (t === 'direct' || t === 'stock' || t === 'cash')) t = 'soiree';
   curTab = t;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
-  ['direct', 'stock', 'soiree', 'equipe', 'histo'].forEach((x) => $('tab' + x[0].toUpperCase() + x.slice(1)).classList.toggle('hide', x !== t));
+  ['direct', 'stock', 'soiree', 'equipe', 'histo', 'cash'].forEach((x) => { const el = $('tab' + x[0].toUpperCase() + x.slice(1)); if (el) el.classList.toggle('hide', x !== t); });
 }
 
 // ---------- Équipe (propriétaire seulement) ----------
@@ -1763,14 +1765,16 @@ async function drawPop() {
       base = sumUp(list)[0] || base;
     } catch (e) {}
   }
-  const k = cashNow(), sur = base.cash - k.remis + k.recu;
+  const k = cashNow(); let sur = base.cash - k.remis + k.recu, so = null;
+  if (!isOwner()) { try { so = await soldeMoi(); sur = so.tot; } catch (e) {} } // v44 : le solde continue d'un jour à l'autre
   if (isOwner()) {
     pop.innerHTML = '💰 <b>' + money(k.recu) + '</b> reçus de MOUSSE ce soir' + rm.toMe.filter((r) => r.statut === 'recue').slice(-4).map((r) => '<div class="small">✓ ' + money(r.montant) + ' de ' + esc(r.deNom) + '</div>').join('') + popX;
     $('popClose').onclick = (e) => { e.stopPropagation(); closePop(); };
     return;
   }
   const att = rm.mine.filter((r) => r.statut === 'attente');
-  let h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> sur toi' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') : '') + '</div>';
+  let h = '<div style="cursor:pointer" id="popTop">💰 <b>' + money(sur) + '</b> sur toi' + (livre ? ' · <b>' + base.n + '</b> livraison' + (base.n > 1 ? 's' : '') + ' ce soir' : '') + '</div>';
+  if (so && Math.round(so.avant)) h += '<div class="small">' + money(so.avant) + ' d’avant + ' + money(so.ceSoir) + ' ce soir</div>';
   if (k.recu) h += '<div class="small">dont ' + money(k.recu) + ' reçus des livreurs</div>';
   dt.mine.filter((x) => x.statut === 'ouverte' && x.responsable === myMid()).forEach((x) => { h += '<div class="small">📒 Ta dette : ' + money(x.montant) + ' (' + esc(x.client) + ')</div>'; });
   att.forEach((r) => { h += '<div class="small" style="margin-top:4px">⏳ ' + money(r.montant) + ' → ' + esc(r.versNom) + ' : en attente <button class="linkbtn" data-ann="' + r.id + '">Annuler</button></div>'; });
@@ -3500,3 +3504,86 @@ document.addEventListener('click', async (e) => {
   } catch (err) { vt.busy = false; fail(msg(err)); }
 });
 document.addEventListener('input', (e) => { if (e.target && (e.target.id === 'vtL' || e.target.id === 'vtXL')) { vtKeep(); const el = $('vtTot'); if (el) el.textContent = money((Number(vt.L) || 0) * cfg.prixL + (Number(vt.XL) || 0) * cfg.prixXL); } });
+
+
+// =====================================================================
+// v44 : 💵 Cash — le solde de chacun continue d'un jour à l'autre (à partir de la soirée du 18 nov. 2026).
+//       Solde = (cash encaissé − paie − frais − pourboires) − cash donné + cash reçu (remises « reçu ✓ »).
+//       Onglet « 💵 Cash » (Wayne + dispatchs) : total pas encore rendu à Wayne, un solde par personne, journal jour par jour.
+// =====================================================================
+const CASH_START = new Date(2026, 10, 18, 6, 0, 0);
+const cs = { busy: false, data: null, sel: null, err: '' };
+const soirOf = (ms) => { const d = new Date(ms); if (d.getHours() < 6) d.setDate(d.getDate() - 1); d.setHours(6, 0, 0, 0); return d; };
+async function soldeMoi() {
+  const mid = me.mid, d0 = CASH_START, t0 = soirStart(), list = [];
+  const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', mid), where('statut', '==', 'livree')));
+  qs.forEach((x) => { const c = x.data(); if (tsMs(c.livreeLe) >= d0.getTime()) list.push(c); });
+  const all = (sumUp(list)[0] || { reste: 0 }).reste, tonight = (sumUp(list.filter((c) => tsMs(c.livreeLe) >= t0.getTime()))[0] || { reste: 0 }).reste;
+  let out = 0, outT = 0, inn = 0, innT = 0;
+  const rs = await getDocs(query(collection(db, 'remises'), where('de', '==', mid)));
+  rs.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime()) return; out += r.montant || 0; if (t >= t0.getTime()) outT += r.montant || 0; });
+  if (isOwner() || isStaff()) {
+    const rv = await getDocs(query(collection(db, 'remises'), where('vers', '==', mid)));
+    rv.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; });
+  }
+  try { const dq = await getDocs(query(collection(db, 'dettes'), where('responsable', '==', mid))); // dette réglée en cash = cash à remettre
+    dq.forEach((x) => { const r = x.data(), t = tsMs(r.regleLe); if (r.statut !== 'reglee' || r.regleMode !== 'cash' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; }); } catch (e) {}
+  const tot = all - out + inn, ceSoir = tonight - outT + innT;
+  return { tot, ceSoir, avant: tot - ceSoir };
+}
+async function loadCash() {
+  const box = $('cashTab'); if (!box || !(isOwner() || isStaff())) return;
+  cs.busy = true; drawCash();
+  try {
+    const far = new Date(Date.now() + 2 * 86400000);
+    const [cm, rems] = await Promise.all([rangeDocs('commandes', 'livreeLe', CASH_START, far), rangeDocs('remises', 'le', CASH_START, far)]);
+    let dts = []; if (canDette()) { try { const q = await getDocs(collection(db, 'dettes')); q.forEach((x) => dts.push(Object.assign({ id: x.id }, x.data()))); } catch (e) {} }
+    const P = {};
+    const per = (id, nom) => P[id] || (P[id] = { id, nom: nom || nomDe(id), solde: 0, dette: 0, days: {} });
+    const day = (p, ms) => { const k = soirOf(ms).getTime(); return p.days[k] || (p.days[k] = { k, n: 0, cash: 0, garde: 0, lines: [] }); };
+    cm.filter((c) => c.statut === 'livree' && !c.test && c.livreur).forEach((c) => {
+      const p = per(c.livreur, c.livreurNom), d = day(p, tsMs(c.livreeLe)), r = sumUp([c])[0]; if (!r) return;
+      d.n += 1; d.cash += r.cash; d.garde += r.cash - r.reste; p.solde += r.reste;
+    });
+    rems.forEach((r) => {
+      const t = tsMs(r.le), ok = r.statut === 'recue', att = r.statut === 'attente';
+      if (!ok && !att) return;
+      if (r.de && r.de !== 'proprietaire') { const p = per(r.de, r.deNom); day(p, t).lines.push({ t, txt: '→ ' + (r.versNom || nomDe(r.vers)), m: -(r.montant || 0), ok, att }); if (ok) p.solde -= r.montant || 0; }
+      if (r.vers && r.vers !== 'proprietaire') { const p = per(r.vers, r.versNom); day(p, t).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; }
+    });
+    // Dettes : ouvertes = notées à part (pas encore de cash) ; réglées en cash = le cash s'ajoute au solde du responsable.
+    dts.forEach((x) => {
+      const rid = x.responsable; if (!rid || rid === 'dispatch' || rid === 'proprietaire') return;
+      if (x.statut === 'ouverte') { const p = per(rid); p.dette += x.montant || 0; day(p, tsMs(x.creeLe)).lines.push({ t: tsMs(x.creeLe), txt: '📒 Dette ouverte · ' + (x.client || ''), m: 0, dm: x.montant || 0, att: true }); }
+      if (x.statut === 'reglee' && tsMs(x.regleLe) >= CASH_START.getTime()) { const p = per(rid), cash = x.regleMode === 'cash';
+        day(p, tsMs(x.regleLe)).lines.push({ t: tsMs(x.regleLe), txt: '📒 Dette réglée ' + (cash ? 'en cash' : 'par Interac') + ' · ' + (x.client || ''), m: cash ? (x.montant || 0) : 0, dm: cash ? 0 : x.montant || 0, ok: true });
+        if (cash) p.solde += x.montant || 0; }
+    });
+    cs.data = Object.values(P).sort((a, b) => b.solde - a.solde); cs.err = '';
+  } catch (e) { cs.err = msg(e); }
+  cs.busy = false; drawCash();
+}
+function drawCash() {
+  const box = $('cashTab'); if (!box) return;
+  const L = cs.data || [], tot = L.reduce((a, p) => a + p.solde, 0);
+  let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div class="label" style="margin:0">💵 Cash pas encore rendu à ' + OWNER + '</div><button class="linkbtn" id="csReload">↻</button></div>' +
+    '<div style="font-size:26px;font-weight:900;margin:6px 0 2px">' + (cs.busy && !cs.data ? '…' : money(tot)) + '</div><div class="small">Le solde de chacun continue d’un jour à l’autre (depuis la soirée du 18 nov.).</div>' + (cs.err ? '<div class="err">' + esc(cs.err) + '</div>' : '') + '</div>';
+  if (!L.length && !cs.busy) h += '<div class="card small">Rien pour l’instant.</div>';
+  L.forEach((p) => {
+    const o = cs.sel === p.id, disp = team[p.id] && ['complet', 'limite'].includes(team[p.id].role);
+    h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-cs="' + esc(p.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer"><div><b style="font-size:16px">' + esc(p.nom) + '</b> <span class="small">' + (disp ? 'dispatch' : 'livreur') + '</span>' +
+      '<div class="small">' + (Math.round(p.solde) ? (disp ? 'sur lui' : 'à remettre') : '✓ tout remis') + (p.dette ? ' · <span style="color:#f87171">📒 ' + money(p.dette) + ' en dettes</span>' : '') + '</div></div><b style="font-size:19px;color:' + (Math.round(p.solde) ? '#fcd34d' : '#86efac') + '">' + money(p.solde) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+    if (o) Object.values(p.days).sort((a, b) => b.k - a.k).forEach((d) => {
+      h += '<div style="padding:6px 14px;background:var(--card2);border-top:1px solid var(--line);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">' + esc(new Date(d.k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })) + '</div>';
+      const row = (txt, m, sub, col) => '<div style="padding:7px 14px;border-top:1px solid var(--line);font-size:13px;display:flex;justify-content:space-between;gap:8px"><span>' + txt + (sub ? '<div class="small">' + sub + '</div>' : '') + '</span><b style="color:' + col + ';white-space:nowrap">' + m + '</b></div>';
+      if (d.n) { h += row(d.n + ' livraison' + (d.n > 1 ? 's' : '') + ' · cash encaissé', '+' + money(d.cash), '', '#86efac'); if (d.garde) h += row('Gardé (paie, frais, pourboires)', '−' + money(d.garde), '', '#fca5a5'); }
+      d.lines.sort((a, b) => a.t - b.t).forEach((l) => {
+        if (l.dm != null && !l.m) { h += row(esc(l.txt), money(l.dm), (l.ok ? 'réglée · ' : 'pas comptée tant qu’elle n’est pas payée · ') + hm(l.t), '#f87171'); return; }
+        h += row(esc(l.txt), (l.m > 0 ? '+' : '−') + money(Math.abs(l.m)), l.dm != null ? 'réglée · ' + hm(l.t) : l.ok ? '✓ reçu · ' + hm(l.t) : '⏳ en attente · ' + hm(l.t), l.att ? 'var(--muted)' : l.m > 0 ? '#86efac' : '#fca5a5'); });
+    });
+    h += '</div>';
+  });
+  box.innerHTML = h;
+  box.querySelectorAll('[data-cs]').forEach((el) => { el.onclick = () => { cs.sel = cs.sel === el.dataset.cs ? null : el.dataset.cs; drawCash(); }; });
+  if ($('csReload')) $('csReload').onclick = () => loadCash();
+}
