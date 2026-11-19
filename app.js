@@ -2843,7 +2843,7 @@ function histoPeople() {
   const all = hs.all || [], ids = [];
   all.forEach((c) => { const k = c.livreur || '?'; if (!ids.includes(k)) ids.push(k); });
   if (!ids.length) return '<div class="card small">Aucune livraison.</div>';
-  const owner = isOwner();
+  const owner = canEditH(); // v38 : Wayne et MOUSSE
   return ids.map((k) => {
     const S = (hs.sum || []).find((r) => r.mid === k) || { n: 0, cash: 0, reste: 0, paieOk: true };
     const mine = all.filter((c) => (c.livreur || '?') === k), nom = esc((mine[0] && mine[0].livreurNom) || nomDe(k)), o = hx.open === k;
@@ -2855,13 +2855,14 @@ function histoPeople() {
       const who = c.confirmeLe ? (c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire')) : '';
       const line = '<div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><div><b>' + (c.test ? '🧪' : (i + 1) + '.') + '</b> ' + esc(c.client) + ' <span class="small">· ' + esc(qtyTxt(c)) +
         (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + (hs.week ? ' · ' + t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) : ' · ' + hm(t.getTime())) + (c.ajusteLe ? ' · ✏️' : '') + (c.annuleTest ? ' · annulée' : '') + '</span></div>' +
-        '<b style="white-space:nowrap">' + payHtml(payOf(c)) + '</b></div>' + (who ? '<div class="small" style="text-align:right">confirmé par ' + esc(who) + '</div>' : '') + '</div>';
+        '<b style="white-space:nowrap">' + payHtml(payOf(c)) + '</b></div>' + (c.paieModLe ? '<div class="small" style="text-align:right">✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + '</div>' : who ? '<div class="small" style="text-align:right">confirmé par ' + esc(who) + '</div>' : '') + '</div>';
       if (c.annuleTest) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.45;display:flex;gap:8px;align-items:center">' + line + '<span class="small">↩️</span></div>'; return; }
       if (c.test) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.5;display:flex;gap:8px;align-items:center">' + line + '<span class="small">🧪 test<br>effacée après 15 min</span></div>'; return; }
       if (hx.edit !== c.id) { h += '<div ' + (owner ? 'data-he="' + c.id + '" ' : '') + 'style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center' + (owner ? ';cursor:pointer' : '') + '">' + line + '</div>'; return; }
       h += '<div style="padding:10px 14px;border-top:1px solid var(--line);background:var(--card2)"><div style="display:flex">' + line + '</div>' +
         '<div class="small" style="margin-top:4px">Cash reçu ' + money(cash) + (cash > enc ? ' (pourboire ' + money(cash - enc) + ')' : '') + (c.paie != null ? ' · paie ' + money(c.paie) : '') + '</div>' +
-        '<div class="seg" style="margin:10px 0">' + [['adj', 'Ajuster'], ['ann', 'Annuler (test)']].map((x) => '<button data-hm2="' + x[0] + '" class="' + (hx.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+        '<div class="seg" style="margin:10px 0">' + [['pay', 'Paiement'], ['adj', 'Ajuster L / XL'], ['ann', 'Annuler (test)']].map((x) => '<button data-hm2="' + x[0] + '" class="' + (hx.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+      if (hx.mode === 'pay') h += payEditHtml(c);
       if (hx.mode === 'adj') h += '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="hxL" type="number" inputmode="numeric" min="0" value="' + hx.L + '"></div><div style="flex:1"><div class="small">XL</div><input id="hxXL" type="number" inputmode="numeric" min="0" value="' + hx.XL + '"></div></div>' +
         '<div class="small">Cash reçu ($)</div><input id="hxCash" type="number" inputmode="numeric" min="0" value="' + hx.cash + '">' +
         '<div class="small" style="margin:4px 0 8px">Si la quantité baisse, la différence retourne chez ' + nom + ' ; si elle monte, elle est enlevée de son stock.</div>' +
@@ -2880,12 +2881,13 @@ function bindHistoPeople() {
   const box = $('histo'); if (!box) return;
   const C = (id) => (hs.all || []).find((x) => x.id === id);
   box.querySelectorAll('[data-hp]').forEach((el) => { el.onclick = () => { hx.open = hx.open === el.dataset.hp ? null : el.dataset.hp; hx.edit = null; drawHisto(); }; });
-  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: null, L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); drawHisto(); }; });
+  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: 'pay', L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); payInit(c); drawHisto(); }; });
   box.querySelectorAll('[data-hm2]').forEach((el) => { el.onclick = () => { hx.mode = el.dataset.hm2; hx.err = ''; drawHisto(); }; });
   box.querySelectorAll('[data-hx]').forEach((el) => { el.onclick = () => { hx.edit = null; hx.mode = null; drawHisto(); }; });
   [['hxL', 'L'], ['hxXL', 'XL'], ['hxCash', 'cash']].forEach(([id, k]) => { if ($(id)) $(id).oninput = (e) => { hx[k] = e.target.value; }; });
-  const run = async (fn) => { if (hx.busy || !isOwner()) return; hx.busy = true; hx.err = ''; drawHisto();
+  const run = async (fn) => { if (hx.busy || !canEditH()) return; hx.busy = true; hx.err = ''; drawHisto();
     try { await fn(); hx.edit = null; hx.mode = null; hx.busy = false; await loadHisto(); } catch (e) { hx.busy = false; hx.err = msg(e); drawHisto(); } };
+  bindPayEdit(C, run);
   box.querySelectorAll('[data-hann]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.hann); if (!c) return; run(async () => {
     const bt = writeBatch(db);
     bt.update(doc(db, 'commandes', c.id), { statut: 'annulee', annuleTest: true, annuleLe: serverTimestamp(), annulePar: myMid() });
@@ -3011,7 +3013,7 @@ function payOf(c) {
   const total = p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
   const cash = Number(c.cashRecu) || 0;
   const int = mode === 'int' ? total : mode === 'mix' ? (p.interac != null ? p.interac : Math.max(0, total - (c.encaisser || 0))) : 0;
-  const cryv = mode === 'cry' ? total : 0;
+  const cryv = mode === 'cry' ? total : mode === 'mixc' ? (p.cryPart != null ? p.cryPart : Math.max(0, total - (c.encaisser || 0))) : 0;
   // v37 : « paie plus tard » (dette) — pas encaissé : on le montre à part, il ne compte pas dans les totaux
   if (c.dette) return { cash, int: 0, cry: 0, coin: '', dette: Math.max(0, (mode === 'cash' ? (c.encaisser || total) : total) - cash) };
   return { cash, int, cry: cryv, coin: c.crypto || p.crypto || '' };
@@ -3023,4 +3025,51 @@ function payHtml(q) {
   if (q.cry) parts.push('<span style="color:' + PCOL.cry + '">🟣 ' + money(q.cry) + (q.coin ? ' ' + esc(q.coin) : '') + '</span>');
   if (q.dette) parts.push('<span style="color:#f87171">📒 ' + money(q.dette) + ' dette</span>');
   return parts.join(' + ') || '<span class="small">0 $</span>';
+}
+
+// =====================================================================
+// v38 : Historique — Wayne ET MOUSSE peuvent modifier : changer le paiement (Cash / Interac / Crypto / Mélange),
+//       ajuster L / XL, annuler (test). Le changement de paiement est noté « paiement modifié par X ».
+// =====================================================================
+// Mélange = une partie cash + le reste en Interac (mode « mix ») ou en crypto (mode « mixc », cmdPrive.cryPart).
+const canEditH = () => isOwner() || (me && me.role === 'complet');
+const pe = { mode: 'cash', cash: 0, reste: 'int', coin: null, autre: '' };
+function payTotal(c) { const p = (hs.prv && hs.prv[c.id]) || prive[c.id] || {}; return p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0)); }
+function payInit(c) {
+  const q = payOf(c), coin = q.coin || '';
+  pe.mode = q.cash && (q.int || q.cry) ? 'mix' : q.cry ? 'cry' : q.int ? 'int' : 'cash';
+  pe.cash = q.cash || 0; pe.reste = q.cry ? 'cry' : 'int';
+  pe.coin = coin ? (COINS.some((x) => x[0] === coin) ? coin : 'autre') : null; pe.autre = coin && !COINS.some((x) => x[0] === coin) ? coin : '';
+}
+function payEditHtml(c) {
+  const tot = payTotal(c), seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0">' + list.map((x) => '<button ' + attr + '="' + x[0] + '" class="' + (cur === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+  let h = '<div style="font-weight:800;margin-bottom:4px">Changer le paiement · total ' + money(tot) + '</div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], pe.mode, 'data-pm');
+  if (pe.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="peCash" type="number" inputmode="numeric" value="' + esc(pe.cash) + '">' +
+    '<div class="small">Le reste (<b id="peRest">' + money(Math.max(0, tot - (Number(pe.cash) || 0))) + '</b>) en :</div>' + seg([['int', '🟡 Interac'], ['cry', '🟣 Crypto']], pe.reste, 'data-pr');
+  if (pe.mode === 'cry' || (pe.mode === 'mix' && pe.reste === 'cry')) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, pe.coin, 'data-pc') +
+    (pe.coin === 'autre' ? '<input id="peAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(pe.autre) + '">' : '');
+  return h + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-hx="1">Fermer</button><button class="btn ok sm" data-psave="' + c.id + '"' + (hx.busy ? ' disabled' : '') + '>' + (hx.busy ? '…' : 'Enregistrer') + '</button></div>';
+}
+function bindPayEdit(C, run) {
+  const box = $('histo'); if (!box) return;
+  box.querySelectorAll('[data-pm]').forEach((el) => { el.onclick = () => { pe.mode = el.dataset.pm; hx.err = ''; drawHisto(); }; });
+  box.querySelectorAll('[data-pr]').forEach((el) => { el.onclick = () => { pe.reste = el.dataset.pr; drawHisto(); }; });
+  box.querySelectorAll('[data-pc]').forEach((el) => { el.onclick = () => { pe.coin = el.dataset.pc; hx.err = ''; drawHisto(); }; });
+  if ($('peAutre')) $('peAutre').oninput = (e) => { pe.autre = e.target.value; };
+  if ($('peCash')) $('peCash').oninput = (e) => { pe.cash = e.target.value; const c = C(hx.edit); if (c && $('peRest')) $('peRest').textContent = money(Math.max(0, payTotal(c) - (Number(pe.cash) || 0))); };
+  box.querySelectorAll('[data-psave]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.psave); if (!c) return;
+    const tot = payTotal(c), cashPart = Math.round(Number(pe.cash) || 0);
+    const needC = pe.mode === 'cry' || (pe.mode === 'mix' && pe.reste === 'cry'), coin = needC ? coinOf(pe.coin, pe.autre) : '';
+    if (needC && !coin) { hx.err = 'Choisis la crypto (BTC, ETH…).'; return drawHisto(); }
+    if (pe.mode === 'mix' && !(cashPart > 0 && cashPart < tot)) { hx.err = 'Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).'; return drawHisto(); }
+    const mode = pe.mode === 'mix' ? (pe.reste === 'cry' ? 'mixc' : 'mix') : pe.mode;
+    const cash = mode === 'cash' ? Math.max(tot, Number(c.cashRecu) || 0) : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
+    const enc = mode === 'cash' ? tot : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
+    run(async () => {
+      const b = writeBatch(db);
+      b.update(doc(db, 'commandes', c.id), { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() });
+      b.set(doc(db, 'cmdPrive', c.id), { total: tot, mode, cash: enc, interac: mode === 'int' ? tot : mode === 'mix' ? tot - cashPart : 0, cryPart: mode === 'cry' ? tot : mode === 'mixc' ? tot - cashPart : 0, crypto: coin || null }, { merge: true });
+      await b.commit();
+    });
+  }; });
 }
