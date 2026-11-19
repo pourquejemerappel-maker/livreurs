@@ -763,7 +763,8 @@ const lateTag = (m) => (m > 10 ? '<span class="late">+' + m + ' min retard</span
 const totalOf = (o) => (o.L || 0) * cfg.prixL + (o.XL || 0) * cfg.prixXL + (o.frais || 0);
 function payTag(c) {
   const p = prive[c.id] || {};
-  if (c.bloque) return '<span class="pay p-no">' + (p.mode === 'mix' ? p.cash + ' $ cash + Interac pas reçu' : 'Interac pas reçu') + '</span>';
+  if (c.bloque) return '<span class="pay p-no">' + (p.mode === 'mix' ? p.cash + ' $ cash + Interac pas reçu' : p.mode === 'cry' ? 'Crypto pas reçu' : 'Interac pas reçu') + '</span>';
+  if (p.mode === 'cry') return '<span class="pay p-int" style="background:#3b2350;color:#c4b5fd">🟣 Crypto reçu' + (c.crypto ? ' · ' + esc(c.crypto) : '') + '</span>';
   if (p.mode === 'mix') return '<span class="pay p-cash">' + p.cash + ' $ cash</span><span class="pay p-int">+ Interac reçu</span>';
   if (p.mode === 'int') return '<span class="pay p-int">Interac reçu</span>';
   return '<span class="pay p-cash">Cash ' + (c.encaisser || 0) + ' $</span>';
@@ -784,9 +785,11 @@ function renderNew() {
     '<input id="nfAdr" placeholder="Adresse (ex. 5000 jean-talon)" autocomplete="off" value="' + esc(f.q) + '"><div id="nfSugs"></div>' +
     '<div class="step"><span>L</span><button data-k="L" data-d="-1">−</button><div class="v">' + f.L + '</div><button data-k="L" data-d="1">+</button>' +
     '<span style="margin-left:10px">XL</span><button data-k="XL" data-d="-1">−</button><div class="v">' + f.XL + '</div><button data-k="XL" data-d="1">+</button></div>' +
-    '<div class="small" style="margin-bottom:4px">Comment le client paie ?</div><div class="seg" id="nfMeth">' + [['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['mix', '🔵🟡 Les deux']].map((x) => '<button data-m="' + x[0] + '" class="' + (f.meth === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    '<div class="small" style="margin-bottom:4px">Comment le client paie ?</div><div class="seg" id="nfMeth">' + [['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', '🔵🟡 Les deux']].map((x) => '<button data-m="' + x[0] + '" class="' + (f.meth === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
     (f.meth === 'mix' ? '<div class="mixbox"><div class="two"><div><div class="small">Partie cash ($)</div><input id="nfCash" type="number" inputmode="numeric" value="' + f.cashPart + '"></div><div><div class="small">Partie Interac</div><div class="mixv" id="nfInt">' + Math.max(0, tot - f.cashPart) + ' $</div></div></div></div>' : '') +
-    (f.meth !== 'cash' ? '<label class="chk"><input type="checkbox" id="nfRecu" ' + (f.recu ? 'checked' : '') + '> Interac déjà reçu' + (f.recu ? '' : ' <span class="small">(sinon le livreur attend ta confirmation)</span>') + '</label>' : '') +
+    (f.meth !== 'cash' ? '<label class="chk"><input type="checkbox" id="nfRecu" ' + (f.recu ? 'checked' : '') + '> ' + (f.meth === 'cry' ? 'Crypto' : 'Interac') + ' déjà reçu' + (f.recu ? '' : ' <span class="small">(sinon le livreur attend ta confirmation)</span>') + '</label>' : '') +
+    (f.meth === 'cry' && f.recu ? '<div class="small" style="margin:2px 0 4px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div><div class="seg" id="nfCoin">' + COINS.map((x) => '<button data-k="' + x[0] + '" class="' + (f.coin === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+      (f.coin === 'autre' ? '<input id="nfCoinA" placeholder="Laquelle ? (ex. LTC)" value="' + esc(f.coinA || '') + '">' : '') : '') +
     (f.plus ? '<input id="nfTel" placeholder="Téléphone du client (optionnel)" inputmode="tel" value="' + esc(f.tel) + '">' +
       '<div class="small" style="margin-bottom:4px">Frais de livraison</div><div class="seg" id="nfFee">' + [0, 20, 30, 40].map((v) => '<button data-v="' + v + '" class="' + (f.frais === v ? 'on' : '') + '">' + (v ? '+' + v + ' $' : 'Aucun') + '</button>').join('') + '</div>' +
       '<input id="nfNote" placeholder="Note pour le livreur (optionnel)" value="' + esc(f.note) + '">'
@@ -806,6 +809,8 @@ function renderNew() {
   on('nfCancel', 'onclick', () => { NF = null; renderNew(); });
   on('nfKeep', 'onclick', () => saveOrder(null));
   document.querySelectorAll('#cmdNew .step button').forEach((b) => { b.onclick = () => { f[b.dataset.k] = Math.max(0, f[b.dataset.k] + Number(b.dataset.d)); f.opts = null; renderNew(); computeOpts(); }; });
+  document.querySelectorAll('#nfCoin button').forEach((b) => { b.onclick = () => { f.coin = b.dataset.k; renderNew(); }; });
+  if ($('nfCoinA')) $('nfCoinA').oninput = (e) => { f.coinA = e.target.value; };
   document.querySelectorAll('#nfMeth button').forEach((b) => { b.onclick = () => { f.meth = b.dataset.m; if (f.meth === 'mix' && !f.cashPart) f.cashPart = Math.round(totalOf(f) / 20) * 10; renderNew(); }; });
   document.querySelectorAll('#nfFee button').forEach((b) => { b.onclick = () => { f.frais = Number(b.dataset.v); renderNew(); }; });
   if (focusId && $(focusId) && focusId.indexOf('nf') === 0) { const el = $(focusId); el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} }
@@ -920,7 +925,7 @@ function optLine(c, best, i) {
 function drawAssign() {
   const box = $('nfAssign'); if (!box || !NF) return;
   const f = NF;
-  const ubH = uberBtns({ L: f.L, XL: f.XL, int: f.meth === 'int', adr: !!f.q.trim() });
+  const ubH = uberBtns({ L: f.L, XL: f.XL, int: f.meth === 'int' || f.meth === 'cry', adr: !!f.q.trim() });
   if (ubH) { let a = $('nfUber'); if (!a) { a = document.createElement('div'); a.id = 'nfUber'; box.parentNode.insertBefore(a, box); } a.innerHTML = ubH; a.querySelectorAll('[data-ub]').forEach((el) => { el.onclick = () => saveOrder(uberOpt(el.dataset.ub)); }); }
   else if ($('nfUber')) $('nfUber').remove();
   if (!f.pick) { box.innerHTML = '<div class="small" style="margin-bottom:8px">Choisis une adresse dans la liste : l’app trouve le livreur qui arrive le plus vite.</div>'; return; }
@@ -948,11 +953,14 @@ async function saveOrder(opt) {
   try {
     const tot = totalOf(f);
     const mode = f.meth, recu = f.meth === 'cash' ? true : f.recu;
+    const coin = mode === 'cry' && recu ? coinOf(f.coin, f.coinA) : '';
+    if (mode === 'cry' && recu && !coin) { f.busy = false; return ($('nfErr').textContent = 'Choisis la crypto (BTC, ETH…).'); }
     const encaisser = mode === 'cash' ? tot : mode === 'mix' ? f.cashPart : 0;
     const ref = doc(collection(db, 'commandes'));
     const code = newCode();
     const data = { test: isTestName(f.client), suivi: code, client: f.client.trim() || 'Client', tel: f.tel.trim(), adresse: f.q.trim() || 'Pick-up', L: f.L, XL: f.XL, frais: f.frais, note: f.note.trim(),
-      encaisser, paye: mode !== 'cash' && recu && mode === 'int', bloque: !recu, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: me.mid };
+      encaisser, paye: recu && (mode === 'int' || mode === 'cry'), bloque: !recu, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: myMid(), paieMode: mode };
+    if (mode !== 'cash' && recu) Object.assign(data, { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {});
     if (f.pick && f.pick.lat != null) { data.lat = f.pick.lat; data.lon = f.pick.lon; }
     const b = writeBatch(db);
     if (opt) Object.assign(data, await assignFields(opt, data));
@@ -1029,7 +1037,7 @@ function renderQueues() {
     q.forEach((c, i) => {
       h += '<div class="q"><span class="qtap" data-focus="' + c.id + '"><span class="num">' + (i + 1) + '</span><b>' + esc(c.client) + '</b>' + payTag(c) + (i === 0 ? urgChip(c) : '') + ' <span class="small">⤢</span></span>' +
         '<div class="small" style="margin:3px 0 6px">' + esc(c.adresse) + ' · ' + c.L + ' L ' + c.XL + ' XL · ' + (c.statut === 'ici' ? '<b style="color:var(--cash)">sur place</b>' : c.type ? '' : 'arrivée ~' + hm(plan[i])) + (c.retard ? ' ' + lateTag(c.retard) : '') + (c.note ? '<br>📝 ' + esc(c.note) : '') + '</div>' + (c.type ? uberInfo(c) : '') +
-        '<div class="seg" style="margin:0">' + (c.bloque ? '<button class="on" data-a="paid" data-id="' + c.id + '">✓ Interac reçu</button>' : '') +
+        '<div class="seg" style="margin:0">' + (c.bloque ? '<button class="on" data-a="paid" data-id="' + c.id + '">✓ ' + payWord(c) + ' reçu</button>' : '') +
         '<button data-a="msg" data-id="' + c.id + '">💬 Client</button>' +
         (menuOpen === c.id ? (!c.dette && canDette() ? '<button data-a="dette" data-id="' + c.id + '">📒 Dette</button>' : '') + '<button data-a="unassign" data-id="' + c.id + '">Retirer</button><button data-a="cancel" data-id="' + c.id + '">Annuler</button>' : '<button data-a="menu" data-id="' + c.id + '" style="flex:0 0 46px">⋯</button>') + '</div>' +
         (msgOpen === c.id && !fx.id ? msgBox(c, plan[i]) : '') + (dt.disp && dt.disp.id === c.id && !fx.id ? detteDispForm(c) : '') + '</div>';
@@ -1093,11 +1101,13 @@ async function qAct(a, id) {
     if (a === 'dette') { menuOpen = null; dt.disp = { id, resp: (cmds[id] && cmds[id].livreur) || myMid(), note: '' }; return renderQueues(); }
     if (a === 'msg') { msgOpen = msgOpen === id ? null : id; return renderQueues(); }
     if (a === 'paid') {
+      if (needCoin(c) && !cry.ok) { cry.id = id; cry.kind = 'paid'; cry.coin = null; cry.autre = ''; cry.err = ''; return fx.id === id ? renderFocus() : openFocus(id); }
+      const coin = cry.ok || ''; cry.ok = null; cry.id = null;
       const b = writeBatch(db);
-      b.update(doc(db, 'commandes', id), { bloque: false, paye: !(c.encaisser > 0), confirmePar: me.mid, confirmeLe: serverTimestamp() });
-      b.update(doc(db, 'cmdPrive', id), { recu: true });
+      b.update(doc(db, 'commandes', id), Object.assign({ bloque: false, paye: !(c.encaisser > 0), confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin, paieMode: 'cry' } : {}));
+      b.update(doc(db, 'cmdPrive', id), Object.assign({ recu: true }, coin ? { crypto: coin } : {}));
       await b.commit();
-      if (c.type === 'uber' && c.livreur) notifyMsg(c.livreur, '✓ Interac reçu pour ' + c.client + ' — tu peux commander le Uber');
+      if (c.type === 'uber' && c.livreur) notifyMsg(c.livreur, '✓ Paiement reçu pour ' + c.client + ' — tu peux commander le Uber');
       return;
     }
     if (a === 'unassign') {
@@ -1151,7 +1161,7 @@ function myOrdersHtml(s) {
   const late = c.retard ? ' <span style="color:var(--danger);font-size:14px">+' + c.retard + ' min</span>' : '';
   const when = c.statut === 'ici' ? '<div style="margin:10px 0 2px;font-size:16px">📍 Sur place depuis ' + minDe(c.iciLe) + ' min</div>'
     : '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:10px 0 2px"><span class="small">Arrivée suggérée</span><span style="font-size:26px;font-weight:800">' + hm(plan[0]) + '</span>' + late + '</div>';
-  const band = dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
+  const band = dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.mode === 'cry' ? 'Tout en crypto' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
     : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
     : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
     : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
@@ -1169,7 +1179,7 @@ function myOrdersHtml(s) {
 }
 function lvPanel(c) {
   if (lv.panel === 'pay') return '<div class="msgc" style="margin-bottom:8px"><div class="small" style="margin-bottom:6px">' + esc(c.client) + ' paie comment ?</div>' +
-    '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="cash">💵 Tout en cash</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="int">📲 Tout en Interac</button>' +
+    '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="cash">💵 Tout en cash</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="int">📲 Tout en Interac</button><button class="btn ghost sm" style="margin-bottom:6px;border-color:#8b5cf6" data-lp="cry">🟣 Tout en crypto</button>' +
     '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="mix">💵📲 Une partie cash + le reste Interac</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="dette">📒 Il paie plus tard (dette)</button>' +
     '<button class="linkbtn" data-lp="x">Fermer</button></div>';
   if (lv.panel === 'mix') return '<div class="msgc" style="margin-bottom:8px"><div class="small">Tape le cash qu’il te donne. Le reste, il l’envoie en Interac et le dispatch confirme.</div>' +
@@ -1217,7 +1227,7 @@ function bindMyOrders(s) {
 // Le livreur dit comment le client paie vraiment ; le dispatch confirme (carte rouge chez lui).
 async function askPaie(c, d) {
   await writeBatch(db).update(doc(db, 'commandes', c.id), { demandePaie: Object.assign({ le: Date.now() }, d) }).commit();
-  notifyDispatch('💳 ' + me.nom + ' · ' + c.client + ' : ' + (d.mode === 'cash' ? 'tout en cash' : d.mode === 'int' ? 'tout en Interac' : d.cash + ' $ cash + reste Interac') + ' — à confirmer');
+  notifyDispatch('💳 ' + me.nom + ' · ' + c.client + ' : ' + (d.mode === 'cash' ? 'tout en cash' : d.mode === 'int' ? 'tout en Interac' : d.mode === 'cry' ? 'tout en crypto' : d.cash + ' $ cash + reste Interac') + ' — à confirmer');
 }
 // ---------- Réglages (propriétaire) : prix + clé Google Maps ----------
 function renderCfg() {
@@ -2035,7 +2045,7 @@ function renderFocus() {
       h += fx.alt ? fx.opts.slice(1).map((o, i) => optLine(o, false, i + 1)).join('') : (fx.opts.length > 1 ? '<button class="linkbtn" id="fxAlt">Autre livreur ▾</button>' : '');
     }
     h += uberBtns({ L: c.L, XL: c.XL, int: !(c.encaisser > 0), adr: c.adresse && c.adresse !== 'Pick-up' });
-    h += (c.bloque ? fBtn('paid', '✓ Interac reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
+    h += (cry.id === c.id ? cryBox() : c.bloque ? fBtn('paid', '✓ ' + payWord(c) + ' reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
   } else {
     const q = queueOf(c.livreur), plan = planOf(q), nx = q[1];
     h += '<div class="small">' + (c.type === 'uber' ? '🚕' : c.type === 'pickup' ? '📍' : '🚗') + ' <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (c.type === 'uber' ? 'envoie un Uber à' : c.type === 'pickup' ? 'attend au pick-up' : u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' + testTag(c) +
@@ -2048,8 +2058,9 @@ function renderFocus() {
     if (unreadFor(c.livreur)) markRead(c.livreur, 'dispatch');
     h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
       '<div class="crow" style="margin-top:6px"><input id="fxTxt" maxlength="300" placeholder="Écrire à ' + esc(c.livreurNom || '') + '…"><button class="btn sm" id="fxSend">➤</button></div></div>';
-    if (c.demandePaie) h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(c.demandePaie, c)) + '</div>' + fBtn('dpOk', c.demandePaie.mode === 'cash' ? '✓ OK, il encaisse en cash' : '✓ J’ai reçu l’Interac', 'ok') + fBtn('dpNo', 'Refuser (on garde comme avant)');
-    h += (c.bloque && !c.demandePaie ? fBtn('paid', '✓ Interac reçu', 'ok') : '') +
+    if (c.demandePaie) h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(c.demandePaie, c)) + '</div>' + (cry.id === c.id ? cryBox() : fBtn('dpOk', c.demandePaie.mode === 'cash' ? '✓ OK, il encaisse en cash' : c.demandePaie.mode === 'cry' ? '✓ J’ai reçu la crypto' : '✓ J’ai reçu l’Interac', 'ok') + fBtn('dpNo', 'Refuser (on garde comme avant)'));
+    h += confLine(c);
+    h += (c.bloque && !c.demandePaie ? (cry.id === c.id ? cryBox() : fBtn('paid', '✓ ' + payWord(c) + ' reçu', 'ok')) : '') +
       '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette ? fBtn('dette', '📒 Dette') : '') + '</div>' +
       (fx.client ? msgBox(c, plan[0]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') +
       '<div class="two">' + fBtn('unassign', fx.ask === 'unassign' ? 'Confirmer : retirer' : 'Retirer') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>' +
@@ -2065,6 +2076,8 @@ function renderFocus() {
   v.querySelectorAll('[data-ub]').forEach((el) => { el.onclick = () => focusAssign(c, uberOpt(el.dataset.ub)); });
   v.querySelectorAll('[data-o]').forEach((el) => { el.onclick = () => focusAssign(c, fx.opts[+el.dataset.o]); });
   v.querySelectorAll('[data-fa]').forEach((el) => { el.onclick = () => focusAct(c, el.dataset.fa); });
+  v.querySelectorAll('[data-ck]').forEach((el) => { el.onclick = () => { cry.coin = el.dataset.ck; cry.err = ''; renderFocus(); }; });
+  if ($('cryA')) $('cryA').oninput = (e) => { cry.autre = e.target.value; };
   v.querySelectorAll('[data-copy]').forEach((el) => { el.onclick = () => { try { navigator.clipboard.writeText(el.dataset.copy).catch(() => {}); } catch (e) {} el.textContent = 'Copié ✓'; }; });
   if ($('fxSend')) { const go = () => { const t = $('fxTxt').value.trim(); if (!t) return; $('fxTxt').value = ''; sendMsg(c.livreur, 'dispatch', t).catch((e) => { $('fxErr').textContent = msg(e); }); }; $('fxSend').onclick = go; $('fxTxt').onkeydown = (e) => { if (e.key === 'Enter') go(); }; }
   bindDetteDisp();
@@ -2093,6 +2106,7 @@ function demPaieTxt(dp, c) {
   const tot = (prive[c.id] && prive[c.id].total) || 0;
   if (dp.mode === 'cash') return 'Tout en cash' + (tot ? ' (' + tot + ' $)' : '');
   if (dp.mode === 'int') return 'Tout en Interac' + (tot ? ' · ' + tot + ' $ à confirmer' : '');
+  if (dp.mode === 'cry') return 'Tout en crypto' + (tot ? ' · ' + tot + ' $ à confirmer' : '');
   return dp.cash + ' $ cash + ' + (tot ? Math.max(0, tot - dp.cash) + ' $ ' : 'le reste en ') + 'Interac à confirmer';
 }
 async function paieOk(c, ok) {
@@ -2101,12 +2115,17 @@ async function paieOk(c, ok) {
   if (!ok) { b.update(doc(db, 'commandes', c.id), { demandePaie: null }); await b.commit(); notifyMsg(c.livreur, 'Paiement refusé pour ' + c.client + ' : on garde comme avant'); return; }
   const tot = (prive[c.id] && prive[c.id].total) || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
   const cash = dp.mode === 'cash' ? tot : dp.mode === 'mix' ? Math.min(tot, dp.cash) : 0;
-  b.update(doc(db, 'commandes', c.id), { demandePaie: null, bloque: false, encaisser: cash, paye: cash === 0, confirmePar: me.mid, confirmeLe: serverTimestamp() });
-  b.set(doc(db, 'cmdPrive', c.id), { mode: dp.mode, cash, interac: tot - cash, recu: true }, { merge: true });
+  const coin = dp.mode === 'cry' ? (cry.ok || '') : ''; cry.ok = null;
+  b.update(doc(db, 'commandes', c.id), Object.assign({ demandePaie: null, bloque: false, encaisser: cash, paye: cash === 0, paieMode: dp.mode, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}));
+  b.set(doc(db, 'cmdPrive', c.id), Object.assign({ mode: dp.mode, cash, interac: tot - cash, recu: true }, coin ? { crypto: coin } : {}), { merge: true });
   await b.commit();
   notifyMsg(c.livreur, '✓ Paiement confirmé pour ' + c.client + (cash ? ' : encaisse ' + cash + ' $ cash' : ' : déjà payé'));
 }
 async function focusAct(c, a) {
+  if (a === 'cryX') { cry.id = null; return renderFocus(); }
+  if (a === 'cryGo') { const k = coinOf(cry.coin, cry.autre); if (!k) { cry.err = 'Choisis la crypto (BTC, ETH…).'; return renderFocus(); }
+    cry.ok = k; const kind = cry.kind; try { if (kind === 'dpOk') await paieOk(c, true); else await qAct('paid', c.id); } catch (e) { cry.ok = null; if ($('fxErr')) $('fxErr').textContent = msg(e); } cry.id = null; return renderFocus(); }
+  if (a === 'dpOk' && c.demandePaie && c.demandePaie.mode === 'cry' && !cry.ok) { cry.id = c.id; cry.kind = 'dpOk'; cry.coin = null; cry.autre = ''; cry.err = ''; return renderFocus(); }
   if (a === 'dpOk' || a === 'dpNo') { try { await paieOk(c, a === 'dpOk'); } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); } return renderFocus(); }
   if (a === 'msg') { fx.client = !fx.client; return renderFocus(); }
   if (a === 'dette') { dt.disp = dt.disp ? null : { id: c.id, resp: c.livreur || myMid(), note: '' }; return renderFocus(); }
@@ -2661,7 +2680,7 @@ const ub = { adrFor: null, adr: '', defOpen: false, def: '', lien: {}, eta: {}, 
 const pickDef = () => (myReg && myReg.pickAdr) || '';
 function bandOf(c) {
   const dp = c.demandePaie;
-  return dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
+  return dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.mode === 'cry' ? 'Tout en crypto' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
     : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
     : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
     : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
@@ -2827,7 +2846,7 @@ function histoPeople() {
       const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
       const line = '<div style="flex:1;min-width:0"><b>' + (c.test ? '🧪 Test' : 'Livraison ' + (i + 1)) + (c.annuleTest ? ' · annulée' : '') + '</b> · ' + (hs.week ? t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' : '') + hm(t.getTime()) +
         '<div class="small">' + esc(c.client) + ' · ' + esc(qtyTxt(c)) + (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + ' · cash ' + money(cash) + (cash > enc ? ' (pourboire ' + money(cash - enc) + ')' : '') +
-        (c.paie != null ? ' · paie ' + money(c.paie) : '') + (c.ajusteLe ? ' · ✏️ ajustée' : '') + '</div></div>';
+        (c.paie != null ? ' · paie ' + money(c.paie) : '') + (c.ajusteLe ? ' · ✏️ ajustée' : '') + '</div>' + confLine(c) + '</div>';
       if (c.annuleTest) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.45;display:flex;gap:8px;align-items:center">' + line + '<span class="small">↩️</span></div>'; return; }
       if (c.test) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.5;display:flex;gap:8px;align-items:center">' + line + '<span class="small">🧪 test<br>effacée après 15 min</span></div>'; return; }
       if (hx.edit !== c.id) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center">' + line + (owner ? '<button class="btn ghost sm" data-he="' + c.id + '" style="width:auto;margin:0;padding:8px 12px">✏️ Modifier</button>' : '') + '</div>'; return; }
@@ -2943,4 +2962,30 @@ function qtyChips(c) {
   const box = (n, f, bg) => '<div style="flex:1;border-radius:14px;padding:10px 6px;text-align:center;background:' + bg + '"><div style="font-size:30px;font-weight:900;line-height:1">' + n + '</div><div style="font-size:15px;font-weight:700;margin-top:2px">' + f + '</div></div>';
   const h = (c.L ? box(c.L, 'L', '#16324f') : '') + (c.XL ? box(c.XL, 'XL', '#3b2350') : '');
   return h ? '<div style="display:flex;gap:8px;margin:10px 0">' + h + '</div>' : '';
+}
+
+// =====================================================================
+// v35 : Crypto (comme Interac) + « confirmé par » qui et quand
+// =====================================================================
+// Crypto : mode « cry » (payé avant, le dispatch confirme). À la confirmation, le dispatch doit choisir la crypto
+// (BTC, ETH, USDT, SOL ou Autre écrit) → commandes.crypto. À chaque confirmation Interac / crypto :
+// commandes.confirmePar / confirmeNom / confirmeLe, affichés sur la commande et dans l'historique.
+const COINS = [['BTC', '₿ BTC'], ['ETH', 'Ξ ETH'], ['USDT', '💲 USDT'], ['SOL', '◎ SOL'], ['autre', 'Autre']];
+const cry = { id: null, kind: null, coin: null, autre: '', err: '', ok: null };
+const coinOf = (k, a) => (k === 'autre' ? String(a || '').trim().toUpperCase().slice(0, 12) : k || '');
+const needCoin = (c) => (c.demandePaie ? c.demandePaie.mode === 'cry' : (prive[c.id] && prive[c.id].mode === 'cry') || c.paieMode === 'cry');
+const payWord = (c) => (needCoin(c) ? 'Crypto' : 'Interac');
+function cryBox() {
+  return '<div class="msgc" style="margin:8px 0;border:2px solid #8b5cf6"><div style="font-weight:800;margin-bottom:6px">Quelle crypto ? <span class="small">(obligatoire)</span></div><div class="seg">' +
+    COINS.map((x) => '<button data-ck="' + x[0] + '" class="' + (cry.coin === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    (cry.coin === 'autre' ? '<input id="cryA" placeholder="Laquelle ? (ex. LTC)" value="' + esc(cry.autre) + '">' : '') +
+    '<div class="err">' + esc(cry.err) + '</div><div class="two"><button class="btn ghost" data-fa="cryX">Annuler</button><button class="btn ok" data-fa="cryGo">✓ Confirmer</button></div></div>';
+}
+function confLine(c) {
+  if (!c.confirmeLe) return '';
+  const qui = c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire');
+  const t = hm(tsMs(c.confirmeLe));
+  if (c.crypto || c.paieMode === 'cry') return '<div style="font-size:13px;margin-top:4px;color:#c4b5fd">🟣 Crypto reçu' + (c.crypto ? ' · <b>' + esc(c.crypto) + '</b>' : '') + ' · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
+  if (c.paieMode === 'cash') return '<div style="font-size:13px;margin-top:4px;color:#86efac">💵 Cash · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
+  return '<div style="font-size:13px;margin-top:4px;color:#fcd34d">📲 Interac reçu · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
 }
