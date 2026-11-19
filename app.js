@@ -2914,7 +2914,7 @@ function bindHistoPeople() {
   const box = $('histo'); if (!box) return;
   const C = (id) => (hs.all || []).find((x) => x.id === id);
   box.querySelectorAll('[data-hp]').forEach((el) => { el.onclick = () => { hx.open = hx.open === el.dataset.hp ? null : el.dataset.hp; hx.edit = null; drawHisto(); }; });
-  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = (ev) => { if (ev && ev.target.closest && ev.target.closest('[data-nrok],[data-nrc]')) return; const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: 'pay', L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); payInit(c); drawHisto(); }; });
+  box.querySelectorAll('[data-he]').forEach((el) => { el.onclick = (ev) => { if (ev && ev.target.closest && ev.target.closest('[data-nrok],[data-nrc],[data-nrbox]')) return; const c = C(el.dataset.he); if (!c) return; Object.assign(hx, { edit: c.id, mode: 'pay', L: c.L || 0, XL: c.XL || 0, cash: Number(c.cashRecu) || 0, err: '' }); payInit(c); drawHisto(); }; });
   box.querySelectorAll('[data-hm2]').forEach((el) => { el.onclick = () => { hx.mode = el.dataset.hm2; hx.err = ''; drawHisto(); }; });
   box.querySelectorAll('[data-hx]').forEach((el) => { el.onclick = () => { hx.edit = null; hx.mode = null; drawHisto(); }; });
   [['hxL', 'L'], ['hxXL', 'XL'], ['hxCash', 'cash']].forEach(([id, k]) => { if ($(id)) $(id).oninput = (e) => { hx[k] = e.target.value; }; });
@@ -3069,12 +3069,12 @@ function payHtml(q) {
 // =====================================================================
 // Mélange = une partie cash + le reste en Interac (mode « mix ») ou en crypto (mode « mixc », cmdPrive.cryPart).
 const canEditH = () => isOwner() || (me && me.role === 'complet');
-const pe = { mode: 'cash', cash: 0, reste: 'int', coin: null, autre: '' };
+const pe = { mode: 'cash', cash: 0, reste: 'int', coin: null, autre: '', env: '' };
 function payTotal(c) { const p = (hs.prv && hs.prv[c.id]) || prive[c.id] || {}; return p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0)); }
 function payInit(c) {
   const q = payOf(c), coin = q.coin || '';
   pe.mode = q.cash && (q.int || q.cry) ? 'mix' : q.cry ? 'cry' : q.int ? 'int' : 'cash';
-  pe.cash = q.cash || 0; pe.reste = q.cry || q.noKind === 'cry' ? 'cry' : 'int'; pe.recu = !c.nonRecu;
+  pe.cash = q.cash || 0; pe.reste = q.cry || q.noKind === 'cry' ? 'cry' : 'int'; pe.recu = !c.nonRecu; pe.env = c.envoyePar || '';
   if (c.nonRecu) pe.mode = q.cash ? 'mix' : q.noKind === 'cry' ? 'cry' : 'int';
   pe.coin = coin ? (COINS.some((x) => x[0] === coin) ? coin : 'autre') : null; pe.autre = coin && !COINS.some((x) => x[0] === coin) ? coin : '';
 }
@@ -3091,6 +3091,7 @@ function payEditHtml(c) {
       '<button data-prc="0" class="btn ghost sm" style="flex:1;margin:0;' + (!pe.recu ? 'border:2px solid #ef4444;color:#fca5a5;background:#3a1517' : '') + '">⏳ Pas encore reçu</button></div>' +
       (!pe.recu ? '<div class="small" style="color:#fca5a5;line-height:1.5">La livraison va montrer 🔴 pas reçu. Ça ne compte pas dans les totaux tant que quelqu’un ne touche pas « ✓ reçu ».</div>' : '');
   }
+  if (pe.recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int'))) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Envoyé par</b> (nom sur le virement, obligatoire)</div><input id="peEnv" maxlength="60" placeholder="Ex. Marc Tremblay" value="' + esc(pe.env || '') + '">'; // v47
   if (peC && pe.recu) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, pe.coin, 'data-pc') +
     (pe.coin === 'autre' ? '<input id="peAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(pe.autre) + '">' : '');
   return h + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-hx="1">Fermer</button><button class="btn ok sm" data-psave="' + c.id + '"' + (hx.busy ? ' disabled' : '') + '>' + (hx.busy ? '…' : 'Enregistrer') + '</button></div>';
@@ -3107,6 +3108,8 @@ function bindPayEdit(C, run) {
     const tot = payTotal(c), cashPart = Math.round(Number(pe.cash) || 0);
     const recu = pe.mode === 'cash' || pe.recu !== false;
     const needC = pe.mode === 'cry' || (pe.mode === 'mix' && pe.reste === 'cry'), coin = needC && recu ? coinOf(pe.coin, pe.autre) : '';
+    const needEnv = recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int')), env = String(($('peEnv') && $('peEnv').value) || pe.env || '').trim();
+    if (needEnv && !env) { hx.err = 'Écris le nom de la personne qui a envoyé l’Interac.'; return drawHisto(); }
     if (needC && recu && !coin) { hx.err = 'Choisis la crypto (BTC, ETH…).'; return drawHisto(); }
     if (pe.mode === 'mix' && !(cashPart > 0 && cashPart < tot)) { hx.err = 'Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).'; return drawHisto(); }
     const mode = pe.mode === 'mix' ? (pe.reste === 'cry' ? 'mixc' : 'mix') : pe.mode;
@@ -3116,7 +3119,7 @@ function bindPayEdit(C, run) {
     // v40 : si le livreur a PLUS de cash à remettre qu'avant, il doit confirmer qu'il l'a reçu.
     const ask = c.livreur && c.livreur !== myMid() && c.statut === 'livree' && (mode !== (c.paieMode || payOld(c)) || cash !== (Number(c.cashRecu) || 0)); // v42 : toujours l'accord du livreur
     run(async () => {
-      const b = writeBatch(db), mod = Object.assign({ paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, ask ? {} : { nonRecu: !recu },
+      const b = writeBatch(db), mod = Object.assign({ paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, needEnv ? { envoyePar: env.slice(0, 60) } : {}, ask ? {} : { nonRecu: !recu },
         !ask && recu && c.nonRecu && mode !== 'cash' ? { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() } : {});
       if (ask) {
         b.update(doc(db, 'commandes', c.id), Object.assign({ chg: { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, avant: Number(c.cashRecu) || 0, nonRecu: !recu }, chgRep: null, aValider: true }, mod));
@@ -3196,6 +3199,7 @@ function addNote(c, nom, who) {
   if (c.chg) h += r('⏳ changement vers ' + payWord2(c.chg.paieMode, c.chg.cashRecu) + ' · ' + nom + ' doit être d’accord', '#fcd34d');
   if (c.vente) h += r('🛒 vente ajoutée par ' + nom);
   if (c.qtyAvant) h += r('✏️ quantité changée par ' + nom + ' (' + esc(qtyTxt(c.qtyAvant)) + ' → ' + esc(qtyTxt(c)) + ')');
+  if (c.envoyePar) h += r('envoyé par <b style="color:var(--text)">' + esc(c.envoyePar) + '</b>'); // v47
   if (c.ajoutPar) h += r('➕ ajoutée par ' + esc(dispName(c.ajoutNom || '')) + (c.ajoutRep === 'ok' ? ' · ✓ approuvée par ' + nom : ''));
   if (c.paieModLe && !c.chg) h += r('✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + (c.chgRep === 'ok' ? ' · ✓ accepté par ' + nom : '') +
     (c.confirmeLe && c.paieModLe && tsMs(c.confirmeLe) > tsMs(c.paieModLe) && !c.nonRecu ? ' · ✓ confirmé par ' + esc(dispName(c.confirmeNom || '')) + ' à ' + hm(tsMs(c.confirmeLe)) : ''));
@@ -3343,7 +3347,8 @@ async function valAct(c, oui) {
 //       La livraison montre 🔴 X $ pas reçu (pas compté dans les totaux) ; carte rouge « À confirmer »
 //       en haut de l'Historique + 🔴 sur l'onglet ; Wayne, MOUSSE ou lost (dispatch) touchent « ✓ reçu ».
 // =====================================================================
-const nr = { list: [], prv: {}, pick: null, busy: null };
+const nr = { list: [], prv: {}, pick: null, busy: null, nom: '', err: '' };
+document.addEventListener('input', (e) => { if (e.target && e.target.dataset && e.target.dataset.nrnom) nr.nom = e.target.value; if (e.target && e.target.id === 'peEnv') pe.env = e.target.value; });
 function nrAmt(c) { const p = nr.prv[c.id] || (hs.prv && hs.prv[c.id]) || {}; const tot = p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0)); return Math.max(0, tot - (Number(c.encaisser) || 0)); }
 function nrKind(c) { const m = c.paieMode || (nr.prv[c.id] || {}).mode; return m === 'cry' || m === 'mixc' ? 'cry' : 'int'; }
 function nrPrv() { nr.list.forEach((c) => { if (!nr.prv[c.id]) getDoc(doc(db, 'cmdPrive', c.id)).then((d) => { if (d.exists()) { nr.prv[c.id] = d.data(); if (curTab === 'histo') drawHisto(); } }).catch(() => {}); }); }
@@ -3351,6 +3356,9 @@ function nrBadge() { const tb = document.querySelector('#tabs button[data-t="his
 function nrBtn(c) {
   if (!isDispatcher()) return '';
   const k = nrKind(c);
+  if (nr.pick === c.id && k !== 'cry') return '<div data-nrbox="' + c.id + '" style="margin-top:8px;background:var(--card2);border-radius:12px;padding:10px"><div class="small"><b style="color:var(--text)">Envoyé par</b> (nom sur le virement, obligatoire)</div>' + // v47
+    '<input data-nrnom="' + c.id + '" placeholder="Ex. Marc Tremblay" maxlength="60" value="' + esc(nr.nom || '') + '" style="margin:6px 0">' + (nr.err ? '<div class="err">' + esc(nr.err) + '</div>' : '') +
+    '<div class="two"><button class="btn ghost sm" data-nrx="1">Annuler</button><button class="btn ok sm" data-nrgo="' + c.id + '">Confirmer</button></div></div>';
   if (nr.pick === c.id) return '<div style="margin-top:6px"><div class="small"><b style="color:var(--text)">Quelle crypto ?</b></div><div class="seg" style="flex-wrap:wrap">' + COINS.filter((x) => x[0] !== 'autre').map((x) => '<button data-nrc="' + c.id + '|' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>';
   return '<div style="text-align:right;margin-top:6px"><button class="btn ok sm" style="width:auto;padding:8px 12px;margin:0" data-nrok="' + c.id + '"' + (nr.busy === c.id ? ' disabled' : '') + '>' + (nr.busy === c.id ? '…' : '✓ ' + (k === 'cry' ? 'Crypto' : 'Interac') + ' reçu') + '</button></div>';
 }
@@ -3360,13 +3368,15 @@ function nrHtml() {
     nr.list.map((c) => { const t = new Date(tsMs(c.livreeLe)); return '<div style="padding:8px 0;border-top:1px solid #7f1d1d"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div style="font-size:14px">' + esc(c.client) + ' · ' + esc(c.livreurNom || nomDe(c.livreur)) +
       '<div class="small">' + t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' + hm(t.getTime()) + '</div><span style="color:#f87171">' + money(nrAmt(c)) + ' ' + (nrKind(c) === 'cry' ? 'crypto' : 'Interac') + ' pas reçu</span></div></div>' + nrBtn(c) + '</div>'; }).join('') + '</div>';
 }
-async function nrConfirm(id, coin) {
+async function nrConfirm(id, coin, nom) {
   const c = nr.list.find((x) => x.id === id) || (hs.all || []).find((x) => x.id === id); if (!c || nr.busy) return;
   if (nrKind(c) === 'cry' && !coin) { nr.pick = id; return drawHisto(); }
+  if (nrKind(c) !== 'cry') { nom = String(nom || '').trim(); if (!nom) { if (nr.pick === id) nr.err = 'Écris le nom de la personne qui a envoyé.'; else { nr.pick = id; nr.err = ''; nr.nom = ''; } return drawHisto(); } }
+  nr.err = ''; nr.nom = '';
   nr.busy = id; nr.pick = null; drawHisto();
   try {
     const b = writeBatch(db);
-    b.update(doc(db, 'commandes', id), Object.assign({ nonRecu: false, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}));
+    b.update(doc(db, 'commandes', id), Object.assign({ nonRecu: false, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}, nom ? { envoyePar: nom.slice(0, 60) } : {}));
     b.set(doc(db, 'cmdPrive', id), Object.assign({ recu: true }, coin ? { crypto: coin } : {}), { merge: true });
     await b.commit();
     detteSweep();
@@ -3375,6 +3385,8 @@ async function nrConfirm(id, coin) {
 }
 document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('[data-nrok]'); if (a) { nrConfirm(a.dataset.nrok); return; }
+  const g = e.target.closest && e.target.closest('[data-nrgo]'); if (g) { const box = g.closest('[data-nrbox]'), inp = box && box.querySelector('input'); nrConfirm(g.dataset.nrgo, null, inp ? inp.value : ''); return; }
+  if (e.target.closest && e.target.closest('[data-nrx]')) { nr.pick = null; nr.err = ''; nr.nom = ''; drawHisto(); return; }
   const b = e.target.closest && e.target.closest('[data-nrc]'); if (b) { const [id, coin] = b.dataset.nrc.split('|'); nrConfirm(id, coin); }
 });
 
@@ -3619,3 +3631,33 @@ async function detteSweep() {
     }
   } catch (e) { console.warn('detteSweep', e); }
 }
+
+
+// =====================================================================
+// v47 : mise à jour forcée — toutes les 2 minutes (et quand on revient dans l'app), on regarde la version
+//       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
+//       mais jamais pendant qu'on écrit dans une case.
+// =====================================================================
+const APP_V = 47;
+const maj = { v: 0, t: null, left: 0 };
+const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
+async function majCheck() {
+  try {
+    const t = await fetch('index.html?maj=' + Date.now(), { cache: 'no-store' }).then((r) => r.text());
+    const m = t.match(/app\.js\?v=(\d+)/); const v = m ? Number(m[1]) : 0;
+    if (v > APP_V && !maj.v) { maj.v = v; maj.left = 10; majTick(); }
+  } catch (e) {}
+}
+function majGo() { try { location.reload(); } catch (e) {} }
+function majTick() {
+  let b = $('majBan');
+  if (!b) { b = document.createElement('div'); b.id = 'majBan'; b.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom, 0px) + 14px);background:#10233f;border:1px solid #2563eb;color:#bfdbfe;border-radius:16px;padding:12px 14px;font-size:14px;line-height:1.5;z-index:70;max-width:520px;margin:0 auto'; document.body.appendChild(b); }
+  const w = typingNow();
+  b.innerHTML = '🔄 <b>Nouvelle version de Gotham</b><br>' + (w ? 'Elle se fera quand tu auras fini d’écrire.' : 'Mise à jour dans ' + maj.left + ' s…') + '<button class="btn ok sm" id="majNow" style="margin-top:8px">Mettre à jour maintenant</button>';
+  $('majNow').onclick = majGo;
+  if (!w) maj.left -= 1;
+  if (maj.left < 0) return majGo();
+  clearTimeout(maj.t); maj.t = setTimeout(majTick, 1000);
+}
+setTimeout(majCheck, 20000); setInterval(majCheck, 120000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') majCheck(); });
