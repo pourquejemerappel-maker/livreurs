@@ -173,13 +173,16 @@ function setTab(t) {
 // paies/{id}   : paie par livraison (seulement le propriétaire et la personne elle-même la voient).
 let team = {}, paies = {};
 const paieTxt = (p) => (p == null ? 'paie à entrer' : p + ' $ / livraison');
+// v48 : Alpha = compte de test (seulement lui). Le robot efface ses traces 1 h après chaque action.
+const isAlpha = (id) => id === 'alpha';
+const alphaTag = (id) => isAlpha(id) ? ' <span style="font-size:11px;font-weight:700;background:#7c3aed;color:#fff;border-radius:6px;padding:2px 6px;vertical-align:middle">🧪 TEST</span>' : '';
 function renderTeam() {
   const ids = Object.keys(team).sort((a, b) => (team[a].nom || '').localeCompare(team[b].nom || '', 'fr'));
   let d = '', l = '';
   ids.forEach((id) => {
     const p = team[id];
-    const sub = p.role === 'livreur' ? (p.uber ? '🚕 Uber / pick-up · ' : '') + paieTxt(paies[id]) : (p.livre ? 'Fait aussi des livraisons · ' + paieTxt(paies[id]) : 'Ne livre pas');
-    const h = '<div class="row' + (p.actif ? '' : ' off') + '" data-id="' + esc(id) + '"><div><div class="n">' + esc(p.nom) +
+    const sub = isAlpha(id) ? '🧪 Compte de test · effacé 1 h après chaque action' : p.role === 'livreur' ? (p.uber ? '🚕 Uber / pick-up · ' : '') + paieTxt(paies[id]) : (p.livre ? 'Fait aussi des livraisons · ' + paieTxt(paies[id]) : 'Ne livre pas');
+    const h = '<div class="row' + (p.actif ? '' : ' off') + '" data-id="' + esc(id) + '"><div><div class="n">' + esc(p.nom) + alphaTag(id) +
       '<span class="pill p-' + (p.actif ? p.role : 'off') + '">' + (p.actif ? ROLES[p.role] : 'Désactivé') + '</span></div><div class="s">' + sub + '</div></div><span class="small">›</span></div>';
     if (p.role === 'livreur') l += h; else d += h;
   });
@@ -212,7 +215,7 @@ function drawSheet() {
   let h = '';
   if (F.mode === 'add') {
     h = '<div class="label">Ajouter quelqu’un</div>' +
-      '<input id="fNom" placeholder="Nom (ex. FMJ)" autocapitalize="words" value="' + esc(F.nom) + '">' + roleBlock() +
+      '<input id="fNom" placeholder="Nom (ex. FMJ)" autocapitalize="words" value="' + esc(F.nom) + '">' + '<div class="small" id="fAlpha" style="color:#c4b5fd;margin:4px 0 8px' + (isAlpha(slugFor(F.nom)) ? '' : ';display:none') + '">🧪 Compte de test activé tout seul (nom « Alpha »). Le robot effacera ses affaires 1 h après chaque action et remettra le stock d’où il vient.</div>' + roleBlock() +
       '<div class="label">Mot de passe (tu le choisis, 6 caractères min.)</div><input id="fPwd" type="text" autocomplete="off" autocapitalize="none" value="' + esc(F.pwd) + '">' +
       '<div class="err" id="fErr"></div>' +
       '<div class="two"><button class="btn ghost" id="fCancel">Annuler</button><button class="btn ok" id="fSave">Ajouter</button></div>';
@@ -239,7 +242,7 @@ function drawSheet() {
   }
   $('sheetBody').innerHTML = h;
   const on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
-  on('fNom', 'oninput', (e) => { F.nom = e.target.value; });
+  on('fNom', 'oninput', (e) => { F.nom = e.target.value; const a = $('fAlpha'); if (a) a.style.display = isAlpha(slugFor(F.nom)) ? '' : 'none'; });
   on('fPwd', 'oninput', (e) => { F.pwd = e.target.value; });
   on('fPaie', 'oninput', (e) => { F.paie = e.target.value === '' ? null : Number(e.target.value); });
   on('fLivre', 'onchange', (e) => { F.livre = e.target.checked; drawSheet(); });
@@ -281,7 +284,7 @@ async function addMember() {
   const uid = await newLogin(email, F.pwd);
   const livre = F.role !== 'livreur' && F.livre, uber = F.role === 'livreur' && !!F.uber;
   const b = writeBatch(db);
-  b.set(doc(db, 'members', id), { nom, role: F.role, livre, uber, actif: true, uid, creeLe: serverTimestamp() });
+  b.set(doc(db, 'members', id), { nom, role: F.role, livre, uber, actif: true, uid, creeLe: serverTimestamp(), ...(isAlpha(id) ? { test: true } : {}) });
   b.set(doc(db, 'paies', id), { paie: needPaie() ? Number(F.paie) : 0 });
   b.set(doc(db, 'users', uid), { nom, mid: id, role: F.role, livre, uber, actif: true });
   b.set(doc(db, 'logins', id), { email });
@@ -2876,7 +2879,7 @@ function histoPeople() {
     const S = (hs.sum || []).find((r) => r.mid === k) || { n: 0, cash: 0, reste: 0, paieOk: true };
     const mine = all.filter((c) => (c.livreur || '?') === k), nom = esc((mine[0] && mine[0].livreurNom) || nomDe(k)), o = hx.open === k;
     const tot = mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').reduce((a2, c) => { const q = payOf(c); return a2 + q.cash + q.int + q.cry; }, 0);
-    let h = '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:13px 14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b> <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+    let h = '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:13px 14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b>' + alphaTag(k) + ' <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
     if (!o) return h + '</div>';
     { const P = { cash: 0, int: 0, cry: 0 }; mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').forEach((c) => { const q = payOf(c); P.cash += q.cash; P.int += q.int; P.cry += q.cry; }); // v43
       h += '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--line);background:var(--card2);font-size:12.5px">' +
@@ -3638,7 +3641,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 47;
+const APP_V = 48;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
