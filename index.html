@@ -185,8 +185,8 @@
 </head>
 <body>
 <div class="wrap">
-  <header><b>⚡ GOTHAM</b><span><span id="who" class="small"></span> <button id="cashBtn" class="hide" title="Ma soirée" style="background:none;border:0;font-size:16px;padding:0 6px;opacity:.6;cursor:pointer">💰</button> <button id="logout" class="hide">Déconnexion</button></span></header>
-  <div id="cashPop" class="hide" style="position:fixed;top:44px;right:12px;z-index:50;background:#1f2530;border:1px solid #333b48;border-radius:12px;padding:8px 12px;font-size:14px;box-shadow:0 6px 24px #0008"></div>
+  <header><b>⚡ GOTHAM</b><span><span id="who" class="small"></span> <button id="cashBtn" class="hide" title="Ma soirée" style="background:#2b3240;border:1px solid #4a5363;border-radius:12px;font-size:22px;line-height:1;padding:5px 9px;cursor:pointer;vertical-align:middle">💰</button> <button id="logout" class="hide">Déconnexion</button></span></header>
+  <div id="cashPop" class="hide" style="position:fixed;top:52px;max-width:290px;right:12px;z-index:50;background:#1f2530;border:1px solid #333b48;border-radius:12px;padding:8px 12px;font-size:14px;box-shadow:0 6px 24px #0008"></div>
   <div id="loading" class="center small" style="padding:40px 0">Chargement…</div>
 
   <section id="login" class="hide">
@@ -288,7 +288,7 @@
   </section>
   <div class="sheet hide" id="sheet"><div class="card" id="sheetBody"></div></div>
 </div>
-<script type="module" src="app.js?v=27"></script>
+<script type="module" src="app.js?v=28"></script>
 <script>
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
 </script>
