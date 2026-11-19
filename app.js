@@ -148,7 +148,7 @@ function buildTabs() {
   if (me.role === 'limite') t.push(['soiree', 'Ma soirée']);
   if (isOwner() || isStaff()) t.push(['direct', 'En direct'], ['stock', 'Stock']);
   if (delivers() && me.role !== 'limite') t.push(['soiree', 'Ma soirée']);
-  if (isOwner() || me.role === 'complet') t.push(['histo', 'Historique']);
+  if (isOwner() || isStaff()) t.push(['histo', 'Historique']); // v36 : lost aussi quand il fait le dispatch
   if (isOwner()) t.push(['equipe', 'Équipe']);
   $('tabs').innerHTML = t.map((x) => '<button data-t="' + x[0] + '">' + x[1] + '</button>').join('');
   $('tabs').classList.toggle('hide', t.length < 2);
@@ -2260,6 +2260,8 @@ async function loadHisto() {
   hs.rows = livrees.filter((c) => !c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
   hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest || c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
   hs.sum = rows; hs.extra = x;
+  hs.prv = {}; // v36 : montants (Interac / crypto) de chaque livraison, pour toi, MOUSSE et lost
+  await Promise.all(hs.all.filter((c) => !c.test && !c.annuleTest).map((c) => getDoc(doc(db, 'cmdPrive', c.id)).then((d) => { if (d.exists()) hs.prv[c.id] = d.data(); }).catch(() => {})));
   hs.busy = false; drawHisto();
 }
 function histoCsv() {
@@ -2273,7 +2275,7 @@ function histoCsv() {
 }
 function drawHisto() {
   const box = $('histo'); if (!box || !me) return;
-  if (!(isOwner() || me.role === 'complet')) { box.innerHTML = ''; return; }
+  if (!(isOwner() || isStaff())) { box.innerHTML = ''; return; }
   const [a, b] = histoRange();
   const label = hs.week ? 'Semaine du ' + jourTxt(a) : jourTxt(a);
   box.innerHTML = '<div class="card"><div class="label">📅 Historique</div>' +
@@ -2825,10 +2827,16 @@ function bindUber(s) {
 // Ajuster : nouvelles quantités / cash reçu ; la différence de stock retourne chez le livreur (ou est enlevée) ; à encaisser suit le prix si c'était du cash.
 const hx = { open: null, edit: null, mode: null, L: 0, XL: 0, cash: 0, busy: false, err: '' };
 function histoTotals() {
-  const T = { cash: 0, n: 0, reste: 0 }; (hs.sum || []).forEach((r) => { T.cash += r.cash; T.n += r.n; T.reste += r.reste; });
-  const box = (k, v) => '<div class="lvp" style="flex:1;text-align:center">' + k + '<b style="display:block;font-size:18px">' + v + '</b></div>';
-  return '<div style="display:flex;gap:6px;margin-top:10px">' + box('Cash', money(T.cash)) + box('Livraisons', T.n) + box('Reste', money(T.reste)) + '</div>' +
-    (hs.extra ? '<div class="small" style="margin-top:8px;white-space:pre-line">' + esc(hs.extra.trim()) + '</div>' : '') +
+  const T = { cash: 0, int: 0, cry: 0, coins: {}, n: 0, reste: 0 };
+  (hs.rows || []).forEach((c) => { const q = payOf(c); T.cash += q.cash; T.int += q.int; T.cry += q.cry; if (q.cry) T.coins[q.coin || '?'] = (T.coins[q.coin || '?'] || 0) + q.cry; });
+  (hs.sum || []).forEach((r) => { T.n += r.n; T.reste += r.reste; });
+  const line = (k, v, col) => '<div style="display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid var(--line);font-size:16px"><span>' + k + '</span><b style="color:' + col + '">' + money(v) + '</b></div>';
+  const coins = Object.keys(T.coins);
+  return '<div style="font-size:30px;font-weight:900;margin:10px 0 8px">' + money(T.cash + T.int + T.cry) + '</div>' +
+    line('🔵 Cash', T.cash, PCOL.cash) + line('🟡 Interac', T.int, PCOL.int) + line('🟣 Crypto', T.cry, PCOL.cry) +
+    (coins.length ? '<div class="small" style="text-align:right;color:' + PCOL.cry + '">' + coins.map((k) => esc(coinIcon(k) + k) + ' ' + money(T.coins[k])).join(' · ') + '</div>' : '') +
+    '<div class="small" style="margin-top:6px">' + T.n + ' livraison' + (T.n > 1 ? 's' : '') + ' · reste ' + money(T.reste) + '</div>' +
+    (hs.extra ? '<div class="small" style="margin-top:6px;white-space:pre-line">' + esc(hs.extra.trim()) + '</div>' : '') +
     '<div class="small" style="margin-top:6px">Touche un livreur pour voir ses livraisons.</div>';
 }
 function histoPeople() {
@@ -2839,18 +2847,20 @@ function histoPeople() {
   return ids.map((k) => {
     const S = (hs.sum || []).find((r) => r.mid === k) || { n: 0, cash: 0, reste: 0, paieOk: true };
     const mine = all.filter((c) => (c.livreur || '?') === k), nom = esc((mine[0] && mine[0].livreurNom) || nomDe(k)), o = hx.open === k;
-    let h = '<div class="card" style="padding:0;overflow:hidden"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:14px;cursor:pointer"><div><b style="font-size:16px">' + nom + '</b><div class="small">' +
-      S.n + ' livraison' + (S.n > 1 ? 's' : '') + ' · cash ' + money(S.cash) + ' · reste ' + (S.paieOk ? money(S.reste) : '?') + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</div></div><span class="small">' + (o ? '▲' : '▼') + '</span></div>';
+    const tot = mine.filter((c) => !c.test && !c.annuleTest).reduce((a2, c) => { const q = payOf(c); return a2 + q.cash + q.int + q.cry; }, 0);
+    let h = '<div class="card" style="padding:0;overflow:hidden"><div data-hp="' + esc(k) + '" style="display:flex;justify-content:space-between;align-items:center;padding:14px;cursor:pointer"><div><b style="font-size:17px">' + nom + '</b> <span class="small">' + S.n + ' livraison' + (S.n > 1 ? 's' : '') + '</span><div class="small">reste ' + (S.paieOk ? money(S.reste) : '?') + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</div></div><b>' + money(tot) + ' ' + (o ? '▲' : '▼') + '</b></div>';
     if (!o) return h + '</div>';
     mine.forEach((c, i) => {
       const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
-      const line = '<div style="flex:1;min-width:0"><b>' + (c.test ? '🧪 Test' : 'Livraison ' + (i + 1)) + (c.annuleTest ? ' · annulée' : '') + '</b> · ' + (hs.week ? t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' : '') + hm(t.getTime()) +
-        '<div class="small">' + esc(c.client) + ' · ' + esc(qtyTxt(c)) + (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + ' · cash ' + money(cash) + (cash > enc ? ' (pourboire ' + money(cash - enc) + ')' : '') +
-        (c.paie != null ? ' · paie ' + money(c.paie) : '') + (c.ajusteLe ? ' · ✏️ ajustée' : '') + '</div>' + confLine(c) + '</div>';
+      const who = c.confirmeLe ? (c.confirmeNom ? dispName(c.confirmeNom) : nomDe(c.confirmePar || 'proprietaire')) : '';
+      const line = '<div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><div><b>' + (c.test ? '🧪' : (i + 1) + '.') + '</b> ' + esc(c.client) + ' <span class="small">· ' + esc(qtyTxt(c)) +
+        (c.type === 'uber' ? ' · Uber' : c.type === 'pickup' ? ' · pick-up' : '') + (hs.week ? ' · ' + t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) : ' · ' + hm(t.getTime())) + (c.ajusteLe ? ' · ✏️' : '') + (c.annuleTest ? ' · annulée' : '') + '</span></div>' +
+        '<b style="white-space:nowrap">' + payHtml(payOf(c)) + '</b></div>' + (who ? '<div class="small" style="text-align:right">confirmé par ' + esc(who) + '</div>' : '') + '</div>';
       if (c.annuleTest) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.45;display:flex;gap:8px;align-items:center">' + line + '<span class="small">↩️</span></div>'; return; }
       if (c.test) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);opacity:.5;display:flex;gap:8px;align-items:center">' + line + '<span class="small">🧪 test<br>effacée après 15 min</span></div>'; return; }
-      if (hx.edit !== c.id) { h += '<div style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center">' + line + (owner ? '<button class="btn ghost sm" data-he="' + c.id + '" style="width:auto;margin:0;padding:8px 12px">✏️ Modifier</button>' : '') + '</div>'; return; }
+      if (hx.edit !== c.id) { h += '<div ' + (owner ? 'data-he="' + c.id + '" ' : '') + 'style="padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center' + (owner ? ';cursor:pointer' : '') + '">' + line + '</div>'; return; }
       h += '<div style="padding:10px 14px;border-top:1px solid var(--line);background:var(--card2)"><div style="display:flex">' + line + '</div>' +
+        '<div class="small" style="margin-top:4px">Cash reçu ' + money(cash) + (cash > enc ? ' (pourboire ' + money(cash - enc) + ')' : '') + (c.paie != null ? ' · paie ' + money(c.paie) : '') + '</div>' +
         '<div class="seg" style="margin:10px 0">' + [['adj', 'Ajuster'], ['ann', 'Annuler (test)']].map((x) => '<button data-hm2="' + x[0] + '" class="' + (hx.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
       if (hx.mode === 'adj') h += '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="hxL" type="number" inputmode="numeric" min="0" value="' + hx.L + '"></div><div style="flex:1"><div class="small">XL</div><input id="hxXL" type="number" inputmode="numeric" min="0" value="' + hx.XL + '"></div></div>' +
         '<div class="small">Cash reçu ($)</div><input id="hxCash" type="number" inputmode="numeric" min="0" value="' + hx.cash + '">' +
@@ -2862,7 +2872,7 @@ function histoPeople() {
       if (hx.err) h += '<div class="err">' + esc(hx.err) + '</div>';
       h += '</div>';
     });
-    if (owner && k !== '?') h += '<div class="small" style="padding:8px 14px;border-top:1px solid var(--line)">📦 Stock de ' + nom + ' maintenant : ' + esc(qty(st(k))) + '</div>';
+    if (owner && k !== '?') h += '<div class="small" style="padding:8px 14px;border-top:1px solid var(--line)">Touche une livraison pour la modifier. · 📦 Stock de ' + nom + ' : ' + esc(qty(st(k))) + '</div>';
     return h + '</div>';
   }).join('');
 }
@@ -2988,4 +2998,26 @@ function confLine(c) {
   if (c.crypto || c.paieMode === 'cry') return '<div style="font-size:13px;margin-top:4px;color:#c4b5fd">🟣 Crypto reçu' + (c.crypto ? ' · <b>' + esc(c.crypto) + '</b>' : '') + ' · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
   if (c.paieMode === 'cash') return '<div style="font-size:13px;margin-top:4px;color:#86efac">💵 Cash · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
   return '<div style="font-size:13px;margin-top:4px;color:#fcd34d">📲 Interac reçu · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
+}
+
+// =====================================================================
+// v36 : Historique — comment chaque livraison a été payée (montants, couleurs de l'app) + total crypto
+// =====================================================================
+const PCOL = { cash: '#60a5fa', int: '#fcd34d', cry: '#c4b5fd' };
+const coinIcon = (k) => ({ BTC: '₿ ', ETH: 'Ξ ', USDT: '💲 ', SOL: '◎ ' }[k] || '');
+function payOf(c) {
+  const p = (hs.prv && hs.prv[c.id]) || prive[c.id] || {};
+  const mode = c.paieMode || p.mode || ((c.encaisser || 0) > 0 ? 'cash' : 'int');
+  const total = p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
+  const cash = Number(c.cashRecu) || 0;
+  const int = mode === 'int' ? total : mode === 'mix' ? (p.interac != null ? p.interac : Math.max(0, total - (c.encaisser || 0))) : 0;
+  const cryv = mode === 'cry' ? total : 0;
+  return { cash, int, cry: cryv, coin: c.crypto || p.crypto || '' };
+}
+function payHtml(q) {
+  const parts = [];
+  if (q.cash) parts.push('<span style="color:' + PCOL.cash + '">🔵 ' + money(q.cash) + '</span>');
+  if (q.int) parts.push('<span style="color:' + PCOL.int + '">🟡 ' + money(q.int) + '</span>');
+  if (q.cry) parts.push('<span style="color:' + PCOL.cry + '">🟣 ' + money(q.cry) + (q.coin ? ' ' + esc(q.coin) : '') + '</span>');
+  return parts.join(' + ') || '<span class="small">0 $</span>';
 }
