@@ -32,8 +32,8 @@ const dispName = (n) => (n === 'Propriétaire' ? OWNER : n);
 const ROLES = { proprio: 'Propriétaire', complet: 'Dispatch complet', limite: 'Dispatch limité', livreur: 'Livreur' };
 const DESC = {
   complet: 'Tout sauf les prix, les paies, les mots de passe, l’équipe et les ajouts à la réserve.',
-  limite: 'Check-in et loads, commandes, Interac, messages. Pas l’argent des livreurs, pas la fermeture.',
-  livreur: 'Sa soirée seulement. Ne voit jamais les montants Interac.'
+  limite: 'Check-in et loads, commandes, EMT, messages. Pas l’argent des livreurs, pas la fermeture.',
+  livreur: 'Sa soirée seulement. Ne voit jamais les montants EMT.'
 };
 const DOMAINE = '@livreurs-app-6dafd.firebaseapp.com';
 const LIEN = 'https://pourquejemerappel-maker.github.io/livreurs/';
@@ -572,7 +572,7 @@ $('gGo').onclick = async () => {
 const ci = { q: '', pick: null, sugs: [], timer: null, seq: 0 };
 function renderSoiree() {
   if (!me || !delivers()) return;
-  if (document.activeElement && (['mcCash', 'chatTxt', 'dtAmt', 'dtNote', 'lvMix', 'ciPick'].includes(document.activeElement.id) || (document.activeElement.tagName === 'INPUT' && /^ub/.test(document.activeElement.id || '')))) return;
+  if (document.activeElement && (['mcCash', 'chatTxt', 'dtAmt', 'dtNote', 'lvMix', 'ciPick', 'lvPayTxt'].includes(document.activeElement.id) || (document.activeElement.tagName === 'INPUT' && /^ub/.test(document.activeElement.id || '')))) return;
   if (typeof ret !== 'undefined' && ret.busy) return; // ne pas effacer ce qu'il tape
   const s = mySoiree, mine = st(me.mid);
   let h = '';
@@ -682,7 +682,7 @@ async function refuseLoad(s) {
 // Version 5 : commandes, file 1-2-3, temps de route (Google Maps)
 // =====================================================================
 // commandes/{id}   : ce que le livreur a besoin de voir (client, adresse, L/XL, ce qu'il doit encaisser, bloqué ou non).
-// cmdPrive/{id}    : montants et paiement complet (Interac) : propriétaire et dispatchs seulement.
+// cmdPrive/{id}    : montants et paiement complet (EMT) : propriétaire et dispatchs seulement.
 // config/app       : prix et clé Google Maps (entrés par le propriétaire).
 // Règles de temps (décidées par le propriétaire) : 4 min de marge pour partir sur la 1re commande,
 // 2 min pour chacune des suivantes, 7 min sur place. Retard : gris jusqu'à 10 min, rouge après.
@@ -780,11 +780,11 @@ const lateTag = (m) => (m > 10 ? '<span class="late">+' + m + ' min retard</span
 const totalOf = (o) => (o.L || 0) * cfg.prixL + (o.XL || 0) * cfg.prixXL + (o.frais || 0);
 function payTag(c) {
   const p = prive[c.id] || {};
-  if (c.bloque) return '<span class="pay p-no">' + (p.mode === 'mix' ? p.cash + ' $ cash + Interac pas reçu' : p.mode === 'mixc' ? p.cash + ' $ cash + crypto pas reçu' : p.mode === 'cry' ? 'Crypto pas reçu' : 'Interac pas reçu') + '</span>';
+  if (c.bloque) return '<span class="pay p-no">' + (p.mode === 'mix' ? p.cash + ' $ cash + EMT pas reçu' : p.mode === 'mixc' ? p.cash + ' $ cash + crypto pas reçu' : p.mode === 'cry' ? 'Crypto pas reçu' : 'EMT pas reçu') + '</span>';
   if (p.mode === 'mixc') return '<span class="pay p-cash">' + p.cash + ' $ cash</span><span class="pay p-int" style="background:#3b2350;color:#c4b5fd">+ crypto reçu' + (c.crypto ? ' · ' + esc(c.crypto) : '') + '</span>';
   if (p.mode === 'cry') return '<span class="pay p-int" style="background:#3b2350;color:#c4b5fd">🟣 Crypto reçu' + (c.crypto ? ' · ' + esc(c.crypto) : '') + '</span>';
-  if (p.mode === 'mix') return '<span class="pay p-cash">' + p.cash + ' $ cash</span><span class="pay p-int">+ Interac reçu</span>';
-  if (p.mode === 'int') return '<span class="pay p-int">Interac reçu</span>';
+  if (p.mode === 'mix') return '<span class="pay p-cash">' + p.cash + ' $ cash</span><span class="pay p-int">+ EMT reçu</span>';
+  if (p.mode === 'int') return '<span class="pay p-int">EMT reçu</span>';
   return '<span class="pay p-cash">Cash ' + (c.encaisser || 0) + ' $</span>';
 }
 
@@ -803,9 +803,9 @@ function renderNew() {
     '<input id="nfAdr" placeholder="Adresse (ex. 5000 jean-talon)" autocomplete="off" value="' + esc(f.q) + '"><div id="nfSugs"></div>' +
     '<div class="step"><span>L</span><button data-k="L" data-d="-1">−</button><div class="v">' + f.L + '</div><button data-k="L" data-d="1">+</button>' +
     '<span style="margin-left:10px">XL</span><button data-k="XL" data-d="-1">−</button><div class="v">' + f.XL + '</div><button data-k="XL" data-d="1">+</button></div>' +
-    '<div class="small" style="margin-bottom:4px">Comment le client paie ?</div><div class="seg" id="nfMeth">' + [['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', '🔵🟡 Les deux']].map((x) => '<button data-m="' + x[0] + '" class="' + (f.meth === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
-    (f.meth === 'mix' ? '<div class="mixbox"><div class="two"><div><div class="small">Partie cash ($)</div><input id="nfCash" type="number" inputmode="numeric" value="' + f.cashPart + '"></div><div><div class="small">Partie Interac</div><div class="mixv" id="nfInt">' + Math.max(0, tot - f.cashPart) + ' $</div></div></div></div>' : '') +
-    (f.meth !== 'cash' ? '<label class="chk"><input type="checkbox" id="nfRecu" ' + (f.recu ? 'checked' : '') + '> ' + (f.meth === 'cry' ? 'Crypto' : 'Interac') + ' déjà reçu' + (f.recu ? '' : ' <span class="small">(sinon le livreur attend ta confirmation)</span>') + '</label>' : '') +
+    '<div class="small" style="margin-bottom:4px">Comment le client paie ?</div><div class="seg" id="nfMeth">' + [['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto'], ['mix', '🔵🟡 Les deux']].map((x) => '<button data-m="' + x[0] + '" class="' + (f.meth === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
+    (f.meth === 'mix' ? '<div class="mixbox"><div class="two"><div><div class="small">Partie cash ($)</div><input id="nfCash" type="number" inputmode="numeric" value="' + f.cashPart + '"></div><div><div class="small">Partie EMT</div><div class="mixv" id="nfInt">' + Math.max(0, tot - f.cashPart) + ' $</div></div></div></div>' : '') +
+    (f.meth !== 'cash' ? '<label class="chk"><input type="checkbox" id="nfRecu" ' + (f.recu ? 'checked' : '') + '> ' + (f.meth === 'cry' ? 'Crypto' : 'EMT') + ' déjà reçu' + (f.recu ? '' : ' <span class="small">(sinon le livreur attend ta confirmation)</span>') + '</label>' : '') +
     (f.meth === 'cry' && f.recu ? '<div class="small" style="margin:2px 0 4px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div><div class="seg" id="nfCoin">' + COINS.map((x) => '<button data-k="' + x[0] + '" class="' + (f.coin === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
       (f.coin === 'autre' ? '<input id="nfCoinA" placeholder="Laquelle ? (ex. LTC)" value="' + esc(f.coinA || '') + '">' : '') : '') +
     (f.plus ? '<input id="nfTel" placeholder="Téléphone du client (optionnel)" inputmode="tel" value="' + esc(f.tel) + '">' +
@@ -1071,7 +1071,7 @@ function renderQueues() {
     const nom = c.livreurNom || nomDe(c.livreur), m = c.statut === 'ici' ? minDe(c.iciLe) : 0, dp = c.demandePaie;
     const t = c.statut === 'ici' ? tsMs(c.iciLe) : tsMs(dp && dp.le);
     if (dp) now.push({ red: 1, t, s: nom + ' · ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' · ' + esc(c.client) + ' : paiement à confirmer</b><small>' + esc(demPaieTxt(dp, c)) + '</small></div>' });
-    else if (c.bloque) now.push({ red: 1, t, s: nom + ' chez ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>Interac pas reçu — il attend</small></div>' });
+    else if (c.bloque) now.push({ red: 1, t, s: nom + ' chez ' + c.client, h: '<div class="dc red" data-focus="' + c.id + '"><b>💳 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>EMT pas reçu — il attend</small></div>' });
     else if (m >= 8) now.push({ red: 1, t, s: nom + ' chez ' + c.client + ' ' + m + ' min', h: '<div class="dc red" data-focus="' + c.id + '"><b>⏳ ' + esc(nom) + ' chez ' + esc(c.client) + ' depuis ' + m + ' min</b><small>Ça prend du temps</small></div>' });
     else if (c.type) now.push({ red: 0, t, s: c.client + ' chez ' + nom, h: '<div class="dc grn" data-focus="' + c.id + '"><b>📍 ' + esc(c.client) + ' est chez ' + esc(nom) + '</b>' + (c.type === 'uber' ? ' (Uber)' : ' (pick-up)') + '<small>' + (c.encaisser > 0 ? 'encaisse ' + c.encaisser + ' $ cash' : 'déjà payé ✓') + '</small></div>' });
     else now.push({ red: 0, t, s: nom + ' chez ' + c.client, h: '<div class="dc grn" data-focus="' + c.id + '"><b>📍 ' + esc(nom) + ' est chez ' + esc(c.client) + '</b> · depuis ' + m + ' min<small>' + (c.encaisser > 0 ? 'encaisse ' + c.encaisser + ' $ cash' : 'déjà payé ✓') + '</small></div>' });
@@ -1083,7 +1083,7 @@ function renderQueues() {
     const w = minDe(c.creeLe), old = w >= 5;
     return { red: old ? 1 : 0, t: tsMs(c.creeLe), s: c.client + ' · ' + qtyTxt(c) + (old ? ' · ' + w + ' min' : ''),
       h: '<div class="dc ' + (old ? 'red' : 'org') + '" data-focus="' + c.id + '"><b>' + (old ? '⚠️ ' : '') + 'Nouvelle : ' + esc(c.client) + '</b> · ' + esc(qtyTxt(c)) + (old ? ' · attend depuis ' + w + ' min' : '') +
-        '<small>' + esc(c.adresse) + ' · ' + esc(c.bloque ? 'Interac pas reçu' : c.encaisser > 0 ? 'cash ' + c.encaisser + ' $' : 'Interac reçu ✓') + '</small></div>' };
+        '<small>' + esc(c.adresse) + ' · ' + esc(c.bloque ? 'EMT pas reçu' : c.encaisser > 0 ? 'cash ' + c.encaisser + ' $' : 'EMT reçu ✓') + '</small></div>' };
   }).sort((a, b) => (b.red - a.red) || (a.t - b.t));
   if ($('freeLbl')) $('freeLbl').textContent = 'À assigner' + (free.length ? ' (' + free.length + ')' : '');
   $('freeList').innerHTML = free.length ? cardsWithMore(free, freeMore, 'free') : '<div class="small" style="margin:0 2px 8px">Tout est assigné ✓</div>';
@@ -1108,7 +1108,7 @@ setInterval(() => { if (me && (isOwner() || isStaff()) && curTab === 'direct' &&
 function msgBox(c, eta) {
   if (c.type === 'uber' && c.uberLien) eta = c.uberEta || eta;
   const t = c.type === 'pickup' ? 'Salut ' + prenom(c.client) + ' ! Tu peux venir chercher ta commande ici : ' + (c.pickAdr || '(adresse pas encore entrée)') + '. Écris-moi quand tu arrives.'
-    : c.type === 'uber' ? (c.uberLien ? 'Salut ' + prenom(c.client) + ' ! Ta commande est en route en Uber, arrivée vers ' + hm(eta) + '. Suis-la ici : ' + c.uberLien : 'Salut ' + prenom(c.client) + ' ! On commande ton Uber dès que l’Interac est confirmé.') : 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison ici : ' + SUIVI + c.suivi : '');
+    : c.type === 'uber' ? (c.uberLien ? 'Salut ' + prenom(c.client) + ' ! Ta commande est en route en Uber, arrivée vers ' + hm(eta) + '. Suis-la ici : ' + c.uberLien : 'Salut ' + prenom(c.client) + ' ! On commande ton Uber dès que l’EMT est confirmé.') : 'Salut ' + prenom(c.client) + ' ! Ton livreur arrive dans environ ' + Math.max(1, Math.round((eta - Date.now()) / 60000)) + ' minutes.' + (c.suivi ? ' Suis ta livraison ici : ' + SUIVI + c.suivi : '');
   return '<div class="msgc">' + esc(t) + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-copy="' + esc(t) + '">Copier</button>' +
     (c.tel ? '<a class="btn ok sm" style="text-align:center;text-decoration:none" href="sms:' + encodeURIComponent(c.tel) + '?&body=' + encodeURIComponent(t) + '">Texto à ' + esc(c.tel) + '</a>' : '<span class="small" style="align-self:center">Pas de téléphone : copie-le où tu parles au client.</span>') + '</div></div>';
 }
@@ -1165,46 +1165,98 @@ function alertBar(t) { const el = $('dErr'); if (el) { el.textContent = t; setTi
 
 // ---------- Ma file (livreur) ----------
 const mapsUrl = (c) => 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + encodeURIComponent(c.lat != null ? c.lat + ',' + c.lon : c.adresse);
-// v22 : une commande en grand, l'heure d'arrivée suggérée, 3 boutons (Paiement · +5 min · Autre) et un seul gros bouton.
-// Le reste (stock, livraisons, la suite de la file) est sous « Ma soirée ▾ ». Plus de chat avec le client ici.
-const lv = { panel: null, mix: '' };
+// v52 : écran livreur plein écran, une étape à la fois.
+//  1. Reçue : adresse en gros (Google Maps), client en petit, 📦 Commande, « 🚗 Je suis en route » (avertit le dispatch).
+//  2. En route : l'heure d'arrivée en gros, la commande en petit, « ⏱ +5 min » (sans alerte) et « 📍 Je suis arrivé ».
+//  3. Sur place : « Le client veut quoi ? » (+ / −, bloqué au stock) → OK → « Le client paie comment ? » (il écrit : 150 emt reste cash).
+//  4. « 💵 X $ cash reçu ? » + l'EMT / crypto que le dispatch confirme (Reçu · Pas reçu · Dette) → « Tu peux donner » → Commande suivante.
+const lv = { panel: null, for: null, step: 'cmd', L: 0, XL: 0, pay: '', p: null, cashOk: false, ok: false, err: '', busy: false, waitDig: false };
+const LV_KEY = 'gothamLv';
+function lvSave() { try { localStorage.setItem(LV_KEY, JSON.stringify({ for: lv.for, step: lv.step, p: lv.p, cashOk: lv.cashOk, ok: lv.ok, L: lv.L, XL: lv.XL })); } catch (e) {} }
+function lvLoad(id) { try { const x = JSON.parse(localStorage.getItem(LV_KEY) || 'null'); if (x && x.for === id) return x; } catch (e) {} return null; }
+const totNow = (c, L, XL) => L * cfg.prixL + XL * cfg.prixXL + (Number(c.frais) || 0);
+const dueOf = (c) => (c.bloque ? totNow(c, c.L || 0, c.XL || 0) : Math.max(0, Number(c.encaisser) || 0));
+// « 150 emt reste cash », « 100 cash 80 crypto reste emt », « tout cash », « crypto » → { cash, emt, cry } ; null si on ne comprend pas.
+function parsePaie(t, tot) {
+  t = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const key = (w) => (/^(emt|imt|interac|int|virement|etransfer|e-transfer)$/.test(w) ? 'emt' : /^(crypto|btc|usdt|bitcoin)$/.test(w) ? 'cry' : /^(cash|comptant|cache|cach)$/.test(w) ? 'cash' : null);
+  const r = { cash: 0, emt: 0, cry: 0 }; let ok = false, rest = null, m;
+  const re = /(\d+)\s*\$?\s*(?:en\s+)?([a-z-]+)/g;
+  while ((m = re.exec(t))) { const k = key(m[2]); if (k) { r[k] += Number(m[1]); ok = true; } }
+  const rm = t.match(/(reste|tout)\s+(?:en\s+)?([a-z-]+)/); if (rm && key(rm[2])) { rest = key(rm[2]); ok = true; }
+  if (!ok && key(t.trim())) { rest = key(t.trim()); ok = true; }
+  if (/\d/.test(t.replace(/(\d+)\s*\$?\s*(?:en\s+)?([a-z-]+)/g, (a, n, w) => (key(w) ? '' : a)))) return null; // un chiffre sans « cash / emt / crypto »
+  if (rest) r[rest] += Math.max(tot - r.cash - r.emt - r.cry, 0);
+  return ok ? r : null;
+}
+const payLine = (p) => [p.cash ? '💵 ' + p.cash + ' $ cash' : '', p.emt ? '📲 ' + p.emt + ' $ EMT' : '', p.cry ? '🟣 ' + p.cry + ' $ crypto' : ''].filter(Boolean).join('<br>');
+function lvFx(k) { // ✅ vert 2 secondes + vibration + petit son
+  try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) {}
+  try { const A = new (window.AudioContext || window.webkitAudioContext)(); [0, 0.18].forEach((d, i) => { const o = A.createOscillator(), g = A.createGain(); o.frequency.value = i ? 1320 : 880; g.gain.setValueAtTime(0.0001, A.currentTime + d); g.gain.exponentialRampToValueAtTime(0.3, A.currentTime + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, A.currentTime + d + 0.3); o.connect(g); g.connect(A.destination); o.start(A.currentTime + d); o.stop(A.currentTime + d + 0.32); }); } catch (e) {}
+  const c = myCmds[0], ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:80;background:#16a34a;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px';
+  ov.innerHTML = '<div style="font-size:84px">✅</div><div style="font-size:34px;font-weight:900">' + esc(k) + ' REÇU</div><div style="font-size:21px;margin-top:10px">Tu peux donner<br><b>' + esc(c ? qtyTxt(c).replace(' · ', ' + ') : '') + '</b></div>';
+  ov.onclick = () => ov.remove(); document.body.appendChild(ov); setTimeout(() => ov.remove(), 2200);
+}
 function myOrdersHtml(s) {
   const mine = st(me.mid);
   const plan = myCmds.length ? planOf(myCmds) : [];
   const soir = '<details class="card" style="margin-top:4px"><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' livraison' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
-    (myCmds.length > 1 ? '<div class="label" style="margin-top:10px">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + ' · ' + esc(qtyTxt(d)) + '</span><div class="small" style="margin-top:3px">📍 ' + esc(d.adresse) + '</div></div>').join('') : '<div class="small" style="margin-top:8px">Pas d’autre commande dans ta file.</div>') +
+    (myCmds.length > 1 ? '<div class="label" style="margin-top:10px">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + ' · ' + esc(qtyTxt(d)) + '</span><div class="small" style="margin-top:3px">📍 ' + esc(d.adresse) + '</div></div>').join('') : '<div class="small" style="margin-top:8px">Rien d’autre en attente.</div>') +
     '<p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse || '') + '</p></details>';
   if (!myCmds.length) return '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🌙</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’en enverra une ici.</div></div>' + soir + venteHtml(s) + finCard(s);
-  const c = myCmds[0], dp = c.demandePaie, bloque = c.bloque || !!dp;
-  const late = c.retard ? ' <span style="color:var(--danger);font-size:14px">+' + c.retard + ' min</span>' : '';
-  const when = c.statut === 'ici' ? '<div style="margin:10px 0 2px;font-size:16px">📍 Sur place depuis ' + minDe(c.iciLe) + ' min</div>'
-    : '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:10px 0 2px"><span class="small">Arrivée suggérée</span><span style="font-size:26px;font-weight:800">' + hm(plan[0]) + '</span>' + late + '</div>';
-  const band = dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.mode === 'cry' ? 'Tout en crypto' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
-    : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
-    : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
-    : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
-  let h = '<div class="card now"><div class="small">Commande 1 sur ' + myCmds.length + (myCmds[1] ? ' · ensuite : ' + esc(myCmds[1].client) : '') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) + qtyChips(c) +
-    '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b></span></a>' + when + band + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') +
-    '<div class="err" id="mcErr"></div>' +
-    '<div style="display:flex;gap:6px;margin:12px 0 8px"><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvPay">💳 Paiement</button>' +
-    (c.statut !== 'ici' ? '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="mcLate">⏱ +5 min</button>' : '') +
-    '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvQty">✏️ Quantité</button>' +
-    '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvMore">⋯ Autre</button></div>' + lvPanel(c);
-  if (c.statut !== 'ici') h += '<button class="btn ok" id="mcHere" style="padding:18px;font-size:18px">Je suis arrivé</button>';
-  else if (bloque) h += '<button class="btn" disabled style="padding:18px;font-size:17px">🔒 Livrée (attends le paiement)</button>';
-  else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + Math.max(0, c.encaisser - detteSur(c)) + '">' : '') + '<button class="btn ok" id="mcDone" style="padding:18px;font-size:18px">✓ Livrée</button>';
+  const c = myCmds[0];
+  if (lv.for !== c.id) { const x = lvLoad(c.id); Object.assign(lv, { for: c.id, panel: null, step: 'cmd', L: c.L || 0, XL: c.XL || 0, pay: '', p: null, cashOk: false, ok: false, err: '', busy: false, waitDig: false }, x || {}); }
+  const dp = c.demandePaie;
+  // Le dispatch vient de répondre à l'EMT / crypto ?
+  if (dp) lv.waitDig = true;
+  else if (lv.waitDig) { lv.waitDig = false; if (!c.bloque) { lv.ok = true; lvSave(); const k = lv.p && lv.p.emt ? 'EMT' : 'CRYPTO'; setTimeout(() => lvFx(k), 50); } }
+  const top = '<div class="small" style="display:flex;justify-content:space-between"><span>Commande 1 sur ' + myCmds.length + '</span>' + (myCmds[1] ? '<span>ensuite : ' + esc(myCmds[1].client) + '</span>' : '') + '</div>';
+  const addr = '<a class="lvAddr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener">' + esc(c.adresse) + '<small>touche pour ouvrir Google Maps ↗</small></a><div class="lvCli">' + esc(c.client) + '</div>' + testTag(c) + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '');
+  const more = '<div class="lvMore"><button class="linkbtn" id="lvMore">⋯ Autre</button></div>' + lvPanel(c);
+  let h = '<div class="card now lvFull">' + top;
+  if (c.statut !== 'ici' && !c.enRouteLe) {
+    h += '<div class="lvLbl">Nouvelle commande</div>' + addr + '<div class="lvGrow"></div><div class="lvCmd"><div class="lvCmdT">📦 Commande</div><div class="lvTiles"><div><b>' + (c.L || 0) + '</b><span>L</span></div><div><b>' + (c.XL || 0) + '</b><span>XL</span></div></div></div><div class="lvGrow"></div>' +
+      '<div class="err" id="mcErr"></div><button class="btn lvBig lvGo" id="lvRoute">🚗 Je suis en route</button>' + more;
+  } else if (c.statut !== 'ici') {
+    h += '<span class="lvState">🚗 En route</span>' + addr + '<div class="lvGrow"></div><div class="lvEta">' + hm(plan[0]) + '<small>arrivée prévue' + (c.retard ? ' · <b style="color:#fbbf24">+' + c.retard + ' min</b>' : '') + '</small></div><div class="lvGrow"></div>' +
+      '<div class="lvCmdLine">📦 Commande : <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div><div class="err" id="mcErr"></div>' +
+      '<button class="btn lvBig lvGrey" id="mcLate">⏱ +5 min</button><button class="btn lvBig ok" id="mcHere">📍 Je suis arrivé</button>' + more;
+  } else if (!dp && lv.step === 'cmd') {
+    const others = myCmds.slice(1), maxL = (mine.L || 0) - others.reduce((a, x) => a + (x.L || 0), 0), maxXL = (mine.XL || 0) - others.reduce((a, x) => a + (x.XL || 0), 0);
+    const row = (k, mx) => '<div class="lvCtr"><button data-lq="' + k + '|-1">−</button><div><span>' + lv[k] + '</span> ' + k + '</div><button data-lq="' + k + '|1"' + (!c.test && lv[k] >= mx ? ' style="opacity:.3"' : '') + '>+</button></div>';
+    const tot = totNow(c, lv.L, lv.XL);
+    h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvQ">Le client veut quoi ?</div>' + row('L', maxL) + row('XL', maxXL) +
+      '<div class="small" style="text-align:center">Sur toi : ' + esc(qty(mine)) + '</div><div class="err" id="mcErr" style="text-align:center">' + esc(lv.err) + '</div>' +
+      '<div class="lvPrice">Prix<b>' + (lv.L + lv.XL ? money(tot) : '—') + '</b></div><div class="lvGrow"></div>' +
+      '<button class="btn lvBig lvGrey" id="lvCmdOk"' + (lv.L + lv.XL && !lv.busy ? '' : ' disabled') + '>' + (lv.busy ? '…' : 'OK') + '</button>' + more;
+  } else if (!dp && lv.step === 'pay') {
+    const due = dueOf(c), p = parsePaie(lv.pay, due), sum = p ? p.cash + p.emt + p.cry : 0, diff = due - sum;
+    h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvOkBar"><span>✓ ' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</span><b>' + (due < totNow(c, c.L || 0, c.XL || 0) ? 'À payer ' : 'Total ') + money(due) + '</b></div>' +
+      '<div class="lvQ">Le client paie comment ?</div><input id="lvPayTxt" class="lvTxt" autocomplete="off" autocapitalize="none" value="' + esc(lv.pay) + '">' +
+      '<div id="lvPayRead">' + lvPayRead(p, due, diff) + '</div><div class="err" id="mcErr">' + esc(lv.err) + '</div><div class="lvGrow"></div>' +
+      '<button class="btn lvBack" id="lvBack">↩️ Le client change d’avis (retour à la commande)</button><button class="btn lvBig ok" id="lvPayOk"' + (lv.busy ? ' disabled' : '') + '>' + (lv.busy ? '…' : 'OK') + '</button>';
+  } else {
+    const p = dp ? { cash: Number(dp.cashDonne != null ? dp.cashDonne : dp.cash) || 0, emt: Number(dp.emt) || 0, cry: Number(dp.cry) || 0 } : (lv.p || { cash: 0, emt: 0, cry: 0 });
+    const dig = p.emt + p.cry, digOk = !dig || (!dp && !c.bloque), cashOk = !p.cash || lv.cashOk, all = digOk && cashOk && !c.bloque;
+    const dl = [p.emt ? p.emt + ' $ EMT' : '', p.cry ? p.cry + ' $ crypto' : ''].filter(Boolean).join(' + ');
+    h += '<div class="lvLbl">Paiement · ' + esc(c.client) + ' · ' + money(p.cash + dig) + '</div><div class="lvCli" style="margin-bottom:6px">' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</div>' +
+      (p.cash ? (lv.cashOk ? '<div class="lvPay lvDone">✅ ' + p.cash + ' $ cash reçu</div>' : '<button class="btn lvPay" id="lvCash">💵 ' + p.cash + ' $ cash reçu ?<small>appuie quand tu as l’argent en main</small></button>') : '') +
+      (dig ? (digOk ? '<div class="lvPay lvDone">✅ ' + dl + ' reçu<small>confirmé par le dispatch</small></div>'
+        : '<div class="lvPay lvWait">⏳ ' + dl + '<small' + (dp && dp.pasRecu ? ' style="color:#fca5a5">pas encore reçu — en attente, ne pas donner' : '>attends que le dispatch confirme') + '</small></div>') : '') +
+      (!dig && !p.cash ? '<div class="lvPay lvDone">✅ Déjà payé</div>' : '') +
+      '<div class="lvGrow"></div><div class="err" id="mcErr"></div>' + (all ? '<div class="lvGive">✅ Tu peux donner <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div>' : '<div class="lvWarn">⚠️ Ne donne rien tant que tout n’est pas ✅</div>') +
+      '<button class="btn lvBig lvGo" id="mcDone"' + (all ? '' : ' disabled') + '>➡️ Commande suivante</button>';
+  }
   h += '</div>' + soir + venteHtml(s);
   return h;
 }
+function lvPayRead(p, due, diff) {
+  if (!lv.pay.trim()) return '';
+  if (!p) return '<div class="err">⛔ Je comprends pas — écris le montant avec EMT, cash ou crypto.</div>';
+  return '<div class="lvRead">' + payLine(p) + '<div style="margin-top:4px;font-weight:700;color:' + (diff > 0 ? '#fbbf24' : '#4ade80') + '">' + (diff === 0 ? '✓ ' + money(due) : diff > 0 ? 'Il manque ' + money(diff) : '+' + money(-diff) + ' de pourboire pour toi 🎉') + '</div></div>';
+}
 function lvPanel(c) {
-  if (lv.panel === 'qty') return qtyPanel(c); // v42
-  if (lv.panel === 'pay') return '<div class="msgc" style="margin-bottom:8px"><div class="small" style="margin-bottom:6px">' + esc(c.client) + ' paie comment ?</div>' +
-    '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="cash">💵 Tout en cash</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="int">📲 Tout en Interac</button><button class="btn ghost sm" style="margin-bottom:6px;border-color:#8b5cf6" data-lp="cry">🟣 Tout en crypto</button>' +
-    '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="mix">💵📲 Une partie cash + le reste Interac</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="dette">📒 Il paie plus tard (dette)</button>' +
-    '<button class="linkbtn" data-lp="x">Fermer</button></div>';
-  if (lv.panel === 'mix') return '<div class="msgc" style="margin-bottom:8px"><div class="small">Tape le cash qu’il te donne. Le reste, il l’envoie en Interac et le dispatch confirme.</div>' +
-    '<input id="lvMix" type="number" inputmode="numeric" placeholder="Cash reçu ($)" value="' + esc(lv.mix) + '"><div class="two"><button class="btn ghost sm" data-lp="x">Annuler</button><button class="btn sm" id="lvMixGo">Envoyer au dispatch</button></div></div>';
-  if (lv.panel === 'dette') return detteDoor(c);
   if (lv.panel === 'more') return '<div class="msgc" style="margin-bottom:8px"><a class="btn ghost sm" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px" href="' + mapsUrl(c) + '" target="_blank" rel="noopener">🗺️ Ouvrir dans Google Maps</a>' +
     '<button class="btn ghost sm" style="margin-bottom:6px" data-lm="rep">📞 Le client répond pas</button><button class="btn ghost sm" style="margin-bottom:6px" data-lm="no">↩️ Je ne peux pas livrer</button><button class="linkbtn" data-lp="x">Fermer</button></div>';
   return '';
@@ -1213,27 +1265,73 @@ function bindMyOrders(s) {
   const c = myCmds[0];
   watchChat(null); syncEtas();
   if (!c) return;
-  if (lv.for !== c.id) { lv.for = c.id; lv.panel = null; lv.mix = ''; }
   const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
-  if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit().then(() => notifyDispatch('⏱ ' + me.nom + ' +5 min (' + c.client + ')')));
-  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client + (c.bloque ? ' · pas payé' : ''))); });
-  if ($('lvPay')) $('lvPay').onclick = () => { lv.panel = lv.panel ? null : 'pay'; if (lv.panel === null) delete dt.door[c.id]; renderSoiree(); };
   if ($('lvMore')) $('lvMore').onclick = () => { lv.panel = lv.panel === 'more' ? null : 'more'; renderSoiree(); };
-  if ($('lvQty')) $('lvQty').onclick = () => { lv.panel = lv.panel === 'qty' ? null : 'qty'; qv.L = c.L || 0; qv.XL = c.XL || 0; qv.err = ''; renderSoiree(); };
-  bindQty(c);
-  document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => {
-    const k = b.dataset.lp;
-    if (k === 'x') { lv.panel = null; delete dt.door[c.id]; return renderSoiree(); }
-    if (k === 'mix') { lv.panel = 'mix'; return renderSoiree(); }
-    if (k === 'dette') { lv.panel = 'dette'; dt.door[c.id] = { resp: 'moi', amt: c.encaisser || '', note: '' }; return renderSoiree(); }
-    lv.panel = null; act(() => askPaie(c, { mode: k }));
-  }; });
-  if ($('lvMix')) $('lvMix').oninput = (e) => { lv.mix = e.target.value; };
-  if ($('lvMixGo')) $('lvMixGo').onclick = () => { const x = Math.round(Number(lv.mix) || 0); if (x <= 0) { $('mcErr').textContent = 'Écris le cash reçu.'; return; } lv.panel = null; act(() => askPaie(c, { mode: 'mix', cash: x })); };
+  document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => { lv.panel = null; renderSoiree(); }; });
   document.querySelectorAll('#soiree [data-lm]').forEach((b) => { b.onclick = () => { lv.panel = null; const t = b.dataset.lm === 'rep' ? c.client + ' répond pas à la porte' : 'Je ne peux pas livrer ' + c.client; act(() => sendMsg(me.mid, 'livreur', t)); }; });
-  bindDetteDoor(c);
+  // 1 → 2
+  if ($('lvRoute')) $('lvRoute').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { enRouteLe: serverTimestamp() }).commit().then(() => notifyDispatch('🚗 ' + me.nom + ' est en route chez ' + c.client)));
+  // 2 : +5 min (le dispatch voit juste la nouvelle heure) · arrivé (le dispatch est averti)
+  if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
+  if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client)); });
+  // 3 : la commande
+  document.querySelectorAll('#soiree [data-lq]').forEach((b) => { b.onclick = () => {
+    const [k, d] = b.dataset.lq.split('|'), n = lv[k] + Number(d), mine = st(me.mid);
+    const mx = (mine[k] || 0) - myCmds.slice(1).reduce((a, x) => a + (x[k] || 0), 0);
+    if (Number(d) > 0 && !c.test && n > mx) { lv.err = '⛔ Tu as seulement ' + Math.max(0, mx) + ' ' + k + ' sur toi'; return renderSoiree(); }
+    lv.err = ''; lv[k] = Math.max(0, n); renderSoiree();
+  }; });
+  if ($('lvCmdOk')) $('lvCmdOk').onclick = async () => {
+    const L = lv.L, XL = lv.XL, dL = L - (c.L || 0), dXL = XL - (c.XL || 0);
+    if (L + XL <= 0) return;
+    if (dL || dXL) {
+      const d = dL * cfg.prixL + dXL * cfg.prixXL, enc = (Number(c.encaisser) || 0) + d;
+      if (enc < 0) { lv.err = 'Le client a déjà payé plus que ça : écris au dispatch.'; return renderSoiree(); }
+      const pm = c.paieMode || payOld(c), nm = d > 0 && pm === 'int' ? 'mix' : d > 0 && pm === 'cry' ? 'mixc' : pm;
+      lv.busy = true; renderSoiree();
+      try {
+        await writeBatch(db).update(doc(db, 'commandes', c.id), Object.assign({ L, XL, encaisser: enc, qtyDelta: (c.qtyDelta || 0) + d, qtyAvant: c.qtyAvant || { L: c.L || 0, XL: c.XL || 0 }, qtyLe: serverTimestamp(), qtyPorte: true },
+          c.paieMode && nm !== c.paieMode ? { paieMode: nm } : {}, enc > 0 && c.paye ? { paye: false } : {})).commit();
+      } catch (e) { lv.busy = false; lv.err = msg(e); return renderSoiree(); }
+      lv.busy = false;
+    }
+    const enc2 = (Number(c.encaisser) || 0) + dL * cfg.prixL + dXL * cfg.prixXL;
+    lv.err = ''; lv.pay = '';
+    if (!c.bloque && enc2 <= 0) { lv.p = { cash: 0, emt: 0, cry: 0 }; lv.step = 'wait'; } // déjà payé : rien à demander
+    else lv.step = 'pay';
+    lvSave(); renderSoiree();
+  };
+  // 3b : le paiement
+  if ($('lvPayTxt')) {
+    $('lvPayTxt').oninput = (e) => { lv.pay = e.target.value; lv.err = ''; const due = dueOf(c), p = parsePaie(lv.pay, due); $('lvPayRead').innerHTML = lvPayRead(p, due, due - (p ? p.cash + p.emt + p.cry : 0)); if ($('mcErr')) $('mcErr').textContent = ''; };
+  }
+  if ($('lvBack')) $('lvBack').onclick = () => { if ($('lvPayTxt')) $('lvPayTxt').blur(); lv.step = 'cmd'; lv.L = c.L || 0; lv.XL = c.XL || 0; lv.err = ''; lvSave(); renderSoiree(); };
+  if ($('lvPayOk')) $('lvPayOk').onclick = async () => {
+    if ($('lvPayTxt')) { lv.pay = $('lvPayTxt').value; $('lvPayTxt').blur(); }
+    const due = dueOf(c), p = parsePaie(lv.pay, due);
+    if (!p) { lv.err = '⛔ Je comprends pas — écris le montant avec EMT, cash ou crypto.'; return renderSoiree(); }
+    const sum = p.cash + p.emt + p.cry;
+    if (sum < due) { lv.err = '⛔ Il manque ' + money(due - sum) + ' — le total doit être payé.'; return renderSoiree(); }
+    if (p.emt && p.cry) { lv.err = '⛔ EMT et crypto ensemble : pas possible. Garde un des deux (avec du cash si tu veux).'; return renderSoiree(); }
+    const dig = p.emt + p.cry;
+    lv.busy = true; renderSoiree();
+    try {
+      if (dig) {
+        const mode = p.cash ? (p.emt ? 'mix' : 'mixc') : (p.emt ? 'int' : 'cry');
+        const cashPart = Math.max(0, due - dig); // le cash qui compte pour la commande (le reste = pourboire)
+        await writeBatch(db).update(doc(db, 'commandes', c.id), { demandePaie: { mode, cash: cashPart, emt: p.emt, cry: p.cry, cashDonne: p.cash, le: Date.now() } }).commit();
+        notifyDispatch('💳 ' + me.nom + ' · ' + c.client + ' : ' + [p.emt ? p.emt + ' $ EMT' : '', p.cry ? p.cry + ' $ crypto' : ''].filter(Boolean).join(' + ') + ' à confirmer' + (p.cash ? ' · ' + p.cash + ' $ cash' : ''));
+      } else if (c.bloque) {
+        await writeBatch(db).update(doc(db, 'commandes', c.id), { bloque: false, encaisser: totNow(c, c.L || 0, c.XL || 0), paieMode: 'cash', paye: false, porteLe: serverTimestamp() }).commit();
+      }
+      lv.p = p; lv.step = 'wait'; lv.cashOk = false; lv.ok = false; lv.err = ''; lvSave();
+    } catch (e) { lv.err = msg(e); }
+    lv.busy = false; renderSoiree();
+  };
+  // 4
+  if ($('lvCash')) $('lvCash').onclick = () => { lv.cashOk = true; lvSave(); renderSoiree(); };
   if ($('mcDone')) $('mcDone').onclick = () => act(async () => {
-    const cash = $('mcCash') ? Math.max(0, Number($('mcCash').value) || 0) : 0;
+    const dp = c.demandePaie, p = lv.p || { cash: 0 }, cash = Math.max(0, Number(dp ? dp.cashDonne || dp.cash : p.cash) || 0);
     const b = writeBatch(db);
     b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: cash, soiree: s.id, ...(paies[me.mid] != null && !c.test ? { paie: paies[me.mid] } : {}) });
     const der = c.lat != null ? { dernier: { lat: c.lat, lon: c.lon, adresse: c.adresse || '', le: Date.now() } } : {}; // v45 : sa position = la dernière livraison
@@ -1244,13 +1342,46 @@ function bindMyOrders(s) {
     const nx = myCmds[1];
     if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 }); // la suivante part maintenant (2 min de marge)
     await b.commit();
+    try { localStorage.removeItem(LV_KEY); } catch (e) {}
     closeSuivi(c.suivi, 'livree');
   });
 }
+
+// v52 : styles de l'écran livreur plein écran
+(function () { if (document.getElementById('lvCss')) return; const st2 = document.createElement('style'); st2.id = 'lvCss'; st2.textContent =
+  '.lvFull{display:flex;flex-direction:column;min-height:calc(100dvh - 170px)}' +
+  '.lvGrow{flex:1;min-height:10px}' +
+  '.lvLbl{font-size:12px;color:#9aa0a6;text-transform:uppercase;letter-spacing:.04em;margin-top:8px}' +
+  '.lvAddr{display:block;color:#fff;text-decoration:none;font-size:27px;font-weight:800;line-height:1.15;margin:6px 0 4px}' +
+  '.lvAddr small{display:block;font-size:13px;color:#7fa8ff;font-weight:600;margin-top:4px}' +
+  '.lvCli{font-size:15px;color:#b6bcc6}' +
+  '.lvCmd{background:linear-gradient(180deg,#1f2a44,#182033);border:2px solid #3b82f6;border-radius:20px;padding:14px;text-align:center}' +
+  '.lvCmdT{font-size:22px;font-weight:900;color:#60a5fa;margin-bottom:10px}' +
+  '.lvTiles{display:flex;gap:10px;justify-content:center}.lvTiles div{flex:1;max-width:150px;background:#0f1626;border-radius:16px;padding:10px 0}' +
+  '.lvTiles b{display:block;font-size:52px;line-height:1;color:#fff;font-weight:900}.lvTiles span{font-size:20px;font-weight:800;color:#93c5fd}' +
+  '.lvBig{width:100%;padding:20px!important;font-size:20px!important;font-weight:800;border-radius:18px!important;margin-top:10px}' +
+  '.lvGo{background:#3b82f6!important;color:#fff!important}.lvGrey{background:#2a303a!important;color:#fff!important}' +
+  '.lvBig:disabled{opacity:.35}' +
+  '.lvState{align-self:flex-start;background:#1e3a8a;color:#bfdbfe;border-radius:999px;padding:4px 10px;font-size:13px;font-weight:700;margin:8px 0 4px}.lvSt2{background:#14532d;color:#bbf7d0}' +
+  '.lvEta{font-size:68px;font-weight:900;text-align:center;line-height:1}.lvEta small{display:block;font-size:15px;color:#9aa0a6;font-weight:500;margin-top:6px}' +
+  '.lvCmdLine{text-align:center;font-size:17px;color:#93c5fd;background:#141b29;border:1px solid #24324d;border-radius:12px;padding:9px}.lvCmdLine b{color:#dbeafe}' +
+  '.lvQ{font-size:22px;font-weight:800;margin:10px 0}' +
+  '.lvCtr{display:flex;align-items:center;justify-content:space-between;background:#1b2029;border-radius:14px;padding:12px 14px;margin-bottom:8px;font-size:18px}' +
+  '.lvCtr span{font-size:30px;font-weight:900}.lvCtr button{width:56px;height:56px;border-radius:14px;border:0;background:#2a303a;color:#fff;font-size:28px;font-weight:800}' +
+  '.lvPrice{text-align:center;font-size:16px;margin-top:8px;color:#cbd5e1}.lvPrice b{display:block;font-size:46px;color:#fff}' +
+  '.lvOkBar{display:flex;justify-content:space-between;gap:8px;background:#0f2a1a;border:1px solid #166534;border-radius:12px;padding:10px 12px;font-size:15px;color:#bbf7d0}.lvOkBar b{color:#fff;font-size:17px}' +
+  '.lvTxt{width:100%;background:#1b2029!important;border:2px solid #3a414d!important;border-radius:14px!important;color:#fff;font-size:22px!important;font-weight:700;padding:14px!important}' +
+  '.lvRead{background:#1b2029;border-radius:14px;padding:12px 14px;margin-top:10px;font-size:16px;line-height:1.6}' +
+  '.lvBack{width:100%;background:transparent!important;border:1px solid #3a414d!important;color:#cbd5e1!important;border-radius:14px!important;padding:12px!important;font-size:14.5px!important;font-weight:700}' +
+  '.lvPay{display:block;width:100%;border:0;border-radius:18px;padding:18px;font-size:20px;font-weight:800;margin-top:10px;text-align:center;background:#f5c518;color:#111}' +
+  '.lvPay small{display:block;font-size:13px;font-weight:600;margin-top:3px}.lvDone{background:#14532d;color:#bbf7d0}.lvWait{background:#2a2410;color:#fcd34d;border:2px dashed #b45309}' +
+  '.lvGive{text-align:center;font-size:18px;color:#86efac;margin-bottom:4px}.lvGive b{color:#fff}.lvWarn{text-align:center;font-size:14px;color:#fbbf24}' +
+  '.lvMore{text-align:center;margin-top:8px}';
+  document.head.appendChild(st2); })();
 // Le livreur dit comment le client paie vraiment ; le dispatch confirme (carte rouge chez lui).
 async function askPaie(c, d) {
   await writeBatch(db).update(doc(db, 'commandes', c.id), { demandePaie: Object.assign({ le: Date.now() }, d) }).commit();
-  notifyDispatch('💳 ' + me.nom + ' · ' + c.client + ' : ' + (d.mode === 'cash' ? 'tout en cash' : d.mode === 'int' ? 'tout en Interac' : d.mode === 'cry' ? 'tout en crypto' : d.cash + ' $ cash + reste Interac') + ' — à confirmer');
+  notifyDispatch('💳 ' + me.nom + ' · ' + c.client + ' : ' + (d.mode === 'cash' ? 'tout en cash' : d.mode === 'int' ? 'tout en EMT' : d.mode === 'cry' ? 'tout en crypto' : d.cash + ' $ cash + reste EMT') + ' — à confirmer');
 }
 // ---------- Réglages (propriétaire) : prix + clé Google Maps ----------
 function renderCfg() {
@@ -1826,7 +1957,7 @@ function drawRemCard() {
 function updRemise(id, statut) { writeBatch(db).update(doc(db, 'remises', id), { statut, recueLe: serverTimestamp() }).commit().catch((e) => alertBar(msg(e))); }
 
 // =====================================================================
-// Version 12 : dettes (« le client paie plus tard »), surtout pour les Interac pas reçus
+// Version 12 : dettes (« le client paie plus tard »), surtout pour les EMT pas reçus
 // =====================================================================
 // dettes/{id} : { client, montant, responsable (mid du livreur, ou du dispatch ; 'dispatch' tant que pas accepté), livreur, livreurNom, cmd, note,
 //                 statut: 'demande' | 'ouverte' | 'refusee' | 'reglee', creePar, creeParNom, creeLe, ... }
@@ -1871,7 +2002,7 @@ function detteDoor(c) {
   if (!f) return '<button class="linkbtn" id="dtOpen" style="margin-top:8px">📒 Le client paie plus tard</button>';
   return '<div class="msgc" style="margin-top:8px"><div class="small">Qui est responsable ?</div><div class="seg" id="dtResp" style="margin:4px 0">' +
     [['moi', 'Moi'], ['dispatch', 'Le dispatch']].map((x) => '<button data-r="' + x[0] + '" class="' + (f.resp === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
-    (c.bloque ? '<div class="small">Montant : l’Interac pas reçu (le dispatch le connaît).</div>' : '<div class="small">Montant pas payé</div><input id="dtAmt" type="number" inputmode="numeric" value="' + esc(f.amt) + '">') +
+    (c.bloque ? '<div class="small">Montant : l’EMT pas reçu (le dispatch le connaît).</div>' : '<div class="small">Montant pas payé</div><input id="dtAmt" type="number" inputmode="numeric" value="' + esc(f.amt) + '">') +
     '<input id="dtNote" maxlength="120" placeholder="Note (ex. paie demain)" value="' + esc(f.note) + '">' +
     '<div class="two"><button class="btn ghost sm" id="dtCancel">Annuler</button><button class="btn sm" id="dtSend">Envoyer au dispatch</button></div><div class="err" id="dtErr"></div></div>';
 }
@@ -1894,12 +2025,12 @@ function bindDetteDoor(c) {
     } catch (e) { $('dtErr').textContent = msg(e); }
   };
 }
-// ----- Dispatch (⋯ sur une commande 🔴 Interac pas reçu) : 📒 Dette → débloque la commande -----
+// ----- Dispatch (⋯ sur une commande 🔴 EMT pas reçu) : 📒 Dette → débloque la commande -----
 function detteDispForm(c) {
   const f = dt.disp;
   const def = c.bloque ? Math.round((prive[c.id] && prive[c.id].interac) || 0) : (c.encaisser || 0);
   if (f.amt == null) f.amt = def;
-  return '<div class="msgc"><div class="small">📒 Dette' + (c.bloque ? ' (Interac pas reçu)' : '') + ' · montant</div><input id="ddAmt" type="number" inputmode="numeric" value="' + esc(f.amt) + '"><div class="small">Qui est responsable ?</div><div class="seg" id="ddResp" style="margin:4px 0">' +
+  return '<div class="msgc"><div class="small">📒 Dette' + (c.bloque ? ' (EMT pas reçu)' : '') + ' · montant</div><input id="ddAmt" type="number" inputmode="numeric" value="' + esc(f.amt) + '"><div class="small">Qui est responsable ?</div><div class="seg" id="ddResp" style="margin:4px 0">' +
     (c.livreur ? [[c.livreur, esc(c.livreurNom || nomDe(c.livreur))]] : []).concat([[myMid(), 'Moi (dispatch)']]).map((x) => '<button data-r="' + x[0] + '" class="' + (f.resp === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
     '<input id="ddNote" maxlength="120" placeholder="Note (ex. paie demain)" value="' + esc(f.note) + '"><div class="two"><button class="btn ghost sm" id="ddCancel">Annuler</button><button class="btn sm" id="ddGo">Créer la dette</button></div><div class="err" id="ddErr"></div></div>';
 }
@@ -1925,7 +2056,7 @@ function bindDetteDisp() {
     } catch (e) { $('ddErr').textContent = msg(e); }
   };
 }
-// Accepter / refuser une demande du livreur. Si la commande était bloquée (Interac pas reçu), elle se débloque.
+// Accepter / refuser une demande du livreur. Si la commande était bloquée (EMT pas reçu), elle se débloque.
 async function detteDecide(x, ok) {
   try {
     const b = writeBatch(db);
@@ -1960,7 +2091,7 @@ function drawDettes() {
     if (canDette()) {
       const dem = dt.all.filter((x) => x.statut === 'demande');
       if (dem.length) h += '<div class="card alert"><div class="label">📒 Dette demandée</div>' + dem.map((x) => '<div class="item"><b>' + esc(x.livreurNom) + '</b> : ' + esc(x.client) + ' paie plus tard' +
-        (x.montant ? ' · <b>' + money(x.montant) + '</b>' : ' · Interac pas reçu (' + money((prive[x.cmd] && prive[x.cmd].interac) || 0) + ')') +
+        (x.montant ? ' · <b>' + money(x.montant) + '</b>' : ' · EMT pas reçu (' + money((prive[x.cmd] && prive[x.cmd].interac) || 0) + ')') +
         '<div class="small">Responsable : ' + (x.responsable === 'dispatch' ? 'le dispatch (toi si tu acceptes)' : esc(x.livreurNom)) + (x.note ? ' · 📝 ' + esc(x.note) : '') + '</div>' +
         '<div class="two" style="margin-top:8px"><button class="btn red sm" data-dno="' + x.id + '">Refuser</button><button class="btn ok sm" data-dyes="' + x.id + '">' + (x.responsable === 'dispatch' ? 'Je confirme (responsable)' : 'Accepter') + '</button></div></div>').join('') + '</div>';
       const open = dt.all.filter((x) => x.statut === 'ouverte');
@@ -1997,7 +2128,7 @@ function drawDettes() {
   else pg.innerHTML = '<div class="card"><div class="label">📒 Dettes pas réglées <button class="linkbtn" id="dpClose" style="float:right">Fermer</button></div>' +
     (list.map((x) => '<div class="item"><b>' + esc(x.client) + '</b> · ' + (x.montant ? money(x.montant) : '?') + (x.statut === 'demande' ? ' <span class="small">(en attente du dispatch)</span>' : x.statut === 'attente_livreur' ? ' <span class="small">(à confirmer par ' + esc(respNom(x)) + ')</span>' : '') +
       '<div class="small">Depuis le ' + dDate(x.creeLe) + ' · responsable : ' + esc(respNom(x)) + ' · livreur : ' + esc(x.livreurNom || '—') + ' · créée par ' + esc(x.creeParNom || '') + (x.note ? '<br>📝 ' + esc(x.note) : '') + '</div>' +
-      (canDette() && x.statut === 'ouverte' ? '<div class="seg" style="margin-top:6px">' + (dt.ask === x.id ? '<button data-reg="int" data-id="' + x.id + '">Réglé par Interac ✓</button><button data-reg="cash" data-id="' + x.id + '">Réglé en cash ✓</button>' : '<button data-ask="' + x.id + '">Réglé…</button>') + '</div>' : '') + '</div>').join('') ||
+      (canDette() && x.statut === 'ouverte' ? '<div class="seg" style="margin-top:6px">' + (dt.ask === x.id ? '<button data-reg="int" data-id="' + x.id + '">Réglé par EMT ✓</button><button data-reg="cash" data-id="' + x.id + '">Réglé en cash ✓</button>' : '<button data-ask="' + x.id + '">Réglé…</button>') + '</div>' : '') + '</div>').join('') ||
       '<div class="small">Aucune dette. 👍</div>') + (list.length ? '<div class="small" style="margin-top:6px">Total : ' + money(tot) + '</div>' : '') + '</div>';
   if ($('dpOpen')) $('dpOpen').onclick = () => { dt.page = true; drawDettes(); };
   if ($('dpClose')) $('dpClose').onclick = () => { dt.page = false; dt.ask = null; drawDettes(); };
@@ -2084,11 +2215,15 @@ function renderFocus() {
     if (unreadFor(c.livreur)) markRead(c.livreur, 'dispatch');
     h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
       '<div class="crow" style="margin-top:6px"><input id="fxTxt" maxlength="300" placeholder="Écrire à ' + esc(c.livreurNom || '') + '…"><button class="btn sm" id="fxSend">➤</button></div></div>';
-    if (c.demandePaie) h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(c.demandePaie, c)) + '</div>' + (cry.id === c.id ? cryBox() : fBtn('dpOk', c.demandePaie.mode === 'cash' ? '✓ OK, il encaisse en cash' : c.demandePaie.mode === 'cry' ? '✓ J’ai reçu la crypto' : '✓ J’ai reçu l’Interac', 'ok') + fBtn('dpNo', 'Refuser (on garde comme avant)'));
+    if (c.demandePaie) { const dq = c.demandePaie, neuf = dq.emt != null || dq.cry != null;
+      h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(dq, c)) + '</div>' + (dq.pasRecu ? '<div class="small" style="color:#fca5a5;margin:4px 0">❌ Marqué pas reçu — ' + esc(c.livreurNom || 'le livreur') + ' attend (il ne donne pas)</div>' : '');
+      if (cry.id === c.id) h += cryBox();
+      else if (!neuf) h += fBtn('dpOk', dq.mode === 'cash' ? '✓ OK, il encaisse en cash' : dq.mode === 'cry' ? '✓ J’ai reçu la crypto' : '✓ J’ai reçu l’EMT', 'ok') + fBtn('dpNo0', 'Refuser (on garde comme avant)');
+      else h += fBtn('dpOk', '✅ Reçu', 'ok') + '<div class="two">' + fBtn('dpNo', '❌ Pas reçu') + (canDette() ? fBtn('dpDette', '📒 Dette') : '') + '</div>' + (dpd.id === c.id ? dpdForm(c) : ''); }
     h += confLine(c) + (c.paieModLe ? '<div class="small">✏️ paiement changé par ' + esc(dispName(c.paieModNom || '')) + '</div>' : '');
     if (!c.demandePaie) h += lp.id === c.id ? lpBox(c) : fBtn('chpay', '💳 Changer le paiement');
     h += (c.bloque && !c.demandePaie ? (cry.id === c.id ? cryBox() : fBtn('paid', '✓ ' + payWord(c) + ' reçu', 'ok')) : '') +
-      '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette ? fBtn('dette', '📒 Dette') : '') + '</div>' +
+      '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette && !c.demandePaie ? fBtn('dette', '📒 Dette') : '') + '</div>' +
       (fx.client ? msgBox(c, plan[0]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') +
       '<div class="two">' + fBtn('unassign', fx.ask === 'unassign' ? 'Confirmer : retirer' : 'Retirer') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>' +
       (nx ? '<div class="small" style="margin-top:12px">Ensuite pour ' + esc(c.livreurNom || '') + ' : ' + esc(nx.client) + ' · ~' + hm(plan[1]) + '</div>' : '');
@@ -2103,6 +2238,7 @@ function renderFocus() {
   v.querySelectorAll('[data-ub]').forEach((el) => { el.onclick = () => focusAssign(c, uberOpt(el.dataset.ub)); });
   v.querySelectorAll('[data-o]').forEach((el) => { el.onclick = () => focusAssign(c, fx.opts[+el.dataset.o]); });
   v.querySelectorAll('[data-fa]').forEach((el) => { el.onclick = () => focusAct(c, el.dataset.fa); });
+  if ($('dpdTxt')) $('dpdTxt').oninput = (e) => { dpd.txt = e.target.value; dpd.err = ''; if ($('dpdV')) $('dpdV').innerHTML = dpd.txt.trim() ? (raisonOk(dpd.txt) ? '<span style="color:#86efac">✓ Raison acceptée</span>' : '<span style="color:#fca5a5">⛔ Raison pas acceptée. Utilise un des mots ci-dessous.</span>') : ''; };
   bindLp();
   v.querySelectorAll('[data-ck]').forEach((el) => { el.onclick = () => { cry.coin = el.dataset.ck; cry.err = ''; renderFocus(); }; });
   if ($('cryA')) $('cryA').oninput = (e) => { cry.autre = e.target.value; };
@@ -2131,30 +2267,65 @@ async function focusAssign(c, opt) {
 
 // Demande de paiement du livreur (« le client paie autrement ») : texte pour le dispatch, et confirmation.
 function demPaieTxt(dp, c) {
+  if (dp.emt != null || dp.cry != null) { // v52 : écrit par le livreur à la porte
+    const a = []; if (dp.cashDonne || dp.cash) a.push((dp.cashDonne || dp.cash) + ' $ cash ✓'); if (dp.emt) a.push(dp.emt + ' $ EMT à confirmer'); if (dp.cry) a.push(dp.cry + ' $ crypto à confirmer');
+    return a.join(' · ');
+  }
   const tot = (prive[c.id] && prive[c.id].total) || 0;
   if (dp.mode === 'cash') return 'Tout en cash' + (tot ? ' (' + tot + ' $)' : '');
-  if (dp.mode === 'int') return 'Tout en Interac' + (tot ? ' · ' + tot + ' $ à confirmer' : '');
+  if (dp.mode === 'int') return 'Tout en EMT' + (tot ? ' · ' + tot + ' $ à confirmer' : '');
   if (dp.mode === 'cry') return 'Tout en crypto' + (tot ? ' · ' + tot + ' $ à confirmer' : '');
-  return dp.cash + ' $ cash + ' + (tot ? Math.max(0, tot - dp.cash) + ' $ ' : 'le reste en ') + 'Interac à confirmer';
+  return dp.cash + ' $ cash + ' + (tot ? Math.max(0, tot - dp.cash) + ' $ ' : 'le reste en ') + 'EMT à confirmer';
 }
 async function paieOk(c, ok) {
   const dp = c.demandePaie; if (!dp) return;
   const b = writeBatch(db);
   if (!ok) { b.update(doc(db, 'commandes', c.id), { demandePaie: null }); await b.commit(); notifyMsg(c.livreur, 'Paiement refusé pour ' + c.client + ' : on garde comme avant'); return; }
   const tot = (prive[c.id] && prive[c.id].total) || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
-  const cash = dp.mode === 'cash' ? tot : dp.mode === 'mix' ? Math.min(tot, dp.cash) : 0;
-  const coin = dp.mode === 'cry' ? (cry.ok || '') : ''; cry.ok = null;
+  const cash = dp.mode === 'cash' ? tot : (dp.mode === 'mix' || dp.mode === 'mixc') ? Math.min(tot, dp.cash) : 0;
+  const coin = (dp.mode === 'cry' || dp.mode === 'mixc') ? (cry.ok || '') : ''; cry.ok = null;
   b.update(doc(db, 'commandes', c.id), Object.assign({ demandePaie: null, bloque: false, encaisser: cash, paye: cash === 0, paieMode: dp.mode, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}));
   b.set(doc(db, 'cmdPrive', c.id), Object.assign({ mode: dp.mode, cash, interac: tot - cash, recu: true }, coin ? { crypto: coin } : {}), { merge: true });
   await b.commit();
-  notifyMsg(c.livreur, '✓ Paiement confirmé pour ' + c.client + (cash ? ' : encaisse ' + cash + ' $ cash' : ' : déjà payé'));
+  notifyMsg(c.livreur, dp.emt != null || dp.cry != null ? '✅ ' + (dp.cry ? 'Crypto' : 'EMT') + ' de ' + c.client + ' reçu — tu peux donner' : '✓ Paiement confirmé pour ' + c.client + (cash ? ' : encaisse ' + cash + ' $ cash' : ' : déjà payé'));
+}
+// v52 : 📒 Dette au lieu de « reçu » — le livreur voit exactement comme si c'était reçu. Raison obligatoire (mots acceptés seulement).
+const DETTE_RAISONS = ['EMT envoyé mais pas rentré', 'Crédit'];
+const dpd = { id: null, txt: '', err: '' };
+function raisonOk(t) { const n = String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); return /credit/.test(n) || (/(emt|imt|interac|virement)/.test(n) && /(envoy|rentr|pas recu|arrive)/.test(n)); }
+function dpdForm(c) {
+  const dp = c.demandePaie, m = (Number(dp.emt) || 0) + (Number(dp.cry) || 0);
+  return '<div class="msgc" style="margin-top:8px;border:1px solid #b45309"><b style="color:#fdba74">📒 Dette de ' + money(m) + ' — raison obligatoire</b><input id="dpdTxt" maxlength="80" placeholder="Raison" value="' + esc(dpd.txt) + '">' +
+    '<div class="small" id="dpdV">' + (dpd.txt.trim() ? (raisonOk(dpd.txt) ? '<span style="color:#86efac">✓ Raison acceptée</span>' : '<span style="color:#fca5a5">⛔ Raison pas acceptée. Utilise un des mots ci-dessous.</span>') : '') + '</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">' + DETTE_RAISONS.map((r, k) => '<button class="btn ghost sm" style="width:auto;display:inline-block;padding:6px 10px" data-fa="dpk' + k + '">' + esc(r) + '</button>').join('') + '</div>' +
+    '<div class="err">' + esc(dpd.err) + '</div><div class="two">' + fBtn('dpdX', 'Annuler') + fBtn('dpdGo', 'Confirmer la dette', 'ok') + '</div></div>';
+}
+async function paieDette(c, raison) {
+  const dp = c.demandePaie; if (!dp) return;
+  const tot = (prive[c.id] && prive[c.id].total) || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
+  const cash = (dp.mode === 'mix' || dp.mode === 'mixc') ? Math.min(tot, dp.cash) : 0, m = Math.max(0, tot - cash);
+  const ref = doc(collection(db, 'dettes')), b = writeBatch(db);
+  b.set(ref, { client: c.client || 'Client', montant: m, responsable: myMid(), livreur: c.livreur || '', livreurNom: c.livreurNom || '', cmd: c.id, note: String(raison).slice(0, 80),
+    statut: 'ouverte', creePar: myMid(), creeParNom: me.nom || OWNER, creeLe: serverTimestamp() });
+  b.update(doc(db, 'commandes', c.id), { demandePaie: null, bloque: false, encaisser: cash, paye: !(cash > 0), paieMode: dp.mode, dette: ref.id });
+  b.set(doc(db, 'cmdPrive', c.id), { mode: dp.mode, cash, interac: tot - cash, recu: false, dette: ref.id }, { merge: true });
+  await b.commit();
+  notifyMsg(c.livreur, '✅ ' + (dp.cry ? 'Crypto' : 'EMT') + ' de ' + c.client + ' reçu — tu peux donner');
 }
 async function focusAct(c, a) {
   if (a === 'chpay' || a === 'lpX' || a === 'lpGo') return lpAct(c, a);
   if (a === 'cryX') { cry.id = null; return renderFocus(); }
   if (a === 'cryGo') { const k = coinOf(cry.coin, cry.autre); if (!k) { cry.err = 'Choisis la crypto (BTC, ETH…).'; return renderFocus(); }
     cry.ok = k; const kind = cry.kind; try { if (kind === 'dpOk') await paieOk(c, true); else await qAct('paid', c.id); } catch (e) { cry.ok = null; if ($('fxErr')) $('fxErr').textContent = msg(e); } cry.id = null; return renderFocus(); }
-  if (a === 'dpOk' && c.demandePaie && c.demandePaie.mode === 'cry' && !cry.ok) { cry.id = c.id; cry.kind = 'dpOk'; cry.coin = null; cry.autre = ''; cry.err = ''; return renderFocus(); }
+  if (a === 'dpNo' && c.demandePaie) { try { await writeBatch(db).update(doc(db, 'commandes', c.id), { demandePaie: Object.assign({}, c.demandePaie, { pasRecu: Date.now() }) }).commit(); } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); } return renderFocus(); }
+  if (a === 'dpNo0') a = 'dpNo';
+  if (a === 'dpDette') { dpd.id = dpd.id === c.id ? null : c.id; dpd.txt = ''; dpd.err = ''; return renderFocus(); }
+  if (a === 'dpdX') { dpd.id = null; return renderFocus(); }
+  if (a.startsWith('dpk')) { dpd.txt = DETTE_RAISONS[Number(a.slice(3))] || ''; dpd.err = ''; return renderFocus(); }
+  if (a === 'dpdGo') { const t = ($('dpdTxt') ? $('dpdTxt').value : dpd.txt).trim(); dpd.txt = t;
+    if (!raisonOk(t)) { dpd.err = 'Raison pas acceptée : ' + DETTE_RAISONS.join(' ou ') + '.'; return renderFocus(); }
+    try { await paieDette(c, t); dpd.id = null; } catch (e) { dpd.err = msg(e); } return renderFocus(); }
+  if (a === 'dpOk' && c.demandePaie && (c.demandePaie.mode === 'cry' || c.demandePaie.mode === 'mixc') && !cry.ok) { cry.id = c.id; cry.kind = 'dpOk'; cry.coin = null; cry.autre = ''; cry.err = ''; return renderFocus(); }
   if (a === 'dpOk' || a === 'dpNo') { try { await paieOk(c, a === 'dpOk'); } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); } return renderFocus(); }
   if (a === 'msg') { fx.client = !fx.client; return renderFocus(); }
   if (a === 'dette') { dt.disp = dt.disp ? null : { id: c.id, resp: c.livreur || myMid(), note: '' }; return renderFocus(); }
@@ -2289,7 +2460,7 @@ async function loadHisto() {
   hs.rows = livrees.filter((c) => !c.test).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
   hs.all = cmdsH.filter((c) => c.statut === 'livree' || c.annuleTest || c.test || c.statut === 'ajout' || (c.statut === 'refusee' && c.ajoutPar)).sort((p, q) => tsMs(p.livreeLe) - tsMs(q.livreeLe));
   hs.sum = rows; hs.extra = x;
-  hs.prv = {}; // v36 : montants (Interac / crypto) de chaque livraison, pour toi, MOUSSE et lost
+  hs.prv = {}; // v36 : montants (EMT / crypto) de chaque livraison, pour toi, MOUSSE et lost
   await Promise.all(hs.all.filter((c) => !c.test && !c.annuleTest && c.statut !== 'refusee').map((c) => getDoc(doc(db, 'cmdPrive', c.id)).then((d) => { if (d.exists()) hs.prv[c.id] = d.data(); }).catch(() => {})));
   hs.busy = false; drawHisto();
 }
@@ -2676,7 +2847,7 @@ function bindDonsLivreur() {
 // members.uber / users.uber : ce livreur ne reçoit jamais de commande automatique.
 // commandes : type 'uber' | 'pickup', accepte, uberLien, uberEta (ms), pickAdr.
 // soirees.pause : il est en pause (le dispatch le voit). reglages/{mid}.pickAdr : son adresse de pick-up habituelle.
-// Uber : il commande le Uber seulement quand l'Interac est confirmé. Pick-up : le paiement marche comme chez un livreur.
+// Uber : il commande le Uber seulement quand l'EMT est confirmé. Pick-up : le paiement marche comme chez un livreur.
 let regs = {}, myReg = null;
 const isUberMid = (mid) => !!(team[mid] && team[mid].uber);
 function uberOpt(v) { const [type, mid] = v.split(':'); const s = Object.values(soirees).find((x) => x.mid === mid && working(x)); return { mid, nom: (s && s.nom) || nomDe(mid), kind: 'fin', type, trajet: 0, arr: Date.now(), ok: true }; }
@@ -2688,7 +2859,7 @@ function uberBtns(o) {
     if (s.pause) return '<div class="small" style="margin:6px 0">⏸ ' + nom + ' est en pause (pas d’Uber ni de pick-up).</div>';
     const seeSt = isOwner() || me.role === 'complet', left = stockLeft(s.mid), ok = ((o.L || 0) + (o.XL || 0) > 0) && (!seeSt || (left.L >= (o.L || 0) && left.XL >= (o.XL || 0)));
     const uOk = ok && o.int && o.adr;
-    const why = !ok ? 'pas assez de stock (' + left.L + ' L, ' + left.XL + ' XL)' : !o.int ? 'Uber : seulement si tout est payé en Interac' : !o.adr ? 'Uber : écris l’adresse du client' : '';
+    const why = !ok ? 'pas assez de stock (' + left.L + ' L, ' + left.XL + ' XL)' : !o.int ? 'Uber : seulement si tout est payé en EMT' : !o.adr ? 'Uber : écris l’adresse du client' : '';
     return '<div class="two" style="margin:6px 0 2px"><button class="btn ghost sm" data-ub="uber:' + esc(s.mid) + '"' + (uOk ? '' : ' disabled') + '>🚕 Uber avec ' + nom + '</button><button class="btn ghost sm" data-ub="pickup:' + esc(s.mid) + '"' + (ok ? '' : ' disabled') + '>📍 Pick-up chez ' + nom + '</button></div>' +
       (why ? '<div class="small" style="margin-bottom:6px">' + why + '</div>' : '');
   }).join('');
@@ -2702,7 +2873,7 @@ function uberInfo(c) {
     return '<div class="fban s-new">📍 Le client va chez ' + n + (c.statut === 'ici' ? ' · il est arrivé' : '') + '</div>' +
       (a ? '<div class="small" style="margin:4px 0">' + esc(a) + ' <button class="linkbtn" data-copy="' + esc(a) + '">📋 Copier</button></div>' : '<div class="small">' + n + ' n’a pas encore entré son adresse.</div>');
   }
-  if (c.bloque) return '<div class="fban s-ici">🔒 ' + n + ' attend ton « ✓ Interac reçu » pour commander le Uber</div>';
+  if (c.bloque) return '<div class="fban s-ici">🔒 ' + n + ' attend ton « ✓ EMT reçu » pour commander le Uber</div>';
   if (!c.uberLien) return '<div class="fban s-proche">🚕 ' + n + ' commande le Uber…</div>';
   const m = Math.round(((c.uberEta || Date.now()) - Date.now()) / 60000);
   return '<div class="fban s-new">🚕 Uber en route · arrivée ~' + hm(c.uberEta) + (m >= 0 ? ' (' + m + ' min)' : '') + '</div><div class="small" style="margin:4px 0;word-break:break-all"><a href="' + esc(c.uberLien) + '" target="_blank" rel="noopener" style="color:#7fa8ff">' + esc(c.uberLien) + '</a></div>';
@@ -2712,7 +2883,7 @@ const ub = { adrFor: null, adr: '', defOpen: false, def: '', lien: {}, eta: {}, 
 const pickDef = () => (myReg && myReg.pickAdr) || '';
 function bandOf(c) {
   const dp = c.demandePaie;
-  return dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en Interac' : dp.mode === 'cry' ? 'Tout en crypto' : dp.cash + ' $ cash + le reste en Interac') + '</div></div>'
+  return dp ? '<div class="banner b-no">💳 Paiement envoyé au dispatch — attends qu’il confirme<div class="small" style="color:inherit;margin-top:3px">' + esc(dp.mode === 'cash' ? 'Tout en cash' : dp.mode === 'int' ? 'Tout en EMT' : dp.mode === 'cry' ? 'Tout en crypto' : dp.cash + ' $ cash + le reste en EMT') + '</div></div>'
     : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
     : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
     : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
@@ -2726,7 +2897,7 @@ function ubCard(c) {
   if (!up) {
     h += '<div class="label" style="margin-top:10px">Adresse pour Uber</div><div style="font-size:17px;font-weight:700;line-height:1.35">' + esc(c.adresse) + '</div>' +
       '<button class="btn ghost sm" data-ucopy="' + esc(c.adresse) + '" style="margin:8px 0">📋 Copier l’adresse</button>';
-    if (c.bloque) h += '<div class="banner b-no">🔒 Attends que le dispatch confirme l’Interac.<br>Ne commande pas le Uber encore.</div>';
+    if (c.bloque) h += '<div class="banner b-no">🔒 Attends que le dispatch confirme l’EMT.<br>Ne commande pas le Uber encore.</div>';
     else if (!c.uberLien) h += '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Payé — tu peux commander le Uber</div>' +
       '<input id="ubLien_' + c.id + '" placeholder="Colle le lien de suivi Uber" value="' + esc(ub.lien[c.id] || '') + '" autocomplete="off">' +
       '<input id="ubEta_' + c.id + '" type="number" inputmode="numeric" placeholder="Arrive dans combien de minutes ? (ex. 18)" value="' + esc(ub.eta[c.id] || '') + '">' +
@@ -2863,7 +3034,7 @@ function histoTotals() { // v43 : en bas, petit, s'ouvre au toucher
   const line = (k, v, col) => '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>' + k + '</span><b style="color:' + col + '">' + money(v) + '</b></div>';
   const coins = Object.keys(T.coins), o = !!hs.totOpen;
   let h = '<div class="card" id="hTot" style="padding:10px 14px;cursor:pointer"><div style="display:flex;justify-content:space-between;font-size:14px"><span>📊 Total de la ' + (hs.week ? 'semaine' : 'soirée') + '</span><b>' + money(T.cash + T.int + T.cry) + ' ' + (o ? '▲' : '▼') + '</b></div>';
-  if (o) h += '<div style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px">' + line('🔵 Cash', T.cash, PCOL.cash) + line('🟡 Interac', T.int, PCOL.int) + line('🟣 Crypto', T.cry, PCOL.cry) +
+  if (o) h += '<div style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px">' + line('🔵 Cash', T.cash, PCOL.cash) + line('🟡 EMT', T.int, PCOL.int) + line('🟣 Crypto', T.cry, PCOL.cry) +
     (T.no ? line('<span style="color:#f87171">🔴 Pas encore reçu</span>', T.no, '#f87171') : '') +
     (coins.length ? '<div class="small" style="text-align:right;color:' + PCOL.cry + '">' + coins.map((k) => esc(coinIcon(k) + k) + ' ' + money(T.coins[k])).join(' · ') + '</div>' : '') +
     '<div class="small" style="margin-top:4px">' + T.n + ' livraison' + (T.n > 1 ? 's' : '') + ' · reste ' + money(T.reste) + '</div>' +
@@ -2883,7 +3054,7 @@ function histoPeople() {
     if (!o) return h + '</div>';
     { const P = { cash: 0, int: 0, cry: 0 }; mine.filter((c) => !c.test && !c.annuleTest && c.statut === 'livree').forEach((c) => { const q = payOf(c); P.cash += q.cash; P.int += q.int; P.cry += q.cry; }); // v43
       h += '<div style="display:flex;gap:10px;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--line);background:var(--card2);font-size:12.5px">' +
-        '<span style="color:' + PCOL.cash + '">🔵 <b>' + money(P.cash) + '</b> cash</span><span style="color:' + PCOL.int + '">🟡 <b>' + money(P.int) + '</b> Interac</span><span style="color:' + PCOL.cry + '">🟣 <b>' + money(P.cry) + '</b> crypto</span>' +
+        '<span style="color:' + PCOL.cash + '">🔵 <b>' + money(P.cash) + '</b> cash</span><span style="color:' + PCOL.int + '">🟡 <b>' + money(P.int) + '</b> EMT</span><span style="color:' + PCOL.cry + '">🟣 <b>' + money(P.cry) + '</b> crypto</span>' +
         '<span class="small" style="width:100%">reste à remettre <b style="color:var(--text)">' + (S.paieOk ? money(S.reste) : '?') + '</b>' + (S.tips ? ' · pourboires ' + money(S.tips) : '') + (S.dette ? ' · 📒 ' + money(S.dette) : '') + '</span></div>'; }
     mine.forEach((c, i) => {
       const t = new Date(tsMs(c.livreeLe)), cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
@@ -3013,16 +3184,16 @@ function qtyChips(c) {
 }
 
 // =====================================================================
-// v35 : Crypto (comme Interac) + « confirmé par » qui et quand
+// v35 : Crypto (comme EMT) + « confirmé par » qui et quand
 // =====================================================================
 // Crypto : mode « cry » (payé avant, le dispatch confirme). À la confirmation, le dispatch doit choisir la crypto
-// (BTC, ETH, USDT, SOL ou Autre écrit) → commandes.crypto. À chaque confirmation Interac / crypto :
+// (BTC, ETH, USDT, SOL ou Autre écrit) → commandes.crypto. À chaque confirmation EMT / crypto :
 // commandes.confirmePar / confirmeNom / confirmeLe, affichés sur la commande et dans l'historique.
 const COINS = [['BTC', '₿ BTC'], ['ETH', 'Ξ ETH'], ['USDT', '💲 USDT'], ['SOL', '◎ SOL'], ['autre', 'Autre']];
 const cry = { id: null, kind: null, coin: null, autre: '', err: '', ok: null };
 const coinOf = (k, a) => (k === 'autre' ? String(a || '').trim().toUpperCase().slice(0, 12) : k || '');
-const needCoin = (c) => (c.demandePaie ? c.demandePaie.mode === 'cry' : (prive[c.id] && ['cry', 'mixc'].includes(prive[c.id].mode)) || ['cry', 'mixc'].includes(c.paieMode));
-const payWord = (c) => (needCoin(c) ? 'Crypto' : 'Interac');
+const needCoin = (c) => (c.demandePaie ? ['cry', 'mixc'].includes(c.demandePaie.mode) : (prive[c.id] && ['cry', 'mixc'].includes(prive[c.id].mode)) || ['cry', 'mixc'].includes(c.paieMode));
+const payWord = (c) => (needCoin(c) ? 'Crypto' : 'EMT');
 function cryBox() {
   return '<div class="msgc" style="margin:8px 0;border:2px solid #8b5cf6"><div style="font-weight:800;margin-bottom:6px">Quelle crypto ? <span class="small">(obligatoire)</span></div><div class="seg">' +
     COINS.map((x) => '<button data-ck="' + x[0] + '" class="' + (cry.coin === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' +
@@ -3035,7 +3206,7 @@ function confLine(c) {
   const t = hm(tsMs(c.confirmeLe));
   if (c.crypto || c.paieMode === 'cry') return '<div style="font-size:13px;margin-top:4px;color:#c4b5fd">🟣 Crypto reçu' + (c.crypto ? ' · <b>' + esc(c.crypto) + '</b>' : '') + ' · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
   if (c.paieMode === 'cash') return '<div style="font-size:13px;margin-top:4px;color:#86efac">💵 Cash · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
-  return '<div style="font-size:13px;margin-top:4px;color:#fcd34d">📲 Interac reçu · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
+  return '<div style="font-size:13px;margin-top:4px;color:#fcd34d">📲 EMT reçu · confirmé par <b>' + esc(qui) + '</b> à ' + t + '</div>';
 }
 
 // =====================================================================
@@ -3061,16 +3232,16 @@ function payHtml(q) {
   if (q.cash) parts.push('<span style="color:' + PCOL.cash + '">🔵 ' + money(q.cash) + '</span>');
   if (q.int) parts.push('<span style="color:' + PCOL.int + '">🟡 ' + money(q.int) + '</span>');
   if (q.cry) parts.push('<span style="color:' + PCOL.cry + '">🟣 ' + money(q.cry) + (q.coin ? ' ' + esc(q.coin) : '') + '</span>');
-  if (q.no) parts.push('<span style="color:#f87171">🔴 ' + money(q.no) + ' ' + (q.noKind === 'cry' ? 'crypto' : 'Interac') + ' pas reçu</span>');
+  if (q.no) parts.push('<span style="color:#f87171">🔴 ' + money(q.no) + ' ' + (q.noKind === 'cry' ? 'crypto' : 'EMT') + ' pas reçu</span>');
   if (q.dette) parts.push('<span style="color:#f87171">📒 ' + money(q.dette) + ' dette</span>');
   return parts.join(' + ') || '<span class="small">0 $</span>';
 }
 
 // =====================================================================
-// v38 : Historique — Wayne ET MOUSSE peuvent modifier : changer le paiement (Cash / Interac / Crypto / Mélange),
+// v38 : Historique — Wayne ET MOUSSE peuvent modifier : changer le paiement (Cash / EMT / Crypto / Mélange),
 //       ajuster L / XL, annuler (test). Le changement de paiement est noté « paiement modifié par X ».
 // =====================================================================
-// Mélange = une partie cash + le reste en Interac (mode « mix ») ou en crypto (mode « mixc », cmdPrive.cryPart).
+// Mélange = une partie cash + le reste en EMT (mode « mix ») ou en crypto (mode « mixc », cmdPrive.cryPart).
 const canEditH = () => isOwner() || (me && me.role === 'complet');
 const pe = { mode: 'cash', cash: 0, reste: 'int', coin: null, autre: '', env: '' };
 function payTotal(c) { const p = (hs.prv && hs.prv[c.id]) || prive[c.id] || {}; return p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0)); }
@@ -3083,13 +3254,13 @@ function payInit(c) {
 }
 function payEditHtml(c) {
   const tot = payTotal(c), seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0">' + list.map((x) => '<button ' + attr + '="' + x[0] + '" class="' + (cur === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
-  let h = '<div style="font-weight:800;margin-bottom:4px">Changer le paiement · total ' + money(tot) + '</div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], pe.mode, 'data-pm');
+  let h = '<div style="font-weight:800;margin-bottom:4px">Changer le paiement · total ' + money(tot) + '</div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], pe.mode, 'data-pm');
   if (pe.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="peCash" type="number" inputmode="numeric" value="' + esc(pe.cash) + '">' +
-    '<div class="small">Le reste (<b id="peRest">' + money(Math.max(0, tot - (Number(pe.cash) || 0))) + '</b>) en :</div>' + seg([['int', '🟡 Interac'], ['cry', '🟣 Crypto']], pe.reste, 'data-pr');
+    '<div class="small">Le reste (<b id="peRest">' + money(Math.max(0, tot - (Number(pe.cash) || 0))) + '</b>) en :</div>' + seg([['int', '🟡 EMT'], ['cry', '🟣 Crypto']], pe.reste, 'data-pr');
   const peC = pe.mode === 'cry' || (pe.mode === 'mix' && pe.reste === 'cry');
   if (pe.mode !== 'cash') { // v41 : reçu ou pas encore reçu
     const amt = pe.mode === 'mix' ? Math.max(0, tot - (Number(pe.cash) || 0)) : tot;
-    h += '<div class="small" style="margin-top:8px"><b style="color:var(--text)">' + (peC ? 'La crypto' : 'L’Interac') + ' de <span id="peAmt">' + money(amt) + '</span> est…</b></div>' +
+    h += '<div class="small" style="margin-top:8px"><b style="color:var(--text)">' + (peC ? 'La crypto' : 'L’EMT') + ' de <span id="peAmt">' + money(amt) + '</span> est…</b></div>' +
       '<div style="display:flex;gap:6px;margin:6px 0"><button data-prc="1" class="btn ghost sm" style="flex:1;margin:0;' + (pe.recu ? 'border:2px solid #2fbf71;color:#86efac;background:#0f2a1a' : '') + '">✓ Reçu</button>' +
       '<button data-prc="0" class="btn ghost sm" style="flex:1;margin:0;' + (!pe.recu ? 'border:2px solid #ef4444;color:#fca5a5;background:#3a1517' : '') + '">⏳ Pas encore reçu</button></div>' +
       (!pe.recu ? '<div class="small" style="color:#fca5a5;line-height:1.5">La livraison va montrer 🔴 pas reçu. Ça ne compte pas dans les totaux tant que quelqu’un ne touche pas « ✓ reçu ».</div>' : '');
@@ -3112,7 +3283,7 @@ function bindPayEdit(C, run) {
     const recu = pe.mode === 'cash' || pe.recu !== false;
     const needC = pe.mode === 'cry' || (pe.mode === 'mix' && pe.reste === 'cry'), coin = needC && recu ? coinOf(pe.coin, pe.autre) : '';
     const needEnv = recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int')), env = String(($('peEnv') && $('peEnv').value) || pe.env || '').trim();
-    if (needEnv && !env) { hx.err = 'Écris le nom de la personne qui a envoyé l’Interac.'; return drawHisto(); }
+    if (needEnv && !env) { hx.err = 'Écris le nom de la personne qui a envoyé l’EMT.'; return drawHisto(); }
     if (needC && recu && !coin) { hx.err = 'Choisis la crypto (BTC, ETH…).'; return drawHisto(); }
     if (pe.mode === 'mix' && !(cashPart > 0 && cashPart < tot)) { hx.err = 'Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).'; return drawHisto(); }
     const mode = pe.mode === 'mix' ? (pe.reste === 'cry' ? 'mixc' : 'mix') : pe.mode;
@@ -3140,16 +3311,16 @@ function bindPayEdit(C, run) {
 // =====================================================================
 // v39 : le dispatch (Wayne, MOUSSE, lost en dispatch) change le paiement d'une commande en cours
 // =====================================================================
-// « 💳 Changer le paiement » dans la fiche : Cash / Interac / Crypto / Mélange (+ case « déjà reçu », crypto obligatoire si reçu).
+// « 💳 Changer le paiement » dans la fiche : Cash / EMT / Crypto / Mélange (+ case « déjà reçu », crypto obligatoire si reçu).
 // Le livreur voit tout de suite sa commande changer (bloquée si pas reçu) et reçoit une notification.
 const lp = { id: null, mode: 'cash', cash: 0, rest: 'int', coin: null, autre: '', recu: false, err: '' };
 function lpTotal(c) { const p = prive[c.id] || {}; return p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0)); }
 function lpBox(c) {
   const tot = lpTotal(c), seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0">' + list.map((x) => '<button ' + attr + '="' + x[0] + '" class="' + (cur === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
   const needC = lp.mode === 'cry' || (lp.mode === 'mix' && lp.rest === 'cry');
-  let h = '<div class="msgc" style="margin:8px 0;border:2px solid #f5b301"><div style="font-weight:800">Changer le paiement · total ' + money(tot) + '</div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], lp.mode, 'data-lm');
-  if (lp.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="lpCash" type="number" inputmode="numeric" value="' + esc(lp.cash) + '"><div class="small">Le reste en :</div>' + seg([['int', '🟡 Interac'], ['cry', '🟣 Crypto']], lp.rest, 'data-lr');
-  if (lp.mode !== 'cash') h += '<label class="chk"><input type="checkbox" id="lpRecu" ' + (lp.recu ? 'checked' : '') + '> ' + (needC ? 'Crypto' : 'Interac') + ' déjà reçu <span class="small">(sinon le livreur attend ta confirmation)</span></label>';
+  let h = '<div class="msgc" style="margin:8px 0;border:2px solid #f5b301"><div style="font-weight:800">Changer le paiement · total ' + money(tot) + '</div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], lp.mode, 'data-lm');
+  if (lp.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="lpCash" type="number" inputmode="numeric" value="' + esc(lp.cash) + '"><div class="small">Le reste en :</div>' + seg([['int', '🟡 EMT'], ['cry', '🟣 Crypto']], lp.rest, 'data-lr');
+  if (lp.mode !== 'cash') h += '<label class="chk"><input type="checkbox" id="lpRecu" ' + (lp.recu ? 'checked' : '') + '> ' + (needC ? 'Crypto' : 'EMT') + ' déjà reçu <span class="small">(sinon le livreur attend ta confirmation)</span></label>';
   if (needC && lp.recu) h += '<div class="small"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, lp.coin, 'data-lc') + (lp.coin === 'autre' ? '<input id="lpAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(lp.autre) + '">' : '');
   return h + '<div class="err">' + esc(lp.err) + '</div><div class="two"><button class="btn ghost" data-fa="lpX">Fermer</button><button class="btn ok" data-fa="lpGo">Enregistrer</button></div></div>';
 }
@@ -3190,7 +3361,7 @@ async function lpAct(c, a) {
 // v40 : « ➕ Ajouter une commande » dans l'Historique (Wayne + tous les dispatchs), à l'heure choisie.
 //       Elle se place dans l'ordre (les numéros suivent). Le livreur doit TOUJOURS approuver avant
 //       que ça compte (stock, trésorerie, paie). Et : un changement de paiement qui donne PLUS de cash
-//       au livreur (Interac → cash…) doit être confirmé par lui.
+//       au livreur (EMT → cash…) doit être confirmé par lui.
 // =====================================================================
 const ad = { open: false, mid: null, client: '', L: 0, XL: 0, mode: 'cash', cash: '', rest: 'int', coin: null, autre: '', heure: '', date: '', err: '', busy: false };
 const av = { list: [], busy: false, err: '' };
@@ -3224,8 +3395,8 @@ function addHtml() {
     '<div class="small">Livreur</div>' + seg(addMids().map((id) => [id, nomDe(id)]), ad.mid, 'data-amid') +
     '<div class="small" style="margin-top:6px">Client</div><input id="adClient" value="' + esc(ad.client) + '" placeholder="Nom du client" maxlength="60">' +
     '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="adL" type="number" inputmode="numeric" min="0" value="' + esc(ad.L) + '"></div><div style="flex:1"><div class="small">XL</div><input id="adXL" type="number" inputmode="numeric" min="0" value="' + esc(ad.XL) + '"></div></div>' +
-    '<div class="small">Paiement · total <b id="adTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], ad.mode, 'data-amo');
-  if (ad.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="adCash" type="number" inputmode="numeric" value="' + esc(ad.cash) + '"><div class="small">Le reste en :</div>' + seg([['int', '🟡 Interac'], ['cry', '🟣 Crypto']], ad.rest, 'data-are');
+    '<div class="small">Paiement · total <b id="adTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], ad.mode, 'data-amo');
+  if (ad.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="adCash" type="number" inputmode="numeric" value="' + esc(ad.cash) + '"><div class="small">Le reste en :</div>' + seg([['int', '🟡 EMT'], ['cry', '🟣 Crypto']], ad.rest, 'data-are');
   if (needC) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, ad.coin, 'data-aco') + (ad.coin === 'autre' ? '<input id="adAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(ad.autre) + '">' : '');
   h += '<div style="display:flex;gap:8px;margin-top:6px"><div style="flex:1"><div class="small">Soirée du</div><input id="adDate" type="date" value="' + esc(ad.date) + '"></div><div style="flex:1"><div class="small"><b style="color:var(--text)">Heure de la livraison</b></div><input id="adHeure" type="time" value="' + esc(ad.heure) + '"></div></div>' +
     '<div class="small" style="line-height:1.5">Elle se place dans l’ordre selon l’heure (après minuit = même soirée). Le livreur doit approuver : ensuite le stock est enlevé, le cash va dans sa trésorerie et sa paie compte.</div>' +
@@ -3346,7 +3517,7 @@ async function valAct(c, oui) {
 
 
 // =====================================================================
-// v41 : Historique — « ⏳ Pas encore reçu » pour l'Interac / la crypto d'une livraison déjà faite.
+// v41 : Historique — « ⏳ Pas encore reçu » pour l'EMT / la crypto d'une livraison déjà faite.
 //       La livraison montre 🔴 X $ pas reçu (pas compté dans les totaux) ; carte rouge « À confirmer »
 //       en haut de l'Historique + 🔴 sur l'onglet ; Wayne, MOUSSE ou lost (dispatch) touchent « ✓ reçu ».
 // =====================================================================
@@ -3363,13 +3534,13 @@ function nrBtn(c) {
     '<input data-nrnom="' + c.id + '" placeholder="Ex. Marc Tremblay" maxlength="60" value="' + esc(nr.nom || '') + '" style="margin:6px 0">' + (nr.err ? '<div class="err">' + esc(nr.err) + '</div>' : '') +
     '<div class="two"><button class="btn ghost sm" data-nrx="1">Annuler</button><button class="btn ok sm" data-nrgo="' + c.id + '">Confirmer</button></div></div>';
   if (nr.pick === c.id) return '<div style="margin-top:6px"><div class="small"><b style="color:var(--text)">Quelle crypto ?</b></div><div class="seg" style="flex-wrap:wrap">' + COINS.filter((x) => x[0] !== 'autre').map((x) => '<button data-nrc="' + c.id + '|' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>';
-  return '<div style="text-align:right;margin-top:6px"><button class="btn ok sm" style="width:auto;padding:8px 12px;margin:0" data-nrok="' + c.id + '"' + (nr.busy === c.id ? ' disabled' : '') + '>' + (nr.busy === c.id ? '…' : '✓ ' + (k === 'cry' ? 'Crypto' : 'Interac') + ' reçu') + '</button></div>';
+  return '<div style="text-align:right;margin-top:6px"><button class="btn ok sm" style="width:auto;padding:8px 12px;margin:0" data-nrok="' + c.id + '"' + (nr.busy === c.id ? ' disabled' : '') + '>' + (nr.busy === c.id ? '…' : '✓ ' + (k === 'cry' ? 'Crypto' : 'EMT') + ' reçu') + '</button></div>';
 }
 function nrHtml() {
   if (!isDispatcher() || !nr.list.length) return '';
   return '<div class="card" style="background:#3a1517;border-color:#7f1d1d"><div style="color:#fca5a5;font-weight:800;margin-bottom:6px">🔴 À confirmer · ' + nr.list.length + '</div>' +
     nr.list.map((c) => { const t = new Date(tsMs(c.livreeLe)); return '<div style="padding:8px 0;border-top:1px solid #7f1d1d"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div style="font-size:14px">' + esc(c.client) + ' · ' + esc(c.livreurNom || nomDe(c.livreur)) +
-      '<div class="small">' + t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' + hm(t.getTime()) + '</div><span style="color:#f87171">' + money(nrAmt(c)) + ' ' + (nrKind(c) === 'cry' ? 'crypto' : 'Interac') + ' pas reçu</span></div></div>' + nrBtn(c) + '</div>'; }).join('') + '</div>';
+      '<div class="small">' + t.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' }) + ' ' + hm(t.getTime()) + '</div><span style="color:#f87171">' + money(nrAmt(c)) + ' ' + (nrKind(c) === 'cry' ? 'crypto' : 'EMT') + ' pas reçu</span></div></div>' + nrBtn(c) + '</div>'; }).join('') + '</div>';
 }
 async function nrConfirm(id, coin, nom) {
   const c = nr.list.find((x) => x.id === id) || (hs.all || []).find((x) => x.id === id); if (!c || nr.busy) return;
@@ -3396,7 +3567,7 @@ document.addEventListener('click', (e) => {
 
 // =====================================================================
 // v42 : (A) le livreur change la quantité à la porte (le prix se recalcule ; le dispatch est averti au milieu
-//       de l'écran, « OK, compris ») · (B) le livreur ajoute une vente lui-même (passe tout de suite ; Interac /
+//       de l'écran, « OK, compris ») · (B) le livreur ajoute une vente lui-même (passe tout de suite ; EMT /
 //       crypto = 🔴 pas encore reçu, à confirmer) · (C) tout changement de paiement dans l'Historique = accord du livreur.
 // =====================================================================
 const qv = { L: 0, XL: 0, err: '', busy: false };
@@ -3405,7 +3576,7 @@ const dayKey = (d) => { const x = new Date(d); return x.getFullYear() + '-' + St
 function payOld(c) { const e = Number(c.encaisser) || 0; return e > 0 ? 'cash' : 'int'; }
 function payWord2(mode, cash) {
   const cs = '🔵 ' + money(Number(cash) || 0) + ' cash';
-  return mode === 'cash' ? cs : mode === 'int' ? '🟡 Interac' : mode === 'cry' ? '🟣 crypto' : mode === 'mixc' ? cs + ' + 🟣 crypto' : cs + ' + 🟡 Interac';
+  return mode === 'cash' ? cs : mode === 'int' ? '🟡 EMT' : mode === 'cry' ? '🟣 crypto' : mode === 'mixc' ? cs + ' + 🟣 crypto' : cs + ' + 🟡 EMT';
 }
 function qtyPanel(c) {
   const d = (qv.L - (c.L || 0)) * cfg.prixL + (qv.XL - (c.XL || 0)) * cfg.prixXL, enc = (Number(c.encaisser) || 0) + d, mine = st(me.mid);
@@ -3439,6 +3610,12 @@ function bindQty(c) {
 }
 // Le dispatch : garder le total privé à jour + message au milieu de l'écran
 function qtySync() {
+  // v52 : le client a tout payé en cash à la porte → le total privé suit
+  Object.values(cmds).forEach((c) => {
+    if (!c.porteLe || !(isOwner() || isStaff())) return;
+    const ms = tsMs(c.porteLe), p = prive[c.id];
+    if (p && p.porteMs !== ms) { setDoc(doc(db, 'cmdPrive', c.id), { mode: 'cash', cash: c.encaisser || 0, interac: 0, total: c.encaisser || 0, recu: true, porteMs: ms }, { merge: true }).catch(() => {}); p.porteMs = ms; }
+  });
   Object.values(cmds).forEach((c) => {
     if (!c.qtyLe) return;
     const ms = tsMs(c.qtyLe), p = prive[c.id];
@@ -3447,7 +3624,7 @@ function qtySync() {
       setDoc(doc(db, 'cmdPrive', c.id), { total0: t0, total: t0 + (c.qtyDelta || 0), cash: c.encaisser || 0, mode: c.paieMode || p.mode, qtyMs: ms }, { merge: true }).catch(() => {});
       p.qtyMs = ms;
     }
-    popAdd('q' + c.id + ms, ms, '✏️ Quantité changée', '<b>' + esc(nomDe(c.livreur)) + '</b> chez <b>' + esc(c.client) + '</b> :<br>le client prend <b>' + esc(qtyTxt(c)) + '</b> au lieu de ' + esc(qtyTxt(c.qtyAvant || {})) + '.<br>À encaisser : <b style="color:' + PCOL.cash + '">' + money(c.encaisser || 0) + ' cash</b>');
+    if (!c.qtyPorte) popAdd('q' + c.id + ms, ms, '✏️ Quantité changée', '<b>' + esc(nomDe(c.livreur)) + '</b> chez <b>' + esc(c.client) + '</b> :<br>le client prend <b>' + esc(qtyTxt(c)) + '</b> au lieu de ' + esc(qtyTxt(c.qtyAvant || {})) + '.<br>À encaisser : <b style="color:' + PCOL.cash + '">' + money(c.encaisser || 0) + ' cash</b>');
   });
 }
 function ventePop(c) {
@@ -3479,10 +3656,10 @@ function venteHtml(s) {
   return '<div class="card" style="border:2px solid #f5b301"><div style="font-weight:800;font-size:16px;margin-bottom:8px">➕ Ajouter une vente</div>' +
     '<div class="small">Client</div><input id="vtClient" value="' + esc(vt.client) + '" placeholder="Nom du client" maxlength="60">' +
     '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="vtL" type="number" inputmode="numeric" min="0" value="' + esc(vt.L) + '"></div><div style="flex:1"><div class="small">XL</div><input id="vtXL" type="number" inputmode="numeric" min="0" value="' + esc(vt.XL) + '"></div></div>' +
-    '<div class="small">Paiement · total <b id="vtTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], vt.mode, 'data-vm') +
+    '<div class="small">Paiement · total <b id="vtTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], vt.mode, 'data-vm') +
     (vt.mode === 'cash' ? '<div class="small">Cash reçu (laisse vide = le total)</div><input id="vtRecu" type="number" inputmode="numeric" value="' + esc(vt.recu) + '" placeholder="' + tot + '">'
-      : vt.mode === 'mix' ? '<div class="small">Partie cash reçue ($) — le reste en Interac</div><input id="vtCash" type="number" inputmode="numeric" value="' + esc(vt.cash) + '">' : '') +
-    (vt.mode !== 'cash' ? '<div class="small" style="color:#fca5a5;line-height:1.5">Le dispatch confirmera ' + (vt.mode === 'cry' ? 'la crypto' : 'l’Interac') + ' (🔴 pas encore reçu en attendant).</div>' : '') +
+      : vt.mode === 'mix' ? '<div class="small">Partie cash reçue ($) — le reste en EMT</div><input id="vtCash" type="number" inputmode="numeric" value="' + esc(vt.cash) + '">' : '') +
+    (vt.mode !== 'cash' ? '<div class="small" style="color:#fca5a5;line-height:1.5">Le dispatch confirmera ' + (vt.mode === 'cry' ? 'la crypto' : 'l’EMT') + ' (🔴 pas encore reçu en attendant).</div>' : '') +
     (vt.err ? '<div class="err">' + esc(vt.err) + '</div>' : '') +
     '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="vtX">Fermer</button><button class="btn ok sm" id="vtGo"' + (vt.busy ? ' disabled' : '') + '>' + (vt.busy ? '…' : 'Enregistrer la vente') + '</button></div></div>';
 }
@@ -3516,7 +3693,7 @@ document.addEventListener('click', async (e) => {
       b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
     }
     await b.commit();
-    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : mode === 'mix' ? enc + ' $ cash + Interac (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'Interac (à confirmer)'));
+    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : mode === 'mix' ? enc + ' $ cash + EMT (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'EMT (à confirmer)'));
     vt.open = false; vt.busy = false; renderSoiree();
   } catch (err) { vt.busy = false; fail(msg(err)); }
 });
@@ -3573,7 +3750,7 @@ async function loadCash() {
       const rid = x.responsable; if (!rid || rid === 'dispatch' || rid === 'proprietaire') return;
       if (x.statut === 'ouverte') { const p = per(rid); p.dette += x.montant || 0; day(p, tsMs(x.creeLe)).lines.push({ t: tsMs(x.creeLe), txt: '📒 Dette ouverte · ' + (x.client || ''), m: 0, dm: x.montant || 0, att: true }); }
       if (x.statut === 'reglee' && tsMs(x.regleLe) >= CASH_START.getTime()) { const p = per(rid), cash = x.regleMode === 'cash';
-        day(p, tsMs(x.regleLe)).lines.push({ t: tsMs(x.regleLe), txt: '📒 Dette réglée ' + (cash ? 'en cash' : 'par Interac') + ' · ' + (x.client || ''), m: cash ? (x.montant || 0) : 0, dm: cash ? 0 : x.montant || 0, ok: true });
+        day(p, tsMs(x.regleLe)).lines.push({ t: tsMs(x.regleLe), txt: '📒 Dette réglée ' + (cash ? 'en cash' : 'par EMT') + ' · ' + (x.client || ''), m: cash ? (x.montant || 0) : 0, dm: cash ? 0 : x.montant || 0, ok: true });
         if (cash) p.solde += x.montant || 0; }
     });
     cs.data = Object.values(P).sort((a, b) => b.solde - a.solde); cs.err = '';
@@ -3608,7 +3785,7 @@ function drawCash() {
 
 // =====================================================================
 // v46 : une dette se ferme toute seule quand le paiement de sa commande est confirmé après coup
-//       (« ✓ Interac / crypto reçu », paiement changé dans l'Historique et accepté par le livreur…).
+//       (« ✓ EMT / crypto reçu », paiement changé dans l'Historique et accepté par le livreur…).
 //       Tourne chez Wayne et MOUSSE (ceux qui peuvent régler une dette), chaque minute.
 // =====================================================================
 async function detteSweep() {
@@ -3641,7 +3818,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 51;
+const APP_V = 52;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
