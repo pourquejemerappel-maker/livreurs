@@ -29,6 +29,10 @@ const auth2 = initializeAuth(app2, { persistence: inMemoryPersistence });
 const $ = (id) => document.getElementById(id);
 const OWNER = 'Wayne'; // v33 : nom affiché du propriétaire
 const dispName = (n) => (n === 'Propriétaire' ? OWNER : n);
+// v56 : personnes cachées d'office pour le dispatch limité (Lost) : jamais visibles nulle part.
+const CACHES = ['jabari'];
+const hidId = (x) => !!(me && me.role === 'limite' && x && CACHES.includes(x));
+const hidDoc = (r) => !!(me && me.role === 'limite' && r && ['livreur', 'mid', 'de', 'vers', 'par', 'responsable'].some((k) => CACHES.includes(r[k])));
 const ROLES = { proprio: 'Propriétaire', complet: 'Dispatch complet', limite: 'Dispatch limité', livreur: 'Livreur' };
 const DESC = {
   complet: 'Tout sauf les prix, les paies, les mots de passe, l’équipe et les ajouts à la réserve.',
@@ -369,18 +373,19 @@ function startLive() {
   dons.list = []; setTimeout(startDons, 0);
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   sortis = {}; setTimeout(startSortis, 0);
-  stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { team[d.id] = d.data(); }); renderTeam(); renderAll(); }, () => {}));
+  stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { if (!hidId(d.id)) team[d.id] = d.data(); }); renderTeam(); limStocks(); renderAll(); }, () => {}));
   if (isOwner()) stops.push(onSnapshot(collection(db, 'paies'), (qs) => { paies = {}; qs.forEach((d) => { paies[d.id] = d.data().paie; }); renderTeam(); }, () => {}));
   else if (me.mid) stops.push(onSnapshot(doc(db, 'paies', me.mid), (s) => { if (s.exists()) paies[me.mid] = s.data().paie; }, () => {}));
   // Stock : le propriétaire et le dispatch complet voient tout ; les autres seulement le leur.
   if (isOwner() || me.role === 'complet') {
     stops.push(onSnapshot(collection(db, 'stocks'), (qs) => { stocks = {}; qs.forEach((d) => { stocks[d.id] = d.data(); }); renderAll(); }, () => {}));
   } else {
-    stops.push(onSnapshot(doc(db, 'stocks', me.mid), (s) => { stocks = {}; if (s.exists()) stocks[me.mid] = s.data(); renderAll(); }, () => {}));
+    stops.push(onSnapshot(doc(db, 'stocks', me.mid), (s) => { if (s.exists()) stocks[me.mid] = s.data(); else delete stocks[me.mid]; renderAll(); }, () => {}));
+    stops.push(() => { Object.keys(limSt).forEach((k) => { limSt[k](); delete limSt[k]; }); stocks = {}; });
   }
   if (isOwner() || isStaff()) {
-    stops.push(onSnapshot(query(collection(db, 'soirees'), where('statut', 'in', ACTIVES)), (qs) => { soirees = {}; qs.forEach((d) => { soirees[d.id] = d.data(); }); renderAll(); }, (e) => console.warn(e)));
-    stops.push(onSnapshot(query(collection(db, 'mouvements'), orderBy('le', 'desc'), limit(15)), (qs) => { mvts = []; qs.forEach((d) => mvts.push(d.data())); renderAll(); }, () => {}));
+    stops.push(onSnapshot(query(collection(db, 'soirees'), where('statut', 'in', ACTIVES)), (qs) => { soirees = {}; qs.forEach((d) => { if (!hidDoc(d.data())) soirees[d.id] = d.data(); }); renderAll(); }, (e) => console.warn(e)));
+    stops.push(onSnapshot(query(collection(db, 'mouvements'), orderBy('le', 'desc'), limit(15)), (qs) => { mvts = []; qs.forEach((d) => { if (!hidDoc(d.data())) mvts.push(d.data()); }); renderAll(); }, () => {}));
   }
   if (delivers()) {
     stops.push(onSnapshot(query(collection(db, 'soirees'), where('mid', '==', me.mid), where('statut', 'in', ACTIVES)), (qs) => {
@@ -519,11 +524,21 @@ function giveTargets(from) {
   }
   return complets.concat(complets.map(DEP));                                                // lost : seulement retourner à MOUSSE ou à son dépôt
 }
+// v56 : Lost voit le stock des livreurs (jamais ceux de CACHES), un document à la fois (permis par les règles).
+const limSt = {};
+const limIds = () => Object.keys(team).filter((id) => id !== me.mid && team[id].role === 'livreur' && !hidId(id) && (team[id].actif || (stocks[id] && (stocks[id].L || stocks[id].XL))))
+  .sort((a, b) => team[a].nom.localeCompare(team[b].nom, 'fr'));
+function limStocks() {
+  if (!me || me.role !== 'limite') return;
+  const want = Object.keys(team).filter((id) => id !== me.mid && team[id].role === 'livreur' && !hidId(id));
+  Object.keys(limSt).forEach((id) => { if (!want.includes(id)) { limSt[id](); delete limSt[id]; delete stocks[id]; } });
+  want.forEach((id) => { if (!limSt[id]) limSt[id] = onSnapshot(doc(db, 'stocks', id), (s) => { if (s.exists()) stocks[id] = s.data(); else delete stocks[id]; renderAll(); }, () => {}); });
+}
 function renderStock() {
   const all = isOwner() || me.role === 'complet';
   const ids = all ? [].concat(...Object.keys(team).filter((id) => team[id].actif || (stocks[id] && (stocks[id].L || stocks[id].XL)))
     .sort((a, b) => ({ complet: 0, limite: 1, livreur: 2 }[team[a].role] - { complet: 0, limite: 1, livreur: 2 }[team[b].role]) || team[a].nom.localeCompare(team[b].nom, 'fr'))
-    .map((id) => (team[id].role === 'complet' ? [id, DEP(id)] : [id]))) : [me.mid];
+    .map((id) => (team[id].role === 'complet' ? [id, DEP(id)] : [id]))) : me.role === 'limite' ? [me.mid].concat(limIds()) : [me.mid];
   $('stockList').innerHTML = ids.map((id) => '<div class="srow"><span>' + (isDep(id) ? '&nbsp;&nbsp;↳ ' : '') + esc(isDep(id) ? 'au dépôt' : nomDe(id) + (team[id] && team[id].role === 'complet' ? ' (sur lui)' : '')) + (id === me.mid ? ' · moi' : '') + '</span><b>' + qty(st(id)) + (isOwner() ? ' <button class="linkbtn" data-fix="' + id + '" style="padding:0 0 0 8px">✏️</button>' : '') + '</b></div>' + (isOwner() && fixS.id === id ? fixForm(id) : '')).join('') +
     (isOwner() ? '<button class="linkbtn" id="fixAll" style="margin-top:8px;color:var(--danger)">' + (fixS.all ? 'Appuie encore : tout le monde à 0 L · 0 XL' : '🔄 Remettre tout le monde à 0') + '</button><div class="err" id="fixErr"></div>' : '');
   bindFix(ids);
@@ -712,16 +727,16 @@ function startOrders() {
   stops.push(onSnapshot(doc(db, 'config', 'app'), (s) => { if (s.exists()) cfg = Object.assign({ prixL: 150, prixXL: 220, mapsKey: '' }, s.data()); renderAll(); renderSoiree(); renderCfg(); }, () => {}));
   if (isOwner() || isStaff()) {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('statut', 'in', ['attente', 'assignee', 'ici'])), (qs) => {
-      cmds = {}; qs.forEach((d) => { cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll(); qtySync();
+      cmds = {}; qs.forEach((d) => { if (!hidDoc(d.data())) cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll(); qtySync();
     }, (e) => console.warn(e)));
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('nonRecu', '==', true)), (qs) => { // v41
-      nr.list = []; qs.forEach((d) => nr.list.push(Object.assign({ id: d.id }, d.data()))); nr.list = nr.list.filter((c) => c.statut === 'livree').sort((a, b) => tsMs(a.livreeLe) - tsMs(b.livreeLe));
+      nr.list = []; qs.forEach((d) => nr.list.push(Object.assign({ id: d.id }, d.data()))); nr.list = nr.list.filter((c) => c.statut === 'livree' && !hidDoc(c)).sort((a, b) => tsMs(a.livreeLe) - tsMs(b.livreeLe));
       nrPrv(); nrBadge(); if (curTab === 'histo') drawHisto();
     }, (e) => console.warn(e)));
     { const k0 = dayKey(soirStart()), k1 = dayKey(new Date(soirStart().getTime() - 86400000)); // v42 : ventes des livreurs
       stops.push(onSnapshot(query(collection(db, 'commandes'), where('venteJour', 'in', [k0, k1])), (qs) => {
-        qs.forEach((d) => { const c = Object.assign({ id: d.id }, d.data()); if (c.vente) ventePop(c); }); }, (e) => console.warn(e))); }
-    stops.push(onSnapshot(collection(db, 'reglages'), (qs) => { regs = {}; qs.forEach((d) => { regs[d.id] = d.data(); }); }, () => {}));
+        qs.forEach((d) => { const c = Object.assign({ id: d.id }, d.data()); if (c.vente && !hidDoc(c)) ventePop(c); }); }, (e) => console.warn(e))); }
+    stops.push(onSnapshot(collection(db, 'reglages'), (qs) => { regs = {}; qs.forEach((d) => { if (!hidId(d.id)) regs[d.id] = d.data(); }); }, () => {}));
     stops.push(onSnapshot(query(collection(db, 'cmdPrive'), where('actif', '==', true)), (qs) => {
       prive = {}; qs.forEach((d) => { prive[d.id] = d.data(); }); renderAll();
     }, (e) => console.warn(e)));
@@ -1040,7 +1055,7 @@ function sortiGate(x) {
 }
 function startSortis() {
   if (!(isOwner() || isStaff())) return;
-  stops.push(onSnapshot(collection(db, 'sortis'), (qs) => { sortis = {}; qs.forEach((d) => { sortis[d.id] = d.data(); }); renderQueues(); }, () => {}));
+  stops.push(onSnapshot(collection(db, 'sortis'), (qs) => { sortis = {}; qs.forEach((d) => { if (!hidId(d.id)) sortis[d.id] = d.data(); }); renderQueues(); }, () => {}));
 }
 function sortisHtml() {
   const L = Object.entries(sortis).filter(([, x]) => x.etat === 'attente');
@@ -1743,12 +1758,12 @@ function startDm() {
   if (isOwner() || isStaff()) {
     stops.push(onSnapshot(query(collection(db, 'messages'), orderBy('le', 'desc'), limit(400)), (qs) => {
       const seen = new Set(dm.all.map((m) => m.id)), had = dm.all.length > 0 || dm.ready;
-      dm.all = []; qs.forEach((d) => dm.all.push(Object.assign({ id: d.id }, d.data()))); dm.all.reverse(); drawDm();
+      dm.all = []; qs.forEach((d) => { if (!hidDoc(d.data())) dm.all.push(Object.assign({ id: d.id }, d.data())); }); dm.all.reverse(); drawDm();
       const nw = dm.all.filter((m) => !seen.has(m.id) && m.de === 'livreur');
       if (had && nw.length) { const m = nw[nw.length - 1]; bulle(nomDe(m.mid), m.txt, () => { dm.open = m.mid; setTab('direct'); drawDm(); const el = $('dmCard'); if (el) el.scrollIntoView({ behavior: 'smooth' }); setTimeout(() => $('dmTxt') && $('dmTxt').focus(), 400); }); }
       dm.ready = true;
     }, () => {}));
-    stops.push(onSnapshot(collection(db, 'lus'), (qs) => { dm.lus = {}; qs.forEach((d) => { dm.lus[d.id] = d.data(); }); drawDm(); }, () => {}));
+    stops.push(onSnapshot(collection(db, 'lus'), (qs) => { dm.lus = {}; qs.forEach((d) => { if (!hidId(d.id)) dm.lus[d.id] = d.data(); }); drawDm(); }, () => {}));
   }
   if (me.role === 'livreur' || me.role === 'limite') {
     let first = true;
@@ -1923,7 +1938,7 @@ async function remisDepuis(d, mid) {
   const out = {};
   try {
     const qs = await getDocs(mid ? query(collection(db, 'remises'), where('de', '==', mid)) : query(collection(db, 'remises'), where('le', '>=', d)));
-    qs.forEach((x) => { const r = x.data(); const t = r.le && r.le.toDate ? r.le.toDate() : null; if (r.statut === 'recue' && t && t >= d) out[r.de] = (out[r.de] || 0) + (Number(r.montant) || 0); });
+    qs.forEach((x) => { const r = x.data(); const t = r.le && r.le.toDate ? r.le.toDate() : null; if (!hidDoc(r) && r.statut === 'recue' && t && t >= d) out[r.de] = (out[r.de] || 0) + (Number(r.montant) || 0); });
   } catch (e) {}
   return out;
 }
@@ -1940,7 +1955,7 @@ function startRemises() {
       drawPop();
     }, () => {}));
   }
-  stops.push(onSnapshot(collection(db, 'dispos'), (qs) => { rm.dispos = {}; qs.forEach((d) => { rm.dispos[d.id] = d.data(); }); drawPop(); }, () => {}));
+  stops.push(onSnapshot(collection(db, 'dispos'), (qs) => { rm.dispos = {}; qs.forEach((d) => { if (!hidId(d.id)) rm.dispos[d.id] = d.data(); }); drawPop(); }, () => {}));
   syncDispo();
 }
 // Le dispatch s'annonce (pour apparaître dans la liste « Donner à… » des livreurs).
@@ -2530,7 +2545,7 @@ function histoRange() {
 }
 async function rangeDocs(col, field, a, b) {
   const out = [];
-  try { const qs = await getDocs(query(collection(db, col), where(field, '>=', a), where(field, '<', b))); qs.forEach((d) => out.push(Object.assign({ id: d.id }, d.data()))); } catch (e) { console.warn(col, e); }
+  try { const qs = await getDocs(query(collection(db, col), where(field, '>=', a), where(field, '<', b))); qs.forEach((d) => { if (!hidDoc(d.data())) out.push(Object.assign({ id: d.id }, d.data())); }); } catch (e) { console.warn(col, e); }
   return out;
 }
 async function loadHisto() {
@@ -3992,7 +4007,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 55;
+const APP_V = 56;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
