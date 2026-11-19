@@ -1152,9 +1152,8 @@ function myOrdersHtml(s) {
     : c.bloque ? '<div class="banner b-no">Pas payé — attends le dispatch</div>'
     : c.encaisser > 0 ? '<div class="banner" style="background:var(--card2);border:1px solid var(--line)">💵 À encaisser : <b>' + c.encaisser + ' $</b> cash</div>'
     : '<div class="banner" style="background:#0f2a1a;color:#86efac">✓ Déjà payé — rien à encaisser</div>';
-  let h = '<div class="card now"><div class="small">Commande 1 sur ' + myCmds.length + (myCmds[1] ? ' · ensuite : ' + esc(myCmds[1].client) : '') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) +
-    '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b></span></a>' +
-    '<div class="small">' + esc(qtyTxt(c)) + '</div>' + when + band + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') +
+  let h = '<div class="card now"><div class="small">Commande 1 sur ' + myCmds.length + (myCmds[1] ? ' · ensuite : ' + esc(myCmds[1].client) : '') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) + qtyChips(c) +
+    '<a class="addr" href="' + mapsUrl(c) + '" target="_blank" rel="noopener"><span class="pin">📍</span><span><b>' + esc(c.adresse) + '</b></span></a>' + when + band + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '') +
     '<div class="err" id="mcErr"></div>' +
     '<div style="display:flex;gap:6px;margin:12px 0 8px"><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvPay">💳 Paiement</button>' +
     (c.statut !== 'ici' ? '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="mcLate">⏱ +5 min</button>' : '') +
@@ -2665,7 +2664,7 @@ function bandOf(c) {
 }
 function ubCard(c) {
   const up = c.type === 'pickup';
-  let h = '<div class="card now"><div class="small">' + (up ? '📍 Pick-up' : '🚕 Uber') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) + '<div class="small">' + esc(qtyTxt(c)) + '</div>' + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '');
+  let h = '<div class="card now"><div class="small">' + (up ? '📍 Pick-up' : '🚕 Uber') + '</div><div class="client">' + esc(c.client) + '</div>' + testTag(c) + qtyChips(c) + (c.note ? '<div class="note2">📝 ' + esc(c.note) + '</div>' : '');
   if (!c.accepte) {
     return h + '<div class="banner" style="background:#3a2a05;color:#fcd34d">Nouveau ' + (up ? 'pick-up : le client vient chez toi' : 'Uber') + '</div><div class="two"><button class="btn red" data-ua="no:' + c.id + '">Refuser</button><button class="btn ok" data-ua="ok:' + c.id + '">✓ Accepter</button></div></div>';
   }
@@ -2933,4 +2932,11 @@ function ciPickHtml() {
     '<label class="chk"><input type="checkbox" id="ciSame" ' + (ci.same ? 'checked' : '') + '> Même adresse que les Uber</label>' +
     (ci.same ? '' : '<input id="ciPick" placeholder="Adresse de pick-up avec code postal" autocomplete="off" value="' + esc(ci.pickQ || '') + '">') +
     '<p class="small" style="margin-top:0">Gardée pour la prochaine fois. Tu peux la changer pour un seul pick-up plus tard.</p>';
+}
+
+// v32 : la quantité en grosses cases de couleur (L bleu, XL mauve) sur la commande du livreur.
+function qtyChips(c) {
+  const box = (n, f, bg) => '<div style="flex:1;border-radius:14px;padding:10px 6px;text-align:center;background:' + bg + '"><div style="font-size:30px;font-weight:900;line-height:1">' + n + '</div><div style="font-size:15px;font-weight:700;margin-top:2px">' + f + '</div></div>';
+  const h = (c.L ? box(c.L, 'L', '#16324f') : '') + (c.XL ? box(c.XL, 'XL', '#3b2350') : '');
+  return h ? '<div style="display:flex;gap:8px;margin:10px 0">' + h + '</div>' : '';
 }
