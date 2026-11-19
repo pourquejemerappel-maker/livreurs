@@ -159,7 +159,10 @@ const delivers = () => me && (me.role === 'livreur' || me.livre || me.role === '
 const isDispMode = (s) => !!(s && s.mode === 'dispatch');
 const working = (s) => s.statut === 'ouverte' && !isDispMode(s); // en service comme livreur
 const doesDisp = (s) => !!(s && (s.mode === 'dispatch' || s.mode === 'les2')); // lost : dispatch seul, ou livreur + dispatch
-const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte' && doesDisp(mySoiree));
+// v57 : Lost (limité) peut faire le dispatch seulement lundi et mardi (jour de la soirée : avant 6 h = la veille). MOUSSE : n'importe quand.
+const LIM_JOURS = [1, 2];
+const limJourOk = () => LIM_JOURS.includes(soirStart().getDay());
+const locked = () => me && me.role === 'limite' && !(mySoiree && mySoiree.statut === 'ouverte' && doesDisp(mySoiree) && limJourOk());
 function buildTabs() {
   const t = [];
   if (me.role === 'limite') t.push(['soiree', 'Ma soirée']);
@@ -606,16 +609,18 @@ function renderSoiree() {
   const s = mySoiree, mine = st(me.mid);
   let h = '';
   if (!s) {
+    if (me.role === 'limite' && !limJourOk()) ci.mode = 'livreur';
     const dmode = me.role === 'limite' && ci.mode === 'dispatch';
     h = '<div class="card"><div class="label">Commencer ma soirée</div>' +
-      (me.role === 'limite' ? '<p class="small" style="margin-top:0">Ce soir je fais :</p><div class="seg" id="ciMode">' + [['livreur', '🚗 Livreur'], ['dispatch', '🧭 Dispatch'], ['les2', '🚗+🧭 Les deux']].map((x) =>
+      (me.role === 'limite' && limJourOk() ? '<p class="small" style="margin-top:0">Ce soir je fais :</p><div class="seg" id="ciMode">' + [['livreur', '🚗 Livreur'], ['dispatch', '🧭 Dispatch'], ['les2', '🚗+🧭 Les deux']].map((x) =>
         '<button data-m="' + x[0] + '" class="' + ((ci.mode || 'livreur') === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>' : '') +
+      (me.role === 'limite' && !limJourOk() ? '<p class="small" style="margin-top:0">🧭 Le dispatch, c’est seulement le lundi et le mardi. Ce soir tu livres.</p>' : '') +
       (dmode ? '' : (me.uber ? ciUberPre() + '<p class="small" style="margin-top:0"><b style="color:var(--text)">1. D’où tu envoies les Uber ?</b><br>Le dispatch s’en sert pour savoir où tu es.</p>' : '<p class="small" style="margin-top:0">Où es-tu en ce moment ?</p>') +
       '<input id="ciAdr" placeholder="Ex. 1400 Sainte-Catherine" autocomplete="off" value="' + esc(ci.q) + '">' +
       '<div id="ciSugs"></div>' +
       '<p class="small" style="margin-top:0">Tu peux aussi écrire une adresse qui n’est pas dans la liste.</p>' + (me.uber ? ciPickHtml() : '')) +
       ((mine.L || mine.XL) ? '<p class="small">Tu as déjà sur toi : <b style="color:var(--text)">' + qty(mine) + '</b></p>' : '') +
-      (me.role === 'limite' ? '<p class="small">MOUSSE ou Wayne doit t’autoriser' + (ci.mode === 'dispatch' || ci.mode === 'les2' ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
+      (me.role === 'limite' ? '<p class="small">MOUSSE ou Wayne doit t’autoriser' + (limJourOk() && (ci.mode === 'dispatch' || ci.mode === 'les2') ? ' avant que tu puisses faire le dispatch.' : '.') + '</p>' : '') +
       '<div class="err" id="ciErr"></div><button class="btn ok" id="ciGo">Envoyer la demande</button></div>';
   } else if (s.statut === 'demande') {
     h = '<div class="card"><div class="wait"><span class="dot"></span><b>' + (me.role === 'limite' ? 'En attente de MOUSSE ou de Wayne…' : 'En attente du dispatch…') + '</b></div>' +
@@ -677,7 +682,7 @@ function drawSugs() {
   box.querySelectorAll('[data-i]').forEach((d) => { d.onclick = () => { const x = ci.sugs[+d.dataset.i]; ci.pick = x; ci.q = x.l1 + ', ' + x.l2; $('ciAdr').value = ci.q; drawSugs(); }; });
 }
 async function requestStart() {
-  const mode = me.role === 'limite' && (ci.mode === 'dispatch' || ci.mode === 'les2') ? ci.mode : 'livreur';
+  const mode = me.role === 'limite' && limJourOk() && (ci.mode === 'dispatch' || ci.mode === 'les2') ? ci.mode : 'livreur';
   const adr = mode === 'dispatch' ? 'Dispatch' : ci.q.trim();
   if (adr.length < 4) { $('ciErr').textContent = me.uber ? 'Écris d’où tu envoies les Uber.' : 'Écris où tu es.'; return; }
   if (me.uber) { // v31 : Samuel donne aussi son adresse de pick-up (gardée pour la prochaine fois)
@@ -4007,7 +4012,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 56;
+const APP_V = 57;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
