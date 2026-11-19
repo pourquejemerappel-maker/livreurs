@@ -2971,7 +2971,7 @@ function openDmWith(mid) {
 // La commande marche comme une vraie (étiquette 🧪 TEST), mais à la livraison : pas de stock enlevé, pas de compteur,
 // pas de paie, et elle ne compte dans aucun total (résumés, bulle 💰, historique). Elle reste visible en gris dans
 // l'historique, puis le propriétaire ou MOUSSE l'efface toute seule 15 minutes après (commande + montants + lien client).
-const isTestName = (n) => /(^|[^\p{L}\p{N}])test\d*(?![\p{L}])/iu.test(String(n || '')); // v49 : le mot « test » seul (pas « Testa », « Celeste »)
+const isTestName = (n) => (String(n || '').match(/(^|[^\p{L}\p{N}])test\d*(?![\p{L}])/giu) || []).length >= 2; // v50 : le mot « test » écrit 2 fois (ex. « test test », « test2 test2 »)
 function testTag(c) { return c && c.test ? '<div style="display:inline-block;margin:4px 0;padding:3px 10px;border-radius:999px;background:#3a2a05;color:#fcd34d;font-size:13px;font-weight:700">🧪 TEST — ne compte pas</div>' : ''; }
 let testSweepOn = false;
 async function sweepTests() {
@@ -3641,7 +3641,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 49;
+const APP_V = 50;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
