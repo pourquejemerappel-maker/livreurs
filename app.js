@@ -2982,7 +2982,7 @@ async function sweepTests() {
     if (n) await b.commit();
   } catch (e) { console.warn('tests', e); }
 }
-function startTestSweep() { if (testSweepOn) return; testSweepOn = true; setTimeout(sweepTests, 5000); setInterval(sweepTests, 60000); }
+function startTestSweep() { if (testSweepOn) return; testSweepOn = true; setTimeout(sweepTests, 5000); setInterval(sweepTests, 60000); setTimeout(detteSweep, 7000); setInterval(detteSweep, 60000); }
 
 // v31 : check-in de Samuel (mode Uber) — 2 adresses : d'où partent les Uber + où les clients viennent chercher (pick-up).
 // Pré-remplies avec celles de la dernière fois (reglages/{mid} : uberAdr, pickAdr).
@@ -3125,7 +3125,7 @@ function bindPayEdit(C, run) {
         b.update(doc(db, 'commandes', c.id), Object.assign({ paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, chg: null, chgRep: null, aValider: false }, mod));
         b.set(doc(db, 'cmdPrive', c.id), Object.assign(pv, { next: null, recu }), { merge: true });
       }
-      await b.commit();
+      await b.commit(); if (!ask) detteSweep();
       if (ask) notifyMsg(c.livreur, '💳 ' + (me.nom || OWNER) + ' change le paiement de ' + c.client + ' : ' + payWord2(mode, cash) + '. Ouvre l’app pour dire si tu es d’accord.');
     });
   }; });
@@ -3369,6 +3369,7 @@ async function nrConfirm(id, coin) {
     b.update(doc(db, 'commandes', id), Object.assign({ nonRecu: false, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}));
     b.set(doc(db, 'cmdPrive', id), Object.assign({ recu: true }, coin ? { crypto: coin } : {}), { merge: true });
     await b.commit();
+    detteSweep();
     nr.busy = null; if (hs.text != null) await loadHisto(); else drawHisto();
   } catch (e) { nr.busy = null; hx.err = msg(e); drawHisto(); }
 }
@@ -3587,4 +3588,34 @@ function drawCash() {
   box.innerHTML = h;
   box.querySelectorAll('[data-cs]').forEach((el) => { el.onclick = () => { cs.sel = cs.sel === el.dataset.cs ? null : el.dataset.cs; drawCash(); }; });
   if ($('csReload')) $('csReload').onclick = () => loadCash();
+}
+
+
+// =====================================================================
+// v46 : une dette se ferme toute seule quand le paiement de sa commande est confirmé après coup
+//       (« ✓ Interac / crypto reçu », paiement changé dans l'Historique et accepté par le livreur…).
+//       Tourne chez Wayne et MOUSSE (ceux qui peuvent régler une dette), chaque minute.
+// =====================================================================
+async function detteSweep() {
+  if (!canDette()) return;
+  try {
+    const qs = await getDocs(query(collection(db, 'commandes'), where('dette', '!=', null)));
+    const list = []; qs.forEach((d) => list.push(d));
+    for (const d of list) {
+      const c = Object.assign({ id: d.id }, d.data());
+      if (!c.dette || c.statut !== 'livree' || c.nonRecu || c.chg || c.bloque) continue;
+      const ds = await getDoc(doc(db, 'dettes', c.dette)); if (!ds.exists()) continue;
+      const x = ds.data(); if (x.statut !== 'ouverte') { if (x.statut === 'reglee') await writeBatch(db).update(doc(db, 'commandes', c.id), { dette: null }).commit(); continue; }
+      const t0 = tsMs(x.decideLe || x.creeLe);
+      const conf = [c.confirmeLe, c.chgRep === 'ok' ? c.chgRepLe : null, c.paieModLe && !c.chg ? c.paieModLe : null].filter(Boolean).map(tsMs).filter((t) => t > t0).sort((a, b) => b - a)[0];
+      if (!conf) continue;
+      const mode = c.paieMode === 'cash' ? 'cash' : c.paieMode === 'cry' || c.paieMode === 'mixc' ? 'cry' : 'int';
+      const nom = c.confirmeNom || c.paieModNom || OWNER, par = c.confirmePar || c.paieModPar || myMid();
+      const b = writeBatch(db);
+      b.update(doc(db, 'dettes', c.dette), { statut: 'reglee', regleMode: mode, reglePar: par, regleParNom: nom, regleLe: new Date(conf), regleAuto: true });
+      b.update(doc(db, 'commandes', c.id), { dette: null });
+      b.set(doc(db, 'cmdPrive', c.id), { dette: null }, { merge: true });
+      await b.commit();
+    }
+  } catch (e) { console.warn('detteSweep', e); }
 }
