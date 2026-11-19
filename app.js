@@ -3012,6 +3012,8 @@ function payOf(c) {
   const cash = Number(c.cashRecu) || 0;
   const int = mode === 'int' ? total : mode === 'mix' ? (p.interac != null ? p.interac : Math.max(0, total - (c.encaisser || 0))) : 0;
   const cryv = mode === 'cry' ? total : 0;
+  // v37 : « paie plus tard » (dette) — pas encaissé : on le montre à part, il ne compte pas dans les totaux
+  if (c.dette) return { cash, int: 0, cry: 0, coin: '', dette: Math.max(0, (mode === 'cash' ? (c.encaisser || total) : total) - cash) };
   return { cash, int, cry: cryv, coin: c.crypto || p.crypto || '' };
 }
 function payHtml(q) {
@@ -3019,5 +3021,6 @@ function payHtml(q) {
   if (q.cash) parts.push('<span style="color:' + PCOL.cash + '">🔵 ' + money(q.cash) + '</span>');
   if (q.int) parts.push('<span style="color:' + PCOL.int + '">🟡 ' + money(q.int) + '</span>');
   if (q.cry) parts.push('<span style="color:' + PCOL.cry + '">🟣 ' + money(q.cry) + (q.coin ? ' ' + esc(q.coin) : '') + '</span>');
+  if (q.dette) parts.push('<span style="color:#f87171">📒 ' + money(q.dette) + ' dette</span>');
   return parts.join(' + ') || '<span class="small">0 $</span>';
 }
