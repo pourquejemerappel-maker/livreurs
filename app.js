@@ -693,12 +693,15 @@ function startOrders() {
   stops.push(onSnapshot(doc(db, 'config', 'app'), (s) => { if (s.exists()) cfg = Object.assign({ prixL: 150, prixXL: 220, mapsKey: '' }, s.data()); renderAll(); renderSoiree(); renderCfg(); }, () => {}));
   if (isOwner() || isStaff()) {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('statut', 'in', ['attente', 'assignee', 'ici'])), (qs) => {
-      cmds = {}; qs.forEach((d) => { cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll();
+      cmds = {}; qs.forEach((d) => { cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll(); qtySync();
     }, (e) => console.warn(e)));
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('nonRecu', '==', true)), (qs) => { // v41
       nr.list = []; qs.forEach((d) => nr.list.push(Object.assign({ id: d.id }, d.data()))); nr.list = nr.list.filter((c) => c.statut === 'livree').sort((a, b) => tsMs(a.livreeLe) - tsMs(b.livreeLe));
       nrPrv(); nrBadge(); if (curTab === 'histo') drawHisto();
     }, (e) => console.warn(e)));
+    { const k0 = dayKey(soirStart()), k1 = dayKey(new Date(soirStart().getTime() - 86400000)); // v42 : ventes des livreurs
+      stops.push(onSnapshot(query(collection(db, 'commandes'), where('venteJour', 'in', [k0, k1])), (qs) => {
+        qs.forEach((d) => { const c = Object.assign({ id: d.id }, d.data()); if (c.vente) ventePop(c); }); }, (e) => console.warn(e))); }
     stops.push(onSnapshot(collection(db, 'reglages'), (qs) => { regs = {}; qs.forEach((d) => { regs[d.id] = d.data(); }); }, () => {}));
     stops.push(onSnapshot(query(collection(db, 'cmdPrive'), where('actif', '==', true)), (qs) => {
       prive = {}; qs.forEach((d) => { prive[d.id] = d.data(); }); renderAll();
@@ -1166,7 +1169,7 @@ function myOrdersHtml(s) {
   const soir = '<details class="card" style="margin-top:4px"><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' livraison' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
     (myCmds.length > 1 ? '<div class="label" style="margin-top:10px">Ensuite</div>' + myCmds.slice(1).map((d, i) => '<div class="q"><span class="num">' + (i + 2) + '</span><b>' + esc(d.client) + '</b> <span class="small">~' + hm(plan[i + 1]) + ' · ' + esc(qtyTxt(d)) + '</span><div class="small" style="margin-top:3px">📍 ' + esc(d.adresse) + '</div></div>').join('') : '<div class="small" style="margin-top:8px">Pas d’autre commande dans ta file.</div>') +
     '<p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse || '') + '</p></details>';
-  if (!myCmds.length) return '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🌙</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’en enverra une ici.</div></div>' + soir + finCard(s);
+  if (!myCmds.length) return '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🌙</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’en enverra une ici.</div></div>' + soir + venteHtml(s) + finCard(s);
   const c = myCmds[0], dp = c.demandePaie, bloque = c.bloque || !!dp;
   const late = c.retard ? ' <span style="color:var(--danger);font-size:14px">+' + c.retard + ' min</span>' : '';
   const when = c.statut === 'ici' ? '<div style="margin:10px 0 2px;font-size:16px">📍 Sur place depuis ' + minDe(c.iciLe) + ' min</div>'
@@ -1180,14 +1183,16 @@ function myOrdersHtml(s) {
     '<div class="err" id="mcErr"></div>' +
     '<div style="display:flex;gap:6px;margin:12px 0 8px"><button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvPay">💳 Paiement</button>' +
     (c.statut !== 'ici' ? '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="mcLate">⏱ +5 min</button>' : '') +
+    '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvQty">✏️ Quantité</button>' +
     '<button class="btn ghost" style="flex:1;padding:12px 4px;font-size:14px" id="lvMore">⋯ Autre</button></div>' + lvPanel(c);
   if (c.statut !== 'ici') h += '<button class="btn ok" id="mcHere" style="padding:18px;font-size:18px">Je suis arrivé</button>';
   else if (bloque) h += '<button class="btn" disabled style="padding:18px;font-size:17px">🔒 Livrée (attends le paiement)</button>';
   else h += (c.encaisser > 0 ? '<div class="small" style="margin:4px 0">Cash reçu (change si différent)</div><input id="mcCash" type="number" inputmode="numeric" value="' + Math.max(0, c.encaisser - detteSur(c)) + '">' : '') + '<button class="btn ok" id="mcDone" style="padding:18px;font-size:18px">✓ Livrée</button>';
-  h += '</div>' + soir;
+  h += '</div>' + soir + venteHtml(s);
   return h;
 }
 function lvPanel(c) {
+  if (lv.panel === 'qty') return qtyPanel(c); // v42
   if (lv.panel === 'pay') return '<div class="msgc" style="margin-bottom:8px"><div class="small" style="margin-bottom:6px">' + esc(c.client) + ' paie comment ?</div>' +
     '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="cash">💵 Tout en cash</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="int">📲 Tout en Interac</button><button class="btn ghost sm" style="margin-bottom:6px;border-color:#8b5cf6" data-lp="cry">🟣 Tout en crypto</button>' +
     '<button class="btn ghost sm" style="margin-bottom:6px" data-lp="mix">💵📲 Une partie cash + le reste Interac</button><button class="btn ghost sm" style="margin-bottom:6px" data-lp="dette">📒 Il paie plus tard (dette)</button>' +
@@ -1209,6 +1214,8 @@ function bindMyOrders(s) {
   if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client + (c.bloque ? ' · pas payé' : ''))); });
   if ($('lvPay')) $('lvPay').onclick = () => { lv.panel = lv.panel ? null : 'pay'; if (lv.panel === null) delete dt.door[c.id]; renderSoiree(); };
   if ($('lvMore')) $('lvMore').onclick = () => { lv.panel = lv.panel === 'more' ? null : 'more'; renderSoiree(); };
+  if ($('lvQty')) $('lvQty').onclick = () => { lv.panel = lv.panel === 'qty' ? null : 'qty'; qv.L = c.L || 0; qv.XL = c.XL || 0; qv.err = ''; renderSoiree(); };
+  bindQty(c);
   document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => {
     const k = b.dataset.lp;
     if (k === 'x') { lv.panel = null; delete dt.door[c.id]; return renderSoiree(); }
@@ -3096,19 +3103,19 @@ function bindPayEdit(C, run) {
     const enc = mode === 'cash' ? tot : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
     const pv = { total: tot, mode, cash: enc, interac: mode === 'int' ? tot : mode === 'mix' ? tot - cashPart : 0, cryPart: mode === 'cry' ? tot : mode === 'mixc' ? tot - cashPart : 0, crypto: coin || null };
     // v40 : si le livreur a PLUS de cash à remettre qu'avant, il doit confirmer qu'il l'a reçu.
-    const ask = c.livreur && c.livreur !== myMid() && cash > (Number(c.cashRecu) || 0);
+    const ask = c.livreur && c.livreur !== myMid() && c.statut === 'livree' && (mode !== (c.paieMode || payOld(c)) || cash !== (Number(c.cashRecu) || 0)); // v42 : toujours l'accord du livreur
     run(async () => {
-      const b = writeBatch(db), mod = Object.assign({ paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp(), nonRecu: !recu },
-        recu && c.nonRecu && mode !== 'cash' ? { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() } : {});
+      const b = writeBatch(db), mod = Object.assign({ paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, ask ? {} : { nonRecu: !recu },
+        !ask && recu && c.nonRecu && mode !== 'cash' ? { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() } : {});
       if (ask) {
-        b.update(doc(db, 'commandes', c.id), Object.assign({ chg: { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, avant: Number(c.cashRecu) || 0 }, chgRep: null, aValider: true }, mod));
+        b.update(doc(db, 'commandes', c.id), Object.assign({ chg: { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, avant: Number(c.cashRecu) || 0, nonRecu: !recu }, chgRep: null, aValider: true }, mod));
         b.set(doc(db, 'cmdPrive', c.id), { next: pv }, { merge: true });
       } else {
         b.update(doc(db, 'commandes', c.id), Object.assign({ paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, chg: null, chgRep: null, aValider: false }, mod));
         b.set(doc(db, 'cmdPrive', c.id), Object.assign(pv, { next: null, recu }), { merge: true });
       }
       await b.commit();
-      if (ask) notifyMsg(c.livreur, '💳 ' + (me.nom || OWNER) + ' change le paiement de ' + c.client + ' en ' + cash + ' $ cash. Ouvre l’app pour confirmer.');
+      if (ask) notifyMsg(c.livreur, '💳 ' + (me.nom || OWNER) + ' change le paiement de ' + c.client + ' : ' + payWord2(mode, cash) + '. Ouvre l’app pour dire si tu es d’accord.');
     });
   }; });
 }
@@ -3175,11 +3182,13 @@ function addNote(c, nom, who) {
   if (c.statut === 'ajout') return r('⏳ en attente de ' + nom + ' · pas encore comptée', '#fcd34d');
   if (c.statut === 'refusee') return r('❌ refusée par ' + nom);
   let h = '';
-  if (c.chg) h += r('⏳ changement vers 🔵 ' + money(c.chg.cashRecu) + ' cash · ' + nom + ' doit confirmer', '#fcd34d');
+  if (c.chg) h += r('⏳ changement vers ' + payWord2(c.chg.paieMode, c.chg.cashRecu) + ' · ' + nom + ' doit être d’accord', '#fcd34d');
+  if (c.vente) h += r('🛒 vente ajoutée par ' + nom);
+  if (c.qtyAvant) h += r('✏️ quantité changée par ' + nom + ' (' + esc(qtyTxt(c.qtyAvant)) + ' → ' + esc(qtyTxt(c)) + ')');
   if (c.ajoutPar) h += r('➕ ajoutée par ' + esc(dispName(c.ajoutNom || '')) + (c.ajoutRep === 'ok' ? ' · ✓ approuvée par ' + nom : ''));
-  if (c.paieModLe && !c.chg) h += r('✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + (c.chgRep === 'ok' ? ' · ✓ cash confirmé par ' + nom : '') +
+  if (c.paieModLe && !c.chg) h += r('✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + (c.chgRep === 'ok' ? ' · ✓ accepté par ' + nom : '') +
     (c.confirmeLe && c.paieModLe && tsMs(c.confirmeLe) > tsMs(c.paieModLe) && !c.nonRecu ? ' · ✓ confirmé par ' + esc(dispName(c.confirmeNom || '')) + ' à ' + hm(tsMs(c.confirmeLe)) : ''));
-  if (c.chgRep === 'non' && !c.chg) h += r('❌ cash refusé par ' + nom + ' — paiement pas changé', '#f87171');
+  if (c.chgRep === 'non' && !c.chg) h += r('❌ refusé par ' + nom + ' — paiement pas changé', '#f87171');
   if (!h && who) h = r('confirmé par ' + esc(who));
   return h;
 }
@@ -3286,9 +3295,9 @@ function drawVal() {
     const plus = (Number(c.chg.cashRecu) || 0) - (Number(c.cashRecu) || 0);
     ov.innerHTML = box('💳 Changement de paiement',
       '<div style="font-size:15px;line-height:1.6">' + esc(dispName(c.paieModNom || '')) + ' change le paiement de <b>' + esc(c.client) + '</b> (' + esc(qtyTxt(c)) + ', ' + hm(t.getTime()) + ') :<br>' +
-      'cash : ' + money(Number(c.cashRecu) || 0) + ' → <b style="color:' + PCOL.cash + '">🔵 ' + money(c.chg.cashRecu) + '</b></div>' +
-      ban('Si tu confirmes, ' + money(plus) + ' s’ajoutent à ce que tu dois remettre.'),
-      'As-tu reçu ' + money(c.chg.cashRecu) + ' cash de ' + esc(c.client) + ' ?', '✓ Oui, j’ai reçu le cash', '✗ Non');
+      payWord2(c.paieMode || payOld(c), Number(c.cashRecu) || 0) + ' → <b>' + payWord2(c.chg.paieMode, c.chg.cashRecu) + '</b></div>' +
+      ban(plus > 0 ? 'Si tu dis oui, ' + money(plus) + ' s’ajoutent à ce que tu dois remettre.' : plus < 0 ? 'Si tu dis oui : ' + money(-plus) + ' de moins à remettre.' : 'Ce que tu dois remettre ne change pas.'),
+      plus > 0 ? 'As-tu reçu ' + money(c.chg.cashRecu) + ' cash de ' + esc(c.client) + ' ?' : 'Tu es d’accord ?', plus > 0 ? '✓ Oui, j’ai reçu le cash' : '✓ Oui, d’accord', '✗ Non');
   } else { ov.remove(); return; }
   $('valOk').onclick = () => valAct(c, true);
   $('valNo').onclick = () => valAct(c, false);
@@ -3308,10 +3317,10 @@ async function valAct(c, oui) {
       await b.commit();
       notifyDispatch((oui ? '✓ ' : '❌ ') + me.nom + (oui ? ' a approuvé' : ' a refusé') + ' la livraison ajoutée : ' + c.client + ' · ' + qtyTxt(c));
     } else if (c.chg) {
-      if (oui) b.update(ref, { paieMode: c.chg.paieMode, cashRecu: c.chg.cashRecu, encaisser: c.chg.encaisser, crypto: c.chg.crypto || null, chg: null, chgRep: 'ok', chgRepLe: serverTimestamp(), aValider: false });
+      if (oui) b.update(ref, { paieMode: c.chg.paieMode, cashRecu: c.chg.cashRecu, encaisser: c.chg.encaisser, crypto: c.chg.crypto || null, nonRecu: !!c.chg.nonRecu, chg: null, chgRep: 'ok', chgRepLe: serverTimestamp(), aValider: false });
       else b.update(ref, { chg: null, chgRep: 'non', chgRepLe: serverTimestamp(), aValider: false });
       await b.commit();
-      notifyDispatch((oui ? '✓ ' : '❌ ') + me.nom + (oui ? ' confirme ' : ' refuse ') + money(c.chg.cashRecu) + ' cash pour ' + c.client);
+      notifyDispatch((oui ? '✓ ' : '❌ ') + me.nom + (oui ? ' accepte' : ' refuse') + ' le changement de paiement de ' + c.client + ' (' + payWord2(c.chg.paieMode, c.chg.cashRecu) + ')');
     }
     av.busy = false; av.list = av.list.filter((x) => x.id !== c.id); drawVal();
   } catch (e) { av.busy = false; av.err = msg(e); drawVal(); }
@@ -3356,3 +3365,132 @@ document.addEventListener('click', (e) => {
   const a = e.target.closest && e.target.closest('[data-nrok]'); if (a) { nrConfirm(a.dataset.nrok); return; }
   const b = e.target.closest && e.target.closest('[data-nrc]'); if (b) { const [id, coin] = b.dataset.nrc.split('|'); nrConfirm(id, coin); }
 });
+
+
+// =====================================================================
+// v42 : (A) le livreur change la quantité à la porte (le prix se recalcule ; le dispatch est averti au milieu
+//       de l'écran, « OK, compris ») · (B) le livreur ajoute une vente lui-même (passe tout de suite ; Interac /
+//       crypto = 🔴 pas encore reçu, à confirmer) · (C) tout changement de paiement dans l'Historique = accord du livreur.
+// =====================================================================
+const qv = { L: 0, XL: 0, err: '', busy: false };
+const vt = { open: false, client: '', L: 0, XL: 0, mode: 'cash', cash: '', recu: '', err: '', busy: false };
+const dayKey = (d) => { const x = new Date(d); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+function payOld(c) { const e = Number(c.encaisser) || 0; return e > 0 ? 'cash' : 'int'; }
+function payWord2(mode, cash) {
+  const cs = '🔵 ' + money(Number(cash) || 0) + ' cash';
+  return mode === 'cash' ? cs : mode === 'int' ? '🟡 Interac' : mode === 'cry' ? '🟣 crypto' : mode === 'mixc' ? cs + ' + 🟣 crypto' : cs + ' + 🟡 Interac';
+}
+function qtyPanel(c) {
+  const d = (qv.L - (c.L || 0)) * cfg.prixL + (qv.XL - (c.XL || 0)) * cfg.prixXL, enc = (Number(c.encaisser) || 0) + d, mine = st(me.mid);
+  const step = (k) => '<div style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:8px;text-align:center"><div class="small">' + k + '</div><div style="font-size:26px;font-weight:900">' + qv[k] + '</div>' +
+    '<button class="btn ghost sm" style="width:42px;display:inline-block;margin:4px 2px 0;padding:6px" data-qd="' + k + '|-1">−</button><button class="btn ghost sm" style="width:42px;display:inline-block;margin:4px 2px 0;padding:6px" data-qd="' + k + '|1">+</button></div>';
+  return '<div class="msgc" style="margin-bottom:8px;border:2px solid #f5b301"><div style="font-weight:800;margin-bottom:6px">✏️ Le client en veut combien ?</div><div style="display:flex;gap:8px">' + step('L') + step('XL') + '</div>' +
+    '<div style="margin-top:8px">' + (d ? (d > 0 ? '+' : '−') + money(Math.abs(d)) + ' · à encaisser : <b>' + money(Math.max(0, enc)) + ' cash</b>' : 'Pas de changement') + '</div>' +
+    '<div class="small">Ton stock : ' + esc(qty(mine)) + '</div>' + (qv.err ? '<div class="err">' + esc(qv.err) + '</div>' : '') +
+    '<div class="two"><button class="btn ghost sm" data-lp="x">Annuler</button><button class="btn ok sm" id="lvQGo"' + (qv.busy ? ' disabled' : '') + '>' + (qv.busy ? '…' : 'Confirmer') + '</button></div></div>';
+}
+function bindQty(c) {
+  document.querySelectorAll('#soiree [data-qd]').forEach((b) => { b.onclick = () => { const [k, d] = b.dataset.qd.split('|'); qv[k] = Math.max(0, qv[k] + Number(d)); qv.err = ''; renderSoiree(); }; });
+  if (!$('lvQGo')) return;
+  $('lvQGo').onclick = async () => {
+    const L = qv.L, XL = qv.XL, dL = L - (c.L || 0), dXL = XL - (c.XL || 0), d = dL * cfg.prixL + dXL * cfg.prixXL, enc = (Number(c.encaisser) || 0) + d;
+    if (!dL && !dXL) { lv.panel = null; return renderSoiree(); }
+    if (L + XL <= 0) { qv.err = 'Mets au moins 1 L ou 1 XL (sinon : ⋯ Autre → Je ne peux pas livrer).'; return renderSoiree(); }
+    if (enc < 0) { qv.err = 'Le client a déjà payé plus que ça : écris au dispatch.'; return renderSoiree(); }
+    const mine = st(me.mid), needL = myCmds.reduce((a, x) => a + (x.id === c.id ? L : (x.L || 0)), 0), needXL = myCmds.reduce((a, x) => a + (x.id === c.id ? XL : (x.XL || 0)), 0);
+    if (!c.test && (needL > (mine.L || 0) || needXL > (mine.XL || 0))) { qv.err = 'Pas assez de stock sur toi (' + qty(mine) + ').'; return renderSoiree(); }
+    const pm = c.paieMode || payOld(c), nm = d > 0 && pm === 'int' ? 'mix' : d > 0 && pm === 'cry' ? 'mixc' : pm;
+    qv.busy = true; renderSoiree();
+    try {
+      await writeBatch(db).update(doc(db, 'commandes', c.id), Object.assign({ L, XL, encaisser: enc, qtyDelta: (c.qtyDelta || 0) + d, qtyAvant: c.qtyAvant || { L: c.L || 0, XL: c.XL || 0 }, qtyLe: serverTimestamp() },
+        c.paieMode && nm !== c.paieMode ? { paieMode: nm } : {}, enc > 0 && c.paye ? { paye: false } : {})).commit();
+      notifyDispatch('✏️ ' + me.nom + ' chez ' + c.client + ' : ' + qtyTxt({ L, XL }) + ' au lieu de ' + qtyTxt(c) + ' · à encaisser ' + money(enc) + ' cash');
+      qv.busy = false; lv.panel = null;
+    } catch (e) { qv.busy = false; qv.err = msg(e); }
+    renderSoiree();
+  };
+}
+// Le dispatch : garder le total privé à jour + message au milieu de l'écran
+function qtySync() {
+  Object.values(cmds).forEach((c) => {
+    if (!c.qtyLe) return;
+    const ms = tsMs(c.qtyLe), p = prive[c.id];
+    if (p && p.qtyMs !== ms && (isOwner() || isStaff())) {
+      const t0 = p.total0 != null ? p.total0 : (p.total || 0);
+      setDoc(doc(db, 'cmdPrive', c.id), { total0: t0, total: t0 + (c.qtyDelta || 0), cash: c.encaisser || 0, mode: c.paieMode || p.mode, qtyMs: ms }, { merge: true }).catch(() => {});
+      p.qtyMs = ms;
+    }
+    popAdd('q' + c.id + ms, ms, '✏️ Quantité changée', '<b>' + esc(nomDe(c.livreur)) + '</b> chez <b>' + esc(c.client) + '</b> :<br>le client prend <b>' + esc(qtyTxt(c)) + '</b> au lieu de ' + esc(qtyTxt(c.qtyAvant || {})) + '.<br>À encaisser : <b style="color:' + PCOL.cash + '">' + money(c.encaisser || 0) + ' cash</b>');
+  });
+}
+function ventePop(c) {
+  const ms = tsMs(c.livreeLe);
+  const q = payOf(c), pw = c.paieMode === 'cash' ? '<span style="color:' + PCOL.cash + '">🔵 ' + money(c.cashRecu || 0) + ' cash</span>' : payHtml(q);
+  popAdd('v' + c.id, ms, '🛒 Vente ajoutée', '<b>' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> a fait une vente :<br><b>' + esc(c.client) + ' · ' + esc(qtyTxt(c)) + '</b> · ' + pw +
+    (c.nonRecu ? '<div class="small" style="color:#fca5a5;margin-top:6px">À confirmer dans l’Historique quand c’est reçu.</div>' : ''));
+}
+const pops = { list: [] };
+function popSeen() { try { return JSON.parse(localStorage.getItem('gothamVu') || '[]'); } catch (e) { return []; } }
+function popAdd(key, ms, title, body) {
+  if (!isDispatcher() || Date.now() - ms > 30 * 60000) return;
+  if (popSeen().includes(key) || pops.list.some((x) => x.key === key)) return;
+  pops.list.push({ key, title, body }); drawAvis();
+}
+function drawAvis() {
+  let ov = $('avisOv'); const x = pops.list[0];
+  if (!x) { if (ov) ov.remove(); return; }
+  if (!ov) { ov = document.createElement('div'); ov.id = 'avisOv'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;z-index:59'; document.body.appendChild(ov); }
+  ov.innerHTML = '<div style="background:#17171b;border:1px solid #4b5563;border-radius:20px;padding:18px;width:100%;max-width:420px"><div style="font-size:18px;font-weight:800;margin-bottom:10px">' + x.title + '</div><div style="font-size:15px;line-height:1.6">' + x.body + '</div>' +
+    '<button class="btn ok" id="avisOk" style="margin-top:12px">OK, compris</button>' + (pops.list.length > 1 ? '<div class="small" style="margin-top:8px;text-align:center">' + (pops.list.length - 1) + ' autre(s) après</div>' : '') + '</div>';
+  $('avisOk').onclick = () => { const a = popSeen(); a.push(x.key); try { localStorage.setItem('gothamVu', JSON.stringify(a.slice(-300))); } catch (e) {} pops.list.shift(); drawAvis(); };
+}
+// (B) Vente faite par le livreur
+function venteHtml(s) {
+  if (!s || s.statut !== 'ouverte' || me.uber) return '';
+  if (!vt.open) return '<button class="btn ghost" id="vtOpen" style="margin-top:4px">➕ Ajouter une vente</button>';
+  const tot = (Number(vt.L) || 0) * cfg.prixL + (Number(vt.XL) || 0) * cfg.prixXL, seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0">' + list.map((x) => '<button ' + attr + '="' + x[0] + '" class="' + (cur === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+  return '<div class="card" style="border:2px solid #f5b301"><div style="font-weight:800;font-size:16px;margin-bottom:8px">➕ Ajouter une vente</div>' +
+    '<div class="small">Client</div><input id="vtClient" value="' + esc(vt.client) + '" placeholder="Nom du client" maxlength="60">' +
+    '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="vtL" type="number" inputmode="numeric" min="0" value="' + esc(vt.L) + '"></div><div style="flex:1"><div class="small">XL</div><input id="vtXL" type="number" inputmode="numeric" min="0" value="' + esc(vt.XL) + '"></div></div>' +
+    '<div class="small">Paiement · total <b id="vtTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 Interac'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], vt.mode, 'data-vm') +
+    (vt.mode === 'cash' ? '<div class="small">Cash reçu (laisse vide = le total)</div><input id="vtRecu" type="number" inputmode="numeric" value="' + esc(vt.recu) + '" placeholder="' + tot + '">'
+      : vt.mode === 'mix' ? '<div class="small">Partie cash reçue ($) — le reste en Interac</div><input id="vtCash" type="number" inputmode="numeric" value="' + esc(vt.cash) + '">' : '') +
+    (vt.mode !== 'cash' ? '<div class="small" style="color:#fca5a5;line-height:1.5">Le dispatch confirmera ' + (vt.mode === 'cry' ? 'la crypto' : 'l’Interac') + ' (🔴 pas encore reçu en attendant).</div>' : '') +
+    (vt.err ? '<div class="err">' + esc(vt.err) + '</div>' : '') +
+    '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="vtX">Fermer</button><button class="btn ok sm" id="vtGo"' + (vt.busy ? ' disabled' : '') + '>' + (vt.busy ? '…' : 'Enregistrer la vente') + '</button></div></div>';
+}
+function vtKeep() { [['vtClient', 'client'], ['vtL', 'L'], ['vtXL', 'XL'], ['vtCash', 'cash'], ['vtRecu', 'recu']].forEach(([id, k]) => { if ($(id)) vt[k] = $(id).value; }); }
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest && e.target.closest('#vtOpen,#vtX,#vtGo,[data-vm]'); if (!t || !me) return;
+  if (t.id === 'vtOpen') { Object.assign(vt, { open: true, client: '', L: 0, XL: 0, mode: 'cash', cash: '', recu: '', err: '' }); return renderSoiree(); }
+  if (t.id === 'vtX') { vt.open = false; return renderSoiree(); }
+  vtKeep();
+  if (t.dataset.vm) { vt.mode = t.dataset.vm; vt.err = ''; return renderSoiree(); }
+  // Enregistrer
+  const s = mySoiree, L = Math.round(Number(vt.L) || 0), XL = Math.round(Number(vt.XL) || 0), tot = L * cfg.prixL + XL * cfg.prixXL, client = String(vt.client || '').trim();
+  const fail = (x) => { vt.err = x; renderSoiree(); };
+  if (!s || s.statut !== 'ouverte') return fail('Ta soirée doit être ouverte.');
+  if (!client) return fail('Écris le nom du client.');
+  if (!(L >= 0 && XL >= 0 && L + XL > 0)) return fail('Mets au moins 1 L ou 1 XL.');
+  const test = isTestName(client), mine = st(me.mid), qL = myCmds.reduce((a, x) => a + (x.L || 0), 0), qXL = myCmds.reduce((a, x) => a + (x.XL || 0), 0);
+  if (!test && (L + qL > (mine.L || 0) || XL + qXL > (mine.XL || 0))) return fail('Pas assez de stock sur toi (' + qty(mine) + (qL + qXL ? ', avec ta file' : '') + ').');
+  const mode = vt.mode, cashPart = Math.round(Number(vt.cash) || 0);
+  if (mode === 'mix' && !(cashPart > 0 && cashPart < tot)) return fail('Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).');
+  const enc = mode === 'cash' ? tot : mode === 'mix' ? cashPart : 0;
+  const recu = mode === 'cash' ? (String(vt.recu).trim() === '' ? tot : Math.max(0, Math.round(Number(vt.recu) || 0))) : enc;
+  vt.busy = true; vt.err = ''; renderSoiree();
+  try {
+    const ref = doc(collection(db, 'commandes')), b = writeBatch(db);
+    b.set(ref, Object.assign({ client: client.slice(0, 60), adresse: '', L, XL, frais: 0, encaisser: enc, paieMode: mode, crypto: null, paye: enc === 0, bloque: false,
+      livreur: me.mid, livreurNom: me.nom, statut: 'livree', livreeLe: serverTimestamp(), creeLe: serverTimestamp(), cashRecu: recu, soiree: s.id, vente: true, venteJour: dayKey(soirStart()),
+      nonRecu: mode !== 'cash' }, test ? { test: true } : paies[me.mid] != null ? { paie: paies[me.mid] } : {}));
+    if (!test) {
+      b.set(doc(db, 'stocks', me.mid), { L: increment(-L), XL: increment(-XL), cmd: ref.id }, { merge: true });
+      b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
+    }
+    await b.commit();
+    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : mode === 'mix' ? enc + ' $ cash + Interac (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'Interac (à confirmer)'));
+    vt.open = false; vt.busy = false; renderSoiree();
+  } catch (err) { vt.busy = false; fail(msg(err)); }
+});
+document.addEventListener('input', (e) => { if (e.target && (e.target.id === 'vtL' || e.target.id === 'vtXL')) { vtKeep(); const el = $('vtTot'); if (el) el.textContent = money((Number(vt.L) || 0) * cfg.prixL + (Number(vt.XL) || 0) * cfg.prixXL); } });
