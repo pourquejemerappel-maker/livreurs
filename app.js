@@ -370,7 +370,7 @@ const qty = (o) => (o.L || 0) + ' L · ' + (o.XL || 0) + ' XL';
 function startLive() {
   finState.team = null; finState.me = null; setTimeout(initFin, 0);
   dm.all = []; dm.lus = {}; dm.mine = []; dm.open = null; dm.ready = false; setTimeout(startDm, 0);
-  rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0);
+  rm.mine = []; rm.toMe = []; rm.dispos = {}; dispoOn = null; setTimeout(startRemises, 0); setTimeout(startFil, 0);
   dt.all = []; dt.mine = []; dt.okRappel = false; setTimeout(startDettes, 0);
   ret.toMe = []; ret.mine = []; ret.f = null; setTimeout(startRetours, 0);
   dons.list = []; setTimeout(startDons, 0);
@@ -1950,14 +1950,14 @@ async function remisDepuis(d, mid) {
 const tonight = (r) => { const t = r.le && r.le.toDate ? r.le.toDate() : null; return !t || t >= soirStart(); };
 function startRemises() {
   if (!me) return;
-  stops.push(onSnapshot(query(collection(db, 'remises'), where('de', '==', myMid())), (qs) => { rm.mine = []; qs.forEach((d) => rm.mine.push(Object.assign({ id: d.id }, d.data()))); rm.mine = rm.mine.filter(tonight); drawPop(); }, () => {}));
+  stops.push(onSnapshot(query(collection(db, 'remises'), where('de', '==', myMid())), (qs) => { rm.mine = []; qs.forEach((d) => rm.mine.push(Object.assign({ id: d.id }, d.data()))); rm.mine = rm.mine.filter(tonight); drawPop(); filPoke(); }, () => {}));
   { // v54 : le livreur aussi (le dispatch lui rend de l'argent → il confirme « Reçu »)
     let n0 = -1;
     stops.push(onSnapshot(query(collection(db, 'remises'), where('vers', '==', myMid())), (qs) => {
       rm.toMe = []; qs.forEach((d) => rm.toMe.push(Object.assign({ id: d.id }, d.data()))); rm.toMe = rm.toMe.filter(tonight);
       const n = rm.toMe.filter((r) => r.statut === 'attente').length; if (n0 >= 0 && n > n0) bip(); n0 = n;
       if (isOwner() || isStaff()) drawRemCard(); else drawRemDrv();
-      drawPop();
+      drawPop(); filPoke();
     }, () => {}));
   }
   stops.push(onSnapshot(collection(db, 'dispos'), (qs) => { rm.dispos = {}; qs.forEach((d) => { if (!hidId(d.id)) rm.dispos[d.id] = d.data(); }); drawPop(); }, () => {}));
@@ -3938,7 +3938,7 @@ async function loadCash() {
         day(p, tsMs(x.regleLe)).lines.push({ t: tsMs(x.regleLe), txt: '📒 Dette réglée ' + (cash ? 'en cash' : 'par EMT') + ' · ' + (x.client || ''), m: cash ? (x.montant || 0) : 0, dm: cash ? 0 : x.montant || 0, ok: true });
         if (cash) p.solde += x.montant || 0; }
     });
-    cs.data = Object.values(P).sort((a, b) => b.solde - a.solde); cs.err = '';
+    cs.data = Object.values(P).sort((a, b) => b.solde - a.solde); cs.raw = { cm, rems, dts }; cs.err = '';
   } catch (e) { cs.err = msg(e); }
   cs.busy = false; drawCash();
 }
@@ -3947,6 +3947,11 @@ function drawCash() {
   const L = cs.data || [], tot = L.reduce((a, p) => a + p.solde, 0);
   let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div class="label" style="margin:0">💵 Cash pas encore rendu à ' + OWNER + '</div><button class="linkbtn" id="csReload">↻</button></div>' +
     '<div style="font-size:26px;font-weight:900;margin:6px 0 2px">' + (cs.busy && !cs.data ? '…' : money(tot)) + '</div><div class="small">Le solde de chacun continue d’un jour à l’autre (depuis la soirée du 18 nov.).</div>' + (cs.err ? '<div class="err">' + esc(cs.err) + '</div>' : '') + '</div>';
+  // v58 : le fil privé avec chaque dispatch complet (MOUSSE), pour Wayne.
+  if (isOwner()) Object.keys(team).filter((id) => team[id].role === 'complet' && team[id].actif !== false).forEach((id) => {
+    const p = L.find((x) => x.id === id), att = (rm.toMe || []).some((r) => r.de === id && r.statut === 'attente');
+    h += '<div class="card" data-fil="' + esc(id) + '" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:12px 14px"><span style="font-size:16px"><b>🤝 ' + esc(team[id].nom) + '</b>' + (filUnread(id) || att ? ' <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;vertical-align:middle"></span>' : '') + '</span><span>' + (p ? 'te doit <b>' + money(p.solde) + '</b>' : '') + ' ›</span></div>';
+  });
   if (!L.length && !cs.busy) h += '<div class="card small">Rien pour l’instant.</div>';
   L.forEach((p) => {
     const o = cs.sel === p.id, disp = team[p.id] && ['complet', 'limite'].includes(team[p.id].role);
@@ -3965,6 +3970,8 @@ function drawCash() {
     h += '</div>';
   });
   box.innerHTML = h;
+  box.querySelectorAll('[data-fil]').forEach((el) => { el.onclick = () => openFil(el.dataset.fil); });
+  if (fil.open) drawFil();
   box.querySelectorAll('[data-cs]').forEach((el) => { el.onclick = () => { cs.sel = cs.sel === el.dataset.cs ? null : el.dataset.cs; drawCash(); }; });
   if ($('csReload')) $('csReload').onclick = () => loadCash();
   box.querySelectorAll('[data-rend]').forEach((el) => { el.onclick = async () => {
@@ -4012,7 +4019,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 57;
+const APP_V = 58;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4035,3 +4042,178 @@ function majTick() {
 }
 setTimeout(majCheck, 20000); setInterval(majCheck, 120000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') majCheck(); });
+
+// =====================================================================
+// v58 : fil privé Wayne ↔ MOUSSE (dispatch complet) pour le cash.
+//  - fils/{mid} : { ouvert, ouvertLe, fermeLe, vuW, vuM, dernierW, dernierM } (Wayne ouvre/ferme).
+//  - filmsg/{id} : { fil: mid, de: 'proprietaire' | mid, txt, le } (messages du fil).
+//  - Chaque remise de MOUSSE à Wayne montre d'où vient l'argent : ce qui est entré chez lui
+//    (cash des livreurs reçu + ses livraisons + dettes réglées cash), du plus ancien au plus récent.
+// =====================================================================
+const fil = { docs: {}, open: null, msgs: [], stopMsgs: null, edit: null, txt: '', remTxt: '', err: '', poke: null };
+function filMine() { return me && me.role === 'complet' && !isOwner(); }
+function startFil() {
+  if (!me) return;
+  if (isOwner()) stops.push(onSnapshot(collection(db, 'fils'), (qs) => { fil.docs = {}; qs.forEach((d) => { fil.docs[d.id] = d.data(); }); filBtnDraw(); if ($('cashTab') && !$('cashTab').closest('.hide')) drawCash(); if (fil.open) drawFil(); }, () => {}));
+  else if (filMine()) stops.push(onSnapshot(doc(db, 'fils', me.mid), (s) => {
+    const was = fil.docs[me.mid]; fil.docs = {}; if (s.exists()) fil.docs[me.mid] = s.data();
+    const d = fil.docs[me.mid];
+    if (d && d.ouvert && (!was || !was.ouvert)) bip();
+    if (d && was && (d.dernierW || 0) > (was.dernierW || 0) && fil.open !== me.mid) bip();
+    if (fil.open && !(d && d.ouvert)) filClose();
+    filBtnDraw(); if (fil.open) drawFil();
+  }, () => {}));
+  stops.push(() => { filClose(); const b = $('filBtn'); if (b) b.remove(); fil.docs = {}; });
+}
+function filUnread(mid) {
+  const d = fil.docs[mid]; if (!d) return false;
+  return isOwner() ? (d.dernierM || 0) > (d.vuW || 0) : (d.dernierW || 0) > (d.vuM || 0);
+}
+function filBtnDraw() {
+  if (!filMine()) return;
+  const d = fil.docs[me.mid]; let b = $('filBtn');
+  if (!(d && d.ouvert)) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('button'); b.id = 'filBtn'; b.title = 'Fil avec ' + OWNER; b.style.cssText = 'background:#2b3240;border:1px solid #4a5363;border-radius:12px;font-size:22px;line-height:1;padding:5px 9px;cursor:pointer;vertical-align:middle;position:relative;margin-right:4px';
+    const c = $('cashBtn'); if (c && c.parentNode) c.parentNode.insertBefore(b, c); else return; b.onclick = (e) => { e.stopPropagation(); openFil(me.mid); }; }
+  b.innerHTML = '🤝' + (filUnread(me.mid) ? '<i style="position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:#ef4444;border:2px solid #0b0b0d"></i>' : '');
+}
+function filPoke() { if (!fil.open) return; clearTimeout(fil.poke); fil.poke = setTimeout(() => loadCash(), 700); }
+function openFil(mid) {
+  fil.open = mid; fil.edit = null; fil.err = ''; fil.msgs = [];
+  if (fil.stopMsgs) fil.stopMsgs();
+  fil.stopMsgs = onSnapshot(query(collection(db, 'filmsg'), where('fil', '==', mid)), (qs) => { fil.msgs = []; qs.forEach((d) => fil.msgs.push(Object.assign({ id: d.id }, d.data()))); drawFil(); }, (e) => { fil.err = msg(e); drawFil(); });
+  drawFil(); loadCash();
+}
+function filClose() { if (fil.stopMsgs) { fil.stopMsgs(); fil.stopMsgs = null; } fil.open = null; const o = $('filOv'); if (o) o.remove(); }
+function filSeen(mid) {
+  const d = fil.docs[mid]; if (!d) return;
+  if (isOwner() && (d.dernierM || 0) > (d.vuW || 0)) setDoc(doc(db, 'fils', mid), { vuW: Date.now() }, { merge: true }).catch(() => {});
+  if (!isOwner() && d.ouvert && (d.dernierW || 0) > (d.vuM || 0)) writeBatch(db).update(doc(db, 'fils', mid), { vuM: Date.now() }).commit().catch(() => {});
+}
+// D'où vient l'argent de chaque remise (premier entré, premier sorti).
+function filCalc(mid) {
+  const R = cs.raw; if (!R) return {};
+  const ev = [];
+  R.cm.filter((c) => c.statut === 'livree' && !c.test && c.livreur === mid).forEach((c) => { const r = sumUp([c])[0]; if (r && Math.round(r.reste)) ev.push({ t: tsMs(c.livreeLe), m: r.reste, src: 'self' }); });
+  R.rems.forEach((r) => { const t = tsMs(r.le);
+    if (r.vers === mid && r.statut === 'recue') ev.push({ t, m: r.montant || 0, src: r.de, nom: r.deNom || nomDe(r.de) });
+    if (r.de === mid && (r.statut === 'recue' || (r.statut === 'attente' && r.vers === 'proprietaire'))) ev.push({ t, out: r.montant || 0, r });
+  });
+  (R.dts || []).forEach((x) => { if (x.responsable === mid && x.statut === 'reglee' && x.regleMode === 'cash' && tsMs(x.regleLe) >= CASH_START.getTime()) ev.push({ t: tsMs(x.regleLe), m: x.montant || 0, src: 'dette' }); });
+  ev.sort((a, b) => a.t - b.t);
+  const q = [], out = {}; let lastW = 0;
+  const take = (amt) => { const parts = []; while (amt > 0.5 && q.length) { const c = q[0], u = Math.min(c.m, amt); parts.push(Object.assign({}, c, { m: u })); c.m -= u; amt -= u; if (c.m <= 0.5) q.shift(); } if (amt > 0.5) parts.push({ src: 'avant', m: amt }); return parts; };
+  ev.forEach((e) => {
+    if (e.out == null) { if (e.m > 0) q.push(Object.assign({}, e)); else take(-e.m); return; }
+    const parts = take(e.out);
+    if (e.r.vers === 'proprietaire') { out[e.r.id] = { parts, lastW }; lastW = e.t; }
+  });
+  return out;
+}
+function filSrcHtml(x) {
+  if (!x || !x.parts.length) return '';
+  const G = {};
+  x.parts.forEach((p) => {
+    let k, lab;
+    if (p.src === 'avant') { k = 'avant'; lab = '⚪ D’avant le début du suivi'; }
+    else if (x.lastW && p.t < x.lastW) { k = 'reste'; lab = '⚪ De son reste d’avant'; }
+    else if (p.src === 'self') { k = 'self'; lab = '🟢 Ses propres livraisons'; }
+    else if (p.src === 'dette') { k = 'dette'; lab = '📒 Dettes réglées en cash'; }
+    else { k = 'r:' + p.src; lab = '🔵 ' + (p.nom || nomDe(p.src)); }
+    const g = G[k] || (G[k] = { lab, m: 0, n: 0, t: 0, k }); g.m += p.m; g.n += 1; g.t = Math.max(g.t, p.t || 0);
+  });
+  return '<div style="margin-top:9px;border-top:1px solid var(--line);padding-top:8px"><div class="label" style="margin-bottom:5px">D’où vient l’argent</div>' +
+    Object.values(G).sort((a, b) => b.m - a.m).map((g) => '<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0"><span>' + esc(g.lab) + '</span><span><b>' + money(g.m) + '</b> <span class="small">' +
+      (g.k === 'self' ? '· ' + g.n + ' liv.' : g.k.startsWith('r:') ? '· remis à ' + hm(g.t) : '') + '</span></span></div>').join('') + '</div>';
+}
+function drawFil() {
+  const mid = fil.open; if (!mid) return;
+  let o = $('filOv');
+  if (!o) { o = document.createElement('div'); o.id = 'filOv'; o.style.cssText = 'position:fixed;inset:0;z-index:80;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch'; document.body.appendChild(o); }
+  const own = isOwner(), d = fil.docs[mid] || {}, nom = own ? nomDe(mid) : OWNER;
+  const L = cs.data || [], P = L.find((p) => p.id === mid), du = P ? P.solde : 0;
+  const autres = L.filter((p) => p.id !== mid && Math.round(p.solde));
+  const totDehors = L.reduce((a, p) => a + p.solde, 0);
+  const R = cs.raw, src = filCalc(mid);
+  const rems = R ? R.rems.filter((r) => r.de === mid && r.vers === 'proprietaire') : [];
+  const items = rems.map((r) => ({ t: tsMs(r.le), r })).concat(fil.msgs.map((m) => ({ t: tsMs(m.le) || Date.now(), m }))).sort((a, b) => a.t - b.t);
+  let h = '<div style="max-width:560px;margin:0 auto;padding:14px 14px 30px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><b style="font-size:18px">🤝 ' + esc(nom) + '</b>' +
+    (own ? '<button class="btn sm" id="filTog" style="margin-left:auto;width:auto;padding:7px 12px">' + (d.ouvert ? '🔒 Fermer le fil' : '🔓 Ouvrir pour ' + esc(nom)) + '</button>' : '') +
+    '<button class="btn sm" id="filX" style="width:auto;padding:7px 12px;' + (own ? '' : 'margin-left:auto') + '">✕</button></div>' +
+    (own && !d.ouvert ? '<div class="small" style="margin:-4px 0 10px">' + esc(nom) + ' ne voit pas ce fil tant que tu ne l’ouvres pas.</div>' : '') +
+    '<div class="card" style="text-align:center"><div class="small">' + (own ? esc(nom) + ' te doit en ce moment' : 'Tu dois à ' + OWNER + ' en ce moment') + '</div><div style="font-size:28px;font-weight:900;margin:2px 0">' + (cs.busy && !cs.data ? '…' : money(du)) + '</div>' +
+    '<div class="small">Cash ' + (own ? 'qu’il a reçu des livreurs ou encaissé' : 'reçu des livreurs + tes livraisons') + ', moins ce qui ' + (own ? 't’a été remis' : 'a été remis') + '.</div></div>' +
+    '<div class="card" style="border:1px dashed #a78bfa"><div style="display:flex;justify-content:space-between" class="label"><span>Encore chez les livreurs</span><span>' + (own ? 'pas encore à ' + esc(nom) : 'à récupérer') + '</span></div>' +
+    (autres.length ? autres.map((p) => { const disp = team[p.id] && ['complet', 'limite'].includes(team[p.id].role);
+      return '<div style="display:flex;justify-content:space-between;font-size:14px;padding:4px 0"><span>' + esc(p.nom) + '</span><span><b style="color:' + (p.solde < 0 ? '#c4b5fd' : '#fcd34d') + '">' + money(p.solde) + '</b> <span class="small">· ' + (p.solde < 0 ? 'on lui doit' : disp ? 'sur lui' : 'à remettre') + '</span></span></div>'; }).join('') : '<div class="small">Tout le monde a tout remis ✓</div>') +
+    '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--line);margin-top:6px;padding-top:7px;font-weight:800"><span>' + (own ? '💵 Tout ton cash dehors' : 'Total chez les livreurs') + '</span><span>' + money(own ? totDehors : totDehors - du) + '</span></div>' +
+    (own ? '<div class="small">= ' + esc(nom) + ' ' + money(du) + ' + les autres ' + money(totDehors - du) + '</div>' : '') + '</div>';
+  if (!own) h += '<div class="card"><div class="label">Je remets à ' + OWNER + '</div><div style="display:flex;gap:8px;align-items:center"><input id="filAmt" type="number" inputmode="numeric" min="1" placeholder="Montant" value="' + esc(fil.remTxt || (du > 0 ? String(Math.round(du)) : '')) + '" style="flex:1"><span>$</span></div>' +
+    '<button class="btn ok" id="filGive" style="margin-top:8px">💵 J’ai remis à ' + OWNER + '</button></div>';
+  if (fil.err) h += '<div class="err">' + esc(fil.err) + '</div>';
+  let lastDay = '';
+  if (!items.length) h += '<div class="card small">Rien encore dans ce fil.</div>';
+  items.forEach((it) => {
+    const dl = new Date(it.t).toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'short' });
+    if (dl !== lastDay) { lastDay = dl; h += '<div class="small" style="text-align:center;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px">' + esc(dl) + '</div>'; }
+    if (it.m) { const mine = own ? it.m.de === 'proprietaire' : it.m.de === mid;
+      h += '<div style="max-width:80%;padding:8px 11px;border-radius:15px;font-size:14px;margin:6px 0;' + (mine ? 'margin-left:auto;background:#2563eb;color:#fff;border-bottom-right-radius:4px' : 'background:var(--card2);border:1px solid var(--line);border-bottom-left-radius:4px') + '">' + esc(it.m.txt) + '<div style="font-size:10px;opacity:.7;margin-top:2px">' + (mine ? 'Toi' : esc(nom)) + ' · ' + (it.m.le ? hm(it.t) : '…') + '</div></div>'; return; }
+    const r = it.r, st = r.statut;
+    const badge = st === 'recue' ? '<span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px;background:rgba(47,191,113,.18);color:#2fbf71">✓ ' + (own ? 'Reçu par toi' : OWNER + ' a confirmé') + '</span>' :
+      st === 'attente' ? '<span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px;background:rgba(245,179,1,.18);color:#f5b301">⏳ ' + (own ? 'À confirmer' : OWNER + ' n’a pas encore confirmé') + '</span>' :
+      '<span style="font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px;background:rgba(239,68,68,.18);color:#f87171">✗ Pas reçu</span>';
+    h += '<div class="card" style="margin-bottom:8px' + (st === 'refusee' ? ';opacity:.6' : '') + '"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:20px">' + money(r.montant || 0) + '</b>' + badge + '</div>' +
+      '<div class="small">' + (st === 'attente' ? esc(nom === OWNER ? 'Tu dis' : nom + ' dit') + ' avoir remis à ' + hm(it.t) : 'Remis à ' + hm(it.t) + (r.recueLe ? ' · confirmé à ' + hm(tsMs(r.recueLe)) : '')) +
+      (r.montantDit != null ? ' · <span style="color:#fcd34d">annoncé ' + money(r.montantDit) + '</span>' : '') + '</div>' + (st !== 'refusee' ? filSrcHtml(src[r.id]) : '');
+    if (own && st === 'attente') h += fil.edit === r.id ?
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:9px"><input id="filFix" type="number" inputmode="numeric" min="1" value="' + Math.round(r.montant || 0) + '" style="flex:1"><span>$</span></div><div class="two" style="margin-top:8px"><button class="btn sm" data-fcan="1">Annuler</button><button class="btn ok sm" data-ffix="' + r.id + '">✅ J’ai reçu ce montant</button></div>' :
+      '<div class="two" style="margin-top:9px"><button class="btn ok sm" data-fok="' + r.id + '">✅ Reçu</button><button class="btn sm" data-fed="' + r.id + '">✏️ Montant différent</button></div><button class="linkbtn" data-fno="' + r.id + '" style="margin-top:6px;font-size:12px;color:#f87171">Pas reçu du tout</button>';
+    h += '</div>';
+  });
+  const can = own ? !!d.ouvert : !!d.ouvert;
+  h += can ? '<div style="display:flex;gap:6px;margin-top:12px"><input id="filTxt" maxlength="500" placeholder="Écrire à ' + esc(nom) + '…" value="' + esc(fil.txt) + '" style="flex:1"><button class="btn" id="filSend" style="width:auto;padding:0 16px">➤</button></div>' :
+    '<div class="small" style="margin-top:12px;text-align:center">Ouvre le fil pour écrire à ' + esc(nom) + '.</div>';
+  h += '</div>';
+  const focus = document.activeElement && document.activeElement.id; const sel = focus && $(focus) && $(focus).selectionStart;
+  o.innerHTML = h;
+  if (focus && $(focus)) { try { $(focus).focus(); if (sel != null) $(focus).setSelectionRange(sel, sel); } catch (e) {} }
+  filSeen(mid);
+  $('filX').onclick = () => filClose();
+  if ($('filTog')) $('filTog').onclick = async () => {
+    const ouvrir = !d.ouvert;
+    try { await setDoc(doc(db, 'fils', mid), ouvrir ? { ouvert: true, ouvertLe: Date.now(), dernierW: Date.now() } : { ouvert: false, fermeLe: Date.now() }, { merge: true });
+      if (ouvrir) notifyMsg(mid, '🤝 ' + OWNER + ' a ouvert un fil avec toi'); } catch (e) { fil.err = msg(e); drawFil(); }
+  };
+  if ($('filTxt')) { $('filTxt').oninput = (e) => { fil.txt = e.target.value; }; $('filTxt').onkeydown = (e) => { if (e.key === 'Enter') $('filSend').click(); }; }
+  if ($('filSend')) $('filSend').onclick = async () => {
+    const t = (fil.txt || '').trim(); if (!t) return;
+    const b = writeBatch(db);
+    b.set(doc(collection(db, 'filmsg')), { fil: mid, de: own ? 'proprietaire' : mid, txt: t.slice(0, 500), le: serverTimestamp() });
+    if (own) b.set(doc(db, 'fils', mid), { dernierW: Date.now(), vuW: Date.now() }, { merge: true }); else b.update(doc(db, 'fils', mid), { dernierM: Date.now(), vuM: Date.now() });
+    try { await b.commit(); fil.txt = ''; fil.err = ''; if (own) notifyMsg(mid, '🤝 ' + OWNER + ' : ' + t.slice(0, 100)); } catch (e) { fil.err = msg(e); }
+    drawFil();
+  };
+  if ($('filAmt')) $('filAmt').oninput = (e) => { fil.remTxt = e.target.value; };
+  if ($('filGive')) $('filGive').onclick = async () => {
+    const m = Math.round(Number(fil.remTxt || ($('filAmt') && $('filAmt').value) || 0));
+    if (!(m > 0)) { fil.err = 'Écris le montant.'; return drawFil(); }
+    $('filGive').disabled = true;
+    try { const b = writeBatch(db);
+      b.set(doc(collection(db, 'remises')), { de: mid, deNom: me.nom || nomDe(mid), vers: 'proprietaire', versNom: OWNER, montant: m, statut: 'attente', le: serverTimestamp() });
+      b.update(doc(db, 'fils', mid), { dernierM: Date.now(), vuM: Date.now() });
+      await b.commit(); fil.remTxt = ''; fil.err = ''; } catch (e) { fil.err = msg(e); }
+    loadCash();
+  };
+  o.querySelectorAll('[data-fok]').forEach((b) => { b.onclick = () => { updRemise(b.dataset.fok, 'recue'); filPoke(); }; });
+  o.querySelectorAll('[data-fno]').forEach((b) => { b.onclick = () => { updRemise(b.dataset.fno, 'refusee'); filPoke(); }; });
+  o.querySelectorAll('[data-fed]').forEach((b) => { b.onclick = () => { fil.edit = b.dataset.fed; drawFil(); }; });
+  o.querySelectorAll('[data-fcan]').forEach((b) => { b.onclick = () => { fil.edit = null; drawFil(); }; });
+  o.querySelectorAll('[data-ffix]').forEach((b) => { b.onclick = async () => {
+    const id = b.dataset.ffix, r = rems.find((x) => x.id === id), v = Math.round(Number($('filFix').value || 0));
+    if (!r || !(v > 0)) return;
+    try { await writeBatch(db).update(doc(db, 'remises', id), v === Math.round(r.montant || 0) ? { statut: 'recue', recueLe: serverTimestamp() } : { statut: 'recue', recueLe: serverTimestamp(), montant: v, montantDit: r.montant || 0 }).commit(); fil.edit = null; fil.err = ''; }
+    catch (e) { fil.err = msg(e); }
+    loadCash();
+  }; });
+}
