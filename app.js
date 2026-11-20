@@ -242,6 +242,7 @@ function drawSheet() {
   } else if (F.mode === 'edit') {
     const p = team[F.id];
     h = '<div class="label">' + esc(p.nom) + '</div>' +
+      (isOwner() && p.role !== 'proprio' ? '<button class="btn" id="fHist" style="margin-bottom:10px;border-color:#4b5563">📜 Historique avec le dispatch</button>' : '') + // v64
       (p.actif && ['livreur', 'limite'].includes(p.role) ? '<button class="btn" id="fMsg" style="margin-bottom:10px">💬 Envoyer un message à ' + esc(p.nom) + '</button>' : '') +
       roleBlock() + '<div class="err" id="fErr"></div>' +
       '<button class="btn ok" id="fSave" style="margin-bottom:8px">Enregistrer</button>' +
@@ -272,6 +273,7 @@ function drawSheet() {
   on('fBack', 'onclick', () => { F.mode = 'edit'; drawSheet(); });
   on('fPwdBtn', 'onclick', () => { F.mode = 'pwd'; F.pwd = ''; drawSheet(); });
   on('fMsg', 'onclick', () => { const id = F.id; closeSheet(); openDmWith(id); });
+  on('fHist', 'onclick', () => { const id = F.id; closeSheet(); openLh(id); });
   on('fToggle', 'onclick', () => busy(toggleMember));
   on('fCopy', 'onclick', () => { try { navigator.clipboard.writeText($('give').textContent).catch(() => {}); $('fCopy').textContent = 'Copié ✓'; } catch (e) {} });
   on('fSave', 'onclick', () => busy(F.mode === 'add' ? addMember : F.mode === 'edit' ? saveMember : changePwd));
@@ -4105,7 +4107,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 63;
+const APP_V = 64;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4303,4 +4305,78 @@ function drawFil() {
     catch (e) { fil.err = msg(e); }
     loadCash();
   }; });
+}
+
+
+// =====================================================================
+// v64 : 📜 Historique d'une personne avec le dispatch (Wayne seulement, depuis Équipe).
+//       Stock (mouvements + dons refusés), cash (remises), messages, soirées, commandes — en ordre, par jour.
+// =====================================================================
+const lh = { mid: null, f: 'tout', per: 'tout', ev: null, err: '', open: false };
+async function openLh(mid) {
+  lh.mid = mid; lh.f = 'tout'; lh.per = 'tout'; lh.ev = null; lh.err = ''; lh.open = true; drawLh();
+  const g = async (col, field) => { try { const qs = await getDocs(query(collection(db, col), where(field, '==', mid))); const out = []; qs.forEach((d) => out.push(Object.assign({ id: d.id }, d.data()))); return out; } catch (e) { console.warn('lh', col, e); return []; } };
+  const [mvA, mvB, dons, rmA, rmB, msgs, soirs, cmdsL] = await Promise.all([g('mouvements', 'de'), g('mouvements', 'vers'), g('dons', 'vers'), g('remises', 'de'), g('remises', 'vers'), g('messages', 'mid'), g('soirees', 'mid'), g('commandes', 'livreur')]);
+  if (lh.mid !== mid) return;
+  const ev = [], seen = {}, nm = (x) => esc(nomDe(x || ''));
+  mvA.concat(mvB).forEach((m) => { if (seen['m' + m.id]) return; seen['m' + m.id] = 1;
+    const plus = m.vers === mid, t = tsMs(m.le);
+    if (m.type === 'correction') return ev.push({ t, k: 'stock', ic: '✏️', h: 'Stock corrigé : ' + qty(m.avant || {}) + ' → ' + qty(m.apres || {}), s: 'par ' + nm(m.par) });
+    const lab = { load: 'load', recharge: 'recharge', don: 'don', depot: 'dépôt', retour: 'retour', annulation: 'livraison annulée', ajustement: 'ajustement' }[m.type] || m.type || '';
+    ev.push({ t, k: 'stock', ic: '📦', h: '<b>' + (plus ? '+ ' : '− ') + qty(m) + '</b> ' + (plus ? 'de ' + nm(m.de) : 'vers ' + nm(m.vers)) + (lab ? ' <span class="small">(' + esc(lab) + (m.client ? ' : ' + esc(m.client) : '') + ')</span>' : ''), s: m.par ? 'par ' + nm(m.par) : '' }); });
+  dons.filter((d) => d.statut !== 'ok').forEach((d) => ev.push({ t: tsMs(d.le), k: 'stock', ic: d.statut === 'attente' ? '⏳' : '✗', h: qty(d) + ' de ' + nm(d.de) + ' · ' + (d.statut === 'attente' ? 'pas encore accepté' : 'refusé'), s: 'envoyé par ' + nm(d.par) }));
+  rmA.concat(rmB).forEach((r) => { if (seen['r' + r.id]) return; seen['r' + r.id] = 1; const t = tsMs(r.le);
+    ev.push({ t, k: 'cash', ic: '💵', h: '<b>' + money(r.montant || 0) + '</b> ' + (r.de === mid ? 'donné à ' + nm(r.vers) : 'reçu de ' + nm(r.de)) + (r.rend ? ' <span class="small">(rendu)</span>' : ''),
+      s: r.statut === 'recue' ? '<span style="color:#86efac">✓ confirmé' + (r.recueLe ? ' à ' + hm(tsMs(r.recueLe)) : '') + '</span>' + (r.montantDit != null ? ' · annoncé ' + money(r.montantDit) : '') : r.statut === 'attente' ? '<span style="color:#fcd34d">⏳ pas encore confirmé</span>' : '<span style="color:#f87171">✗ pas reçu</span>' }); });
+  msgs.forEach((m) => ev.push({ t: tsMs(m.le), k: 'msg', ic: '💬', h: '<b>' + (m.de === 'livreur' ? nm(mid) : esc(dispName(m.nom || nomDe(m.par || '') || 'Dispatch'))) + ' :</b> ' + (m.txt ? '« ' + esc(m.txt) + ' »' : '') + (m.img ? ' 📷' : '') }));
+  soirs.forEach((so) => { const t0 = tsMs(so.ouverteLe || so.demandeLe);
+    if (t0) ev.push({ t: t0, k: 'soir', ic: '🟢', h: 'Soirée ouverte' + (so.mode && so.mode !== 'livreur' ? ' (' + esc(so.mode === 'les2' ? 'livreur + dispatch' : so.mode) + ')' : ''), s: esc(so.adresse || '') + (so.autorisePar ? ' · autorisée par ' + nm(so.autorisePar) : '') });
+    if (so.finLe) ev.push({ t: tsMs(so.finLe), k: 'soir', ic: '🌙', h: 'Soirée terminée', s: (so.livrees || 0) + ' livraison' + ((so.livrees || 0) > 1 ? 's' : '') });
+    if (so.load && so.load.L != null && !so.finLe && so.statut === 'load') ev.push({ t: tsMs(so.autoriseLe) || t0, k: 'stock', ic: '⏳', h: 'Load en attente : ' + qty(so.load), s: 'de ' + nm(so.load.de) }); });
+  cmdsL.filter((c) => !c.test && ['livree', 'annulee', 'refusee'].includes(c.statut)).forEach((c) => { const q = payOf(c);
+    ev.push({ t: tsMs(c.livreeLe || c.creeLe), k: 'cmd', ic: c.statut === 'livree' ? '🛒' : '⊘', h: esc(c.client || 'Client') + ' · ' + esc(qtyTxt(c)) + (c.statut !== 'livree' ? ' <span class="small">(' + (c.statut === 'annulee' ? 'annulée' : 'refusée') + ')</span>' : ''),
+      s: (c.statut === 'livree' ? payWord2(c.paieMode || payOld(c), c.cashRecu) : '') + (c.vente ? ' · ajoutée par lui' : '') + (c.emtRef ? ' · ✓ réf. ' + esc(c.emtRef) : c.envoyePar ? ' · EMT de ' + esc(c.envoyePar) : '') + (c.nonRecu ? ' · <span style="color:#f87171">pas reçu</span>' : '') }); });
+  ev.sort((a, b) => b.t - a.t);
+  lh.ev = ev; lh.so = soirs; lh.mv = { mvA, mvB }; lh.rm = { rmA, rmB }; lh.nmsg = msgs.length; drawLh();
+}
+function lhClose() { lh.open = false; lh.mid = null; const o = $('lhOv'); if (o) o.remove(); }
+function drawLh() {
+  if (!lh.open) return;
+  let o = $('lhOv');
+  if (!o) { o = document.createElement('div'); o.id = 'lhOv'; o.style.cssText = 'position:fixed;inset:0;z-index:85;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch'; document.body.appendChild(o); }
+  const mid = lh.mid, nom = nomDe(mid), now = Date.now();
+  const lundi = (() => { const d = new Date(soirStart()); const k = (d.getDay() + 6) % 7; d.setDate(d.getDate() - k); return d.getTime(); })();
+  const chip = (attr, v, cur, lab) => '<button data-' + attr + '="' + v + '" style="font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:' + (cur === v ? 'var(--accent);color:#0b0b0d' : 'var(--card2);color:var(--muted)') + ';font-weight:600">' + lab + '</button>';
+  let h = '<div style="max-width:560px;margin:0 auto;padding:14px 14px 30px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><b style="font-size:18px">📜 ' + esc(nom) + ' ↔ dispatch</b><button class="btn sm" id="lhX" style="margin-left:auto;width:auto;padding:7px 12px">✕</button></div>' +
+    '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">' + [['tout', 'Tout'], ['stock', '📦 Stock'], ['cash', '💵 Cash'], ['msg', '💬 Messages'], ['cmd', '🛒 Commandes']].map((x) => chip('lhf', x[0], lh.f, x[1])).join('') + '</div>' +
+    '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">' + chip('lhp', 'sem', lh.per, 'Cette semaine') + chip('lhp', 'tout', lh.per, 'Depuis le début') + '</div>';
+  if (!lh.ev) { o.innerHTML = h + '<div class="card small">Chargement…</div></div>'; $('lhX').onclick = lhClose; return; }
+  const open = (lh.so || []).filter((x) => x.statut === 'ouverte' && !x.finLe).map((x) => tsMs(x.ouverteLe || x.demandeLe)).filter((t) => t && now - t > 14 * 3600000);
+  if (open.length) h += '<div style="background:#2a1f0b;border:1px solid #92400e;border-radius:14px;padding:10px;font-size:13px;color:#fde68a;margin-bottom:10px">⚠️ Sa soirée est ouverte depuis <b>' + esc(new Date(open[0]).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })) + ' ' + hm(open[0]) + '</b> (' + Math.round((now - open[0]) / 3600000) + ' h).</div>';
+  const inP = (e) => lh.per === 'tout' || e.t >= lundi;
+  const evs = lh.ev.filter(inP);
+  // résumé
+  let recL = 0, recXL = 0, cashOut = 0;
+  const seen = {}; (lh.mv.mvA.concat(lh.mv.mvB)).forEach((m) => { if (seen[m.id] || !inP({ t: tsMs(m.le) })) return; seen[m.id] = 1; if (m.vers === mid && m.type !== 'correction') { recL += m.L || 0; recXL += m.XL || 0; } });
+  const sr = {}; (lh.rm.rmA.concat(lh.rm.rmB)).forEach((r) => { if (sr[r.id] || !inP({ t: tsMs(r.le) })) return; sr[r.id] = 1; if (r.de === mid && r.statut === 'recue') cashOut += r.montant || 0; });
+  const cur = st(mid) || {};
+  const box = (lab, v) => '<div style="background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:8px"><div class="small" style="font-size:10px">' + lab + '</div><b>' + v + '</b></div>';
+  h += '<div class="card"><div class="label">Résumé</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">' + box('Stock reçu', recL + ' L · ' + recXL + ' XL') + box('Sur lui maintenant', team[mid] && stocks[mid] ? qty(cur) : '—') +
+    box('Cash remis au dispatch', money(cashOut)) + box('Messages', evs.filter((e) => e.k === 'msg').length) + '</div></div>';
+  const list = evs.filter((e) => lh.f === 'tout' || e.k === lh.f || (lh.f === 'stock' && e.k === 'soir'));
+  if (!list.length) h += '<div class="card small">Rien à montrer.</div>';
+  let day = '';
+  list.forEach((e) => { const d = new Date(e.t).toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'short' });
+    if (d !== day) { if (day) h += '</div>'; day = d; h += '<div class="small" style="text-align:center;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px">' + esc(d) + '</div><div class="card" style="padding:4px 12px">'; }
+    h += '<div style="display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:13.5px"><span style="width:40px;flex:none" class="small">' + (e.t ? hm(e.t) : '') + '</span><span style="width:22px;flex:none;text-align:center">' + e.ic + '</span><span style="flex:1">' + e.h + (e.s ? '<div class="small">' + e.s + '</div>' : '') + '</span></div>'; });
+  if (day) h += '</div>';
+  h += '<button class="btn ghost" id="lhShare" style="margin-top:10px">📤 Partager / copier</button></div>';
+  o.innerHTML = h;
+  $('lhX').onclick = lhClose;
+  o.querySelectorAll('[data-lhf]').forEach((b) => { b.onclick = () => { lh.f = b.dataset.lhf; drawLh(); }; });
+  o.querySelectorAll('[data-lhp]').forEach((b) => { b.onclick = () => { lh.per = b.dataset.lhp; drawLh(); }; });
+  $('lhShare').onclick = async () => {
+    const txt = '📜 ' + nom + ' ↔ dispatch\n' + list.map((e) => new Date(e.t).toLocaleString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' ' + e.ic + ' ' + (e.h + (e.s ? ' — ' + e.s : '')).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")).join('\n');
+    try { if (navigator.share) await navigator.share({ text: txt }); else { await navigator.clipboard.writeText(txt); alertBar('Copié ✓'); } } catch (e) {}
+  };
 }
