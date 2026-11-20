@@ -810,7 +810,7 @@ function planOf(list) {
   return out;
 }
 const hm = (ms) => { const d = new Date(ms); return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); };
-const lateTag = (m) => (m > 10 ? '<span class="late">+' + m + ' min retard</span>' : '<span class="small">+' + m + ' min</span>');
+const lateTag = (m) => (m < 0 ? '<span class="small" style="color:var(--cash)">−' + (-m) + ' min</span>' : m > 10 ? '<span class="late">+' + m + ' min retard</span>' : '<span class="small">+' + m + ' min</span>');
 
 // ---------- Prix et paiement ----------
 const totalOf = (o) => (o.L || 0) * cfg.prixL + (o.XL || 0) * cfg.prixXL + (o.frais || 0);
@@ -1317,9 +1317,9 @@ function myOrdersHtml(s) {
     h += '<div class="lvLbl">Nouvelle commande</div>' + addr + '<div class="lvGrow"></div><div class="lvCmd"><div class="lvCmdT">📦 Commande</div><div class="lvTiles"><div><b>' + (c.L || 0) + '</b><span>L</span></div><div><b>' + (c.XL || 0) + '</b><span>XL</span></div></div></div><div class="lvGrow"></div>' +
       '<div class="err" id="mcErr"></div><button class="btn lvBig lvGo" id="lvRoute">🚗 Je suis en route</button>' + more;
   } else if (c.statut !== 'ici') {
-    h += '<span class="lvState">🚗 En route</span>' + addr + '<div class="lvGrow"></div><div class="lvEta">' + hm(plan[0]) + '<small>arrivée prévue' + (c.retard ? ' · <b style="color:#fbbf24">+' + c.retard + ' min</b>' : '') + '</small></div><div class="lvGrow"></div>' +
+    h += '<span class="lvState">🚗 En route</span>' + addr + '<div class="lvGrow"></div><div class="lvEta">' + hm(plan[0]) + '<small>arrivée prévue' + (c.retard ? ' · <b style="color:' + (c.retard < 0 ? '#4ade80">−' + (-c.retard) : '#fbbf24">+' + c.retard) + ' min</b>' : '') + '</small></div><div class="lvGrow"></div>' +
       '<div class="lvCmdLine">📦 Commande : <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div><div class="err" id="mcErr"></div>' +
-      '<button class="btn lvBig lvGrey" id="mcLate">⏱ +5 min</button><button class="btn lvBig ok" id="mcHere">📍 Je suis arrivé</button>' + more;
+      '<div class="lvTwo"><button class="btn lvBig lvGrey" id="mcEarly">⏱ −5 min</button><button class="btn lvBig lvGrey" id="mcLate">⏱ +5 min</button></div><button class="btn lvBig ok" id="mcHere">📍 Je suis arrivé</button>' + more;
   } else if (!dp && lv.step === 'cmd') {
     const others = myCmds.slice(1), maxL = (mine.L || 0) - others.reduce((a, x) => a + (x.L || 0), 0), maxXL = (mine.XL || 0) - others.reduce((a, x) => a + (x.XL || 0), 0);
     const row = (k, mx) => '<div class="lvCtr"><button data-lq="' + k + '|-1">−</button><div><span>' + lv[k] + '</span> ' + k + '</div><button data-lq="' + k + '|1"' + (!c.test && lv[k] >= mx ? ' style="opacity:.3"' : '') + '>+</button></div>';
@@ -1370,6 +1370,8 @@ function bindMyOrders(s) {
   // 1 → 2
   if ($('lvRoute')) $('lvRoute').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { enRouteLe: serverTimestamp() }).commit().then(() => notifyDispatch('🚗 ' + me.nom + ' est en route chez ' + c.client)));
   // 2 : +5 min (le dispatch voit juste la nouvelle heure) · arrivé (le dispatch est averti)
+  // v66 : −5 min (il arrive plus tôt) — jamais avant maintenant
+  if ($('mcEarly')) $('mcEarly').onclick = () => { const eta = planOf(myCmds)[0] || 0; if (eta - 5 * 60000 < Date.now()) { if ($('mcErr')) $('mcErr').textContent = 'L’heure d’arrivée ne peut pas être avant maintenant.'; return; } act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) - 5 }).commit()); };
   if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
   if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client)); });
   // 3 : la commande
@@ -1460,6 +1462,7 @@ function bindMyOrders(s) {
   '.lvBig{width:100%;padding:20px!important;font-size:20px!important;font-weight:800;border-radius:18px!important;margin-top:10px}' +
   '.lvGo{background:#3b82f6!important;color:#fff!important}.lvGrey{background:#2a303a!important;color:#fff!important}' +
   '.lvBig:disabled{opacity:.35}' +
+  '.lvTwo{display:flex;gap:10px}.lvTwo .lvBig{flex:1;width:auto}' +
   '.lvState{align-self:flex-start;background:#1e3a8a;color:#bfdbfe;border-radius:999px;padding:4px 10px;font-size:13px;font-weight:700;margin:8px 0 4px}.lvSt2{background:#14532d;color:#bbf7d0}' +
   '.lvEta{font-size:68px;font-weight:900;text-align:center;line-height:1}.lvEta small{display:block;font-size:15px;color:#9aa0a6;font-weight:500;margin-top:6px}' +
   '.lvCmdLine{text-align:center;font-size:17px;color:#93c5fd;background:#141b29;border:1px solid #24324d;border-radius:12px;padding:9px}.lvCmdLine b{color:#dbeafe}' +
@@ -4107,7 +4110,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 65;
+const APP_V = 66;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
