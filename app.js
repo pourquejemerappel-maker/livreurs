@@ -3068,6 +3068,7 @@ function uberHtml(s) {
     '<button id="ubPause" aria-label="Disponible" style="flex:none;width:56px;height:32px;border-radius:999px;border:0;position:relative;padding:0;background:' + (s.pause ? '#4b5563' : '#22c55e') + '"><span style="position:absolute;top:4px;left:' + (s.pause ? '4px' : '28px') + ';width:24px;height:24px;border-radius:50%;background:#fff"></span></button></div></div>';
   if (!myCmds.length) h += '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🚕</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’enverra un Uber ou un pick-up ici.</div></div>';
   else h += myCmds.slice().sort((a, b) => (a.accepte ? 1 : 0) - (b.accepte ? 1 : 0) || a.ordre - b.ordre).map(ubCard).join('');
+  h += venteHtml(s); // v61 : Samuel ajoute ses commandes lui-même
   h += '<details class="card" style="margin-top:4px"' + (ub.defOpen || !pickDef() ? ' open' : '') + '><summary class="small" style="cursor:pointer">Ma soirée ▾ · ' + (mine.L || 0) + ' L · ' + (mine.XL || 0) + ' XL sur toi · ' + (s.livrees || 0) + ' faite' + ((s.livrees || 0) > 1 ? 's' : '') + '</summary>' +
     '<div class="small" style="margin-top:10px">🚕 Uber depuis : <b style="color:var(--text)">' + esc(s.adresse || '') + '</b></div>' +
     '<div class="label" style="margin-top:10px">📍 Mon adresse de pick-up</div>' +
@@ -3767,7 +3768,7 @@ document.addEventListener('click', (e) => {
 //       crypto = 🔴 pas encore reçu, à confirmer) · (C) tout changement de paiement dans l'Historique = accord du livreur.
 // =====================================================================
 const qv = { L: 0, XL: 0, err: '', busy: false };
-const vt = { open: false, client: '', L: 0, XL: 0, mode: 'cash', cash: '', recu: '', err: '', busy: false };
+const vt = { open: false, client: '', L: 0, XL: 0, mode: 'cash', cash: '', recu: '', err: '', busy: false, typ: 'uber', env: '', vu: false, ok: '' };
 const dayKey = (d) => { const x = new Date(d); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
 function payOld(c) { const e = Number(c.encaisser) || 0; return e > 0 ? 'cash' : 'int'; }
 function payWord2(mode, cash) {
@@ -3846,8 +3847,25 @@ function drawAvis() {
 }
 // (B) Vente faite par le livreur
 function venteHtml(s) {
-  if (!s || s.statut !== 'ouverte' || me.uber) return '';
-  if (!vt.open) return '<button class="btn ghost" id="vtOpen" style="margin-top:4px">➕ Ajouter une vente</button>';
+  if (!s || s.statut !== 'ouverte') return '';
+  const U = !!me.uber; // v61 : livreur Uber (Samuel) : Uber / pick-up, Cash · EMT · Crypto (pas de mélange), il confirme l'EMT / la crypto lui-même
+  if (U && vt.mode === 'mix') vt.mode = 'cash';
+  if (!vt.open) return (vt.ok ? '<div class="card" style="background:rgba(47,191,113,.12);border-color:rgba(47,191,113,.45);text-align:center"><b>✓ ' + esc(vt.ok) + '</b></div>' : '') +
+    '<button class="btn ghost" id="vtOpen" style="margin-top:4px' + (U ? ';border:2px solid #f5b301' : '') + '">' + (U ? '➕ Ajouter une commande moi-même' : '➕ Ajouter une vente') + '</button>';
+  if (U) {
+    const tot = (Number(vt.L) || 0) * cfg.prixL + (Number(vt.XL) || 0) * cfg.prixXL, seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0">' + list.map((x) => '<button ' + attr + '="' + x[0] + '" class="' + (cur === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+    const dig = vt.mode === 'int' ? 'l’EMT' : 'la crypto';
+    return '<div class="card" style="border:2px solid #f5b301"><div style="font-weight:800;font-size:16px;margin-bottom:8px">➕ Nouvelle commande</div>' +
+      '<div class="small">Client</div><input id="vtClient" value="' + esc(vt.client) + '" placeholder="Nom du client" maxlength="60">' +
+      '<div style="display:flex;gap:8px"><div style="flex:1"><div class="small">L</div><input id="vtL" type="number" inputmode="numeric" min="0" value="' + esc(vt.L) + '"></div><div style="flex:1"><div class="small">XL</div><input id="vtXL" type="number" inputmode="numeric" min="0" value="' + esc(vt.XL) + '"></div></div>' +
+      '<div class="small">Livraison</div>' + seg([['uber', '🚕 Uber'], ['pickup', '🏠 Pick-up']], vt.typ, 'data-vty') +
+      '<div class="small">Le client paie comment ? · total <b id="vtTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto']], vt.mode, 'data-vm') +
+      (vt.mode === 'cash' ? '<div class="small">Cash reçu (laisse vide = le total)</div><input id="vtRecu" type="number" inputmode="numeric" value="' + esc(vt.recu) + '" placeholder="' + tot + '">' : '') +
+      (vt.mode === 'int' ? '<div class="small">EMT envoyé par (nom de la personne)</div><input id="vtEnv" value="' + esc(vt.env) + '" placeholder="Ex. Kevin Tremblay" maxlength="60">' : '') +
+      (vt.mode !== 'cash' ? '<label class="chk" style="background:rgba(47,191,113,.10);border:1px solid rgba(47,191,113,.4);border-radius:12px;padding:10px;margin-top:6px"><input type="checkbox" id="vtVu"' + (vt.vu ? ' checked' : '') + '> <span><b>J’ai vu ' + dig + ' rentrer</b><br><span class="small">Obligatoire. Pas besoin du dispatch.</span></span></label>' : '') +
+      (vt.err ? '<div class="err">' + esc(vt.err) + '</div>' : '') +
+      '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="vtX">Fermer</button><button class="btn ok sm" id="vtGo"' + (vt.busy ? ' disabled' : '') + '>' + (vt.busy ? '…' : 'Enregistrer') + '</button></div></div>';
+  }
   const tot = (Number(vt.L) || 0) * cfg.prixL + (Number(vt.XL) || 0) * cfg.prixXL, seg = (list, cur, attr) => '<div class="seg" style="margin:4px 0">' + list.map((x) => '<button ' + attr + '="' + x[0] + '" class="' + (cur === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
   return '<div class="card" style="border:2px solid #f5b301"><div style="font-weight:800;font-size:16px;margin-bottom:8px">➕ Ajouter une vente</div>' +
     '<div class="small">Client</div><input id="vtClient" value="' + esc(vt.client) + '" placeholder="Nom du client" maxlength="60">' +
@@ -3859,13 +3877,14 @@ function venteHtml(s) {
     (vt.err ? '<div class="err">' + esc(vt.err) + '</div>' : '') +
     '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="vtX">Fermer</button><button class="btn ok sm" id="vtGo"' + (vt.busy ? ' disabled' : '') + '>' + (vt.busy ? '…' : 'Enregistrer la vente') + '</button></div></div>';
 }
-function vtKeep() { [['vtClient', 'client'], ['vtL', 'L'], ['vtXL', 'XL'], ['vtCash', 'cash'], ['vtRecu', 'recu']].forEach(([id, k]) => { if ($(id)) vt[k] = $(id).value; }); }
+function vtKeep() { [['vtClient', 'client'], ['vtL', 'L'], ['vtXL', 'XL'], ['vtCash', 'cash'], ['vtRecu', 'recu'], ['vtEnv', 'env']].forEach(([id, k]) => { if ($(id)) vt[k] = $(id).value; }); if ($('vtVu')) vt.vu = $('vtVu').checked; }
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest && e.target.closest('#vtOpen,#vtX,#vtGo,[data-vm]'); if (!t || !me) return;
-  if (t.id === 'vtOpen') { Object.assign(vt, { open: true, client: '', L: 0, XL: 0, mode: 'cash', cash: '', recu: '', err: '' }); return renderSoiree(); }
+  const t = e.target.closest && e.target.closest('#vtOpen,#vtX,#vtGo,[data-vm],[data-vty]'); if (!t || !me) return;
+  if (t.id === 'vtOpen') { Object.assign(vt, { open: true, client: '', L: 0, XL: 0, mode: 'cash', cash: '', recu: '', err: '', env: '', vu: false, ok: '', typ: 'uber' }); return renderSoiree(); }
   if (t.id === 'vtX') { vt.open = false; return renderSoiree(); }
   vtKeep();
-  if (t.dataset.vm) { vt.mode = t.dataset.vm; vt.err = ''; return renderSoiree(); }
+  if (t.dataset.vm) { vt.mode = t.dataset.vm; vt.vu = false; vt.err = ''; return renderSoiree(); }
+  if (t.dataset.vty) { vt.typ = t.dataset.vty; vt.err = ''; return renderSoiree(); }
   // Enregistrer
   const s = mySoiree, L = Math.round(Number(vt.L) || 0), XL = Math.round(Number(vt.XL) || 0), tot = L * cfg.prixL + XL * cfg.prixXL, client = String(vt.client || '').trim();
   const fail = (x) => { vt.err = x; renderSoiree(); };
@@ -3876,6 +3895,10 @@ document.addEventListener('click', async (e) => {
   if (!test && (L + qL > (mine.L || 0) || XL + qXL > (mine.XL || 0))) return fail('Pas assez de stock sur toi (' + qty(mine) + (qL + qXL ? ', avec ta file' : '') + ').');
   const mode = vt.mode, cashPart = Math.round(Number(vt.cash) || 0);
   if (mode === 'mix' && !(cashPart > 0 && cashPart < tot)) return fail('Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).');
+  const U = !!me.uber, env = String(vt.env || '').trim();
+  if (U && mode === 'mix') return fail('Pas de mélange : choisis Cash, EMT ou Crypto.');
+  if (U && mode === 'int' && !env) return fail('Écris le nom de la personne qui a envoyé l’EMT.');
+  if (U && mode !== 'cash' && !vt.vu) return fail('Coche « J’ai vu ' + (mode === 'int' ? 'l’EMT' : 'la crypto') + ' rentrer ».');
   const enc = mode === 'cash' ? tot : mode === 'mix' ? cashPart : 0;
   const recu = mode === 'cash' ? (String(vt.recu).trim() === '' ? tot : Math.max(0, Math.round(Number(vt.recu) || 0))) : enc;
   vt.busy = true; vt.err = ''; renderSoiree();
@@ -3883,13 +3906,15 @@ document.addEventListener('click', async (e) => {
     const ref = doc(collection(db, 'commandes')), b = writeBatch(db);
     b.set(ref, Object.assign({ client: client.slice(0, 60), adresse: '', L, XL, frais: 0, encaisser: enc, paieMode: mode, crypto: null, paye: enc === 0, bloque: false,
       livreur: me.mid, livreurNom: me.nom, statut: 'livree', livreeLe: serverTimestamp(), creeLe: serverTimestamp(), cashRecu: recu, soiree: s.id, vente: true, venteJour: dayKey(soirStart()),
-      nonRecu: mode !== 'cash' }, test ? { test: true } : paies[me.mid] != null ? { paie: paies[me.mid] } : {}));
+      nonRecu: mode !== 'cash' && !U }, U ? Object.assign({ type: vt.typ === 'pickup' ? 'pickup' : 'uber' }, mode === 'int' ? { envoyePar: env.slice(0, 60) } : {}, mode !== 'cash' ? { recuParLivreur: true } : {}) : {},
+      test ? { test: true } : paies[me.mid] != null ? { paie: paies[me.mid] } : {}));
     if (!test) {
       b.set(doc(db, 'stocks', me.mid), { L: increment(-L), XL: increment(-XL), cmd: ref.id }, { merge: true });
       b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
     }
     await b.commit();
-    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : mode === 'mix' ? enc + ' $ cash + EMT (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'EMT (à confirmer)'));
+    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : U ? (mode === 'int' ? tot + ' $ EMT de ' + env : tot + ' $ crypto') + ' · ✓ confirmé par ' + me.nom : mode === 'mix' ? enc + ' $ cash + EMT (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'EMT (à confirmer)'));
+    vt.ok = U ? 'Commande de ' + client + ' enregistrée' : ''; if (U) { vt.client = ''; vt.L = 0; vt.XL = 0; vt.recu = ''; vt.env = ''; vt.vu = false; vt.mode = 'cash'; }
     vt.open = false; vt.busy = false; renderSoiree();
   } catch (err) { vt.busy = false; fail(msg(err)); }
 });
@@ -4030,7 +4055,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 60;
+const APP_V = 61;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
