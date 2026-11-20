@@ -193,7 +193,7 @@ function setTab(t) {
 // paies/{id}   : paie par livraison (seulement le propriétaire et la personne elle-même la voient).
 let team = {}, paies = {};
 const paieTxt = (p) => (p == null ? 'paie à entrer' : p + ' $ / livraison');
-// v48 : Alpha = compte de test (seulement lui). Le robot efface ses traces 1 h après chaque action.
+// v48 : Alpha = compte de test (seulement lui). Le robot efface ses traces 15 min après chaque action (v62).
 const isAlpha = (id) => id === 'alpha';
 const alphaTag = (id) => isAlpha(id) ? ' <span style="font-size:11px;font-weight:700;background:#7c3aed;color:#fff;border-radius:6px;padding:2px 6px;vertical-align:middle">🧪 TEST</span>' : '';
 function renderTeam() {
@@ -201,7 +201,7 @@ function renderTeam() {
   let d = '', l = '';
   ids.forEach((id) => {
     const p = team[id];
-    const sub = isAlpha(id) ? '🧪 Compte de test · effacé 1 h après chaque action' : p.role === 'livreur' ? (p.uber ? '🚕 Uber / pick-up · ' : '') + paieTxt(paies[id]) : (p.livre ? 'Fait aussi des livraisons · ' + paieTxt(paies[id]) : 'Ne livre pas');
+    const sub = isAlpha(id) ? '🧪 Compte de test · effacé 15 min après chaque action' : p.role === 'livreur' ? (p.uber ? '🚕 Uber / pick-up · ' : '') + paieTxt(paies[id]) : (p.livre ? 'Fait aussi des livraisons · ' + paieTxt(paies[id]) : 'Ne livre pas');
     const h = '<div class="row' + (p.actif ? '' : ' off') + '" data-id="' + esc(id) + '"><div><div class="n">' + esc(p.nom) + alphaTag(id) +
       '<span class="pill p-' + (p.actif ? p.role : 'off') + '">' + (p.actif ? ROLES[p.role] : 'Désactivé') + '</span></div><div class="s">' + sub + '</div></div><span class="small">›</span></div>';
     if (p.role === 'livreur') l += h; else d += h;
@@ -235,7 +235,7 @@ function drawSheet() {
   let h = '';
   if (F.mode === 'add') {
     h = '<div class="label">Ajouter quelqu’un</div>' +
-      '<input id="fNom" placeholder="Nom (ex. FMJ)" autocapitalize="words" value="' + esc(F.nom) + '">' + '<div class="small" id="fAlpha" style="color:#c4b5fd;margin:4px 0 8px' + (isAlpha(slugFor(F.nom)) ? '' : ';display:none') + '">🧪 Compte de test activé tout seul (nom « Alpha »). Le robot effacera ses affaires 1 h après chaque action et remettra le stock d’où il vient.</div>' + roleBlock() +
+      '<input id="fNom" placeholder="Nom (ex. FMJ)" autocapitalize="words" value="' + esc(F.nom) + '">' + '<div class="small" id="fAlpha" style="color:#c4b5fd;margin:4px 0 8px' + (isAlpha(slugFor(F.nom)) ? '' : ';display:none') + '">🧪 Compte de test activé tout seul (nom « Alpha »). Le robot effacera ses affaires 15 min après chaque action et remettra le stock d’où il vient.</div>' + roleBlock() +
       '<div class="label">Mot de passe (tu le choisis, 6 caractères min.)</div><input id="fPwd" type="text" autocomplete="off" autocapitalize="none" value="' + esc(F.pwd) + '">' +
       '<div class="err" id="fErr"></div>' +
       '<div class="two"><button class="btn ghost" id="fCancel">Annuler</button><button class="btn ok" id="fSave">Ajouter</button></div>';
@@ -1985,6 +1985,11 @@ function cashNow() {
 async function drawPop() {
   const pop = $('cashPop'); if (!pop || pop.classList.contains('hide')) return;
   if (pop.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  // v62 : jamais de bulle vide — « … » pendant le calcul, et le message d'erreur s'il y en a une.
+  if (!pop.innerHTML.trim()) pop.innerHTML = '<span class="small">💰 Calcul…</span>' + popX;
+  try { await drawPop2(pop); } catch (e) { console.warn('drawPop', e); pop.innerHTML = '<div class="err">💰 Problème : ' + esc((e && (e.code || e.message)) || String(e)) + '</div><div class="small">Ferme et réessaie. Si ça revient, envoie une capture.</div>' + popX; if ($('popClose')) $('popClose').onclick = (ev) => { ev.stopPropagation(); closePop(); }; }
+}
+async function drawPop2(pop) {
   const livre = delivers() && mySoiree && working(mySoiree);
   let base = { cash: 0, n: 0 };
   if (livre) {
@@ -4055,7 +4060,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 61;
+const APP_V = 62;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
