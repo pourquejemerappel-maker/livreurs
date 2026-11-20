@@ -403,7 +403,7 @@ function startLive() {
   }
   startOrders();
   renderAll(); renderSoiree();
-  if (delivers() || isStaff()) saveToken(false);
+  if (delivers() || isStaff() || isOwner()) saveToken(false);
 }
 function renderAll() { if (!me) return; if (isOwner() || isStaff()) { renderDirect(); renderStock(); } if (typeof drawDm === 'function') drawDm(); }
 const st = (id) => stocks[id] || { L: 0, XL: 0 };
@@ -1500,7 +1500,7 @@ let notifState = 'inconnu', notifBusy = false;
 
 async function pushOk() { try { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && (await msgSupported()); } catch (e) { return false; } }
 async function saveToken(ask) {
-  if (!me || !(delivers() || isStaff())) return;
+  if (!me || !(delivers() || isStaff() || isOwner())) return;
   if (!(await pushOk())) { notifState = isIOS() && !isStandalone() ? 'installer' : 'impossible'; return notifRedraw(); }
   if (Notification.permission === 'denied') { notifState = 'refuse'; return notifRedraw(); }
   if (Notification.permission !== 'granted') {
@@ -1511,17 +1511,18 @@ async function saveToken(ask) {
   try {
     const reg = await navigator.serviceWorker.ready;
     const tok = await getToken(getMessaging(app), { vapidKey: VAPID, serviceWorkerRegistration: reg });
-    if (tok) { await setDoc(doc(db, 'tokens', tok), { mid: me.mid, le: serverTimestamp(), appareil: isIOS() ? 'iphone' : 'autre' }, { merge: true }); notifState = 'ok'; }
+    if (tok) { await setDoc(doc(db, 'tokens', tok), { mid: myMid(), le: serverTimestamp(), appareil: isIOS() ? 'iphone' : 'autre' }, { merge: true }); notifState = 'ok'; }
   } catch (e) { console.warn('notif', e); notifState = 'erreur'; }
   notifRedraw();
 }
 function notifRedraw() { renderSoiree(); if (typeof drawNotifD === 'function') drawNotifD(); }
 function notifCard(forDisp) {
-  if (!delivers() && !isStaff()) return '';
+  if (!delivers() && !isStaff() && !isOwner()) return '';
   if (notifState === 'ok' || notifState === 'inconnu') return '';
   if (notifState === 'installer') return '<div class="card notif"><b>🔔 Pour recevoir les notifications sur iPhone</b><p class="small" style="margin:6px 0 0">1. Dans Safari, touche Partager → « Sur l’écran d’accueil ».<br>2. Ouvre l’app avec la nouvelle icône, puis active les notifications ici.</p></div>';
   if (notifState === 'refuse') return '<div class="card notif"><b>🔕 Notifications bloquées</b><p class="small" style="margin:6px 0 0">Va dans Réglages du téléphone → Notifications → Gotham, et autorise-les.</p></div>';
   if (notifState === 'impossible') return '<div class="card notif"><b>🔕 Ce téléphone ne peut pas recevoir les notifications de l’app.</b><p class="small" style="margin:6px 0 0">Mets à jour le téléphone (iPhone : iOS 16.4 ou plus).</p></div>';
+  if (forDisp && isOwner()) return '<div class="card notif"><b>🔔 Reçois une notification quand on te remet de l’argent, ou quand l’argent change de main entre eux</b><button class="btn ok" id="notifGoD" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
   if (forDisp) return '<div class="card notif"><b>🔔 Reçois les messages des livreurs, les check-ins et les « arrivé » même téléphone verrouillé</b><button class="btn ok" id="notifGoD" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
   return '<div class="card notif"><b>🔔 Reçois tes nouvelles commandes même téléphone verrouillé</b><button class="btn ok" id="notifGo" style="margin-top:10px">Activer les notifications</button>' + (notifState === 'erreur' ? '<div class="err">Ça n’a pas marché, réessaie.</div>' : '') + '</div>';
 }
@@ -2037,7 +2038,9 @@ async function drawPop() {
     if (m <= 0) { rm.err = 'Écris le montant.'; return drawPop(); }
     if (m > (isStaff() ? sur : maxCash)) { rm.err = 'Tu as seulement ' + money(isStaff() ? sur : maxCash) + ' sur toi.'; return drawPop(); }
     try {
-      await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || OWNER, vers: rm.to, versNom: rm.to === 'proprietaire' ? OWNER : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
+      const rref = doc(collection(db, 'remises'));
+      await setDoc(rref, { de: myMid(), deNom: me.nom || OWNER, vers: rm.to, versNom: rm.to === 'proprietaire' ? OWNER : rm.dispos[rm.to].nom, montant: m, statut: 'attente', le: serverTimestamp() });
+      if (rm.to === 'proprietaire') notifyRemise(rref.id);
       if (rm.to !== 'proprietaire') notifyDispatch('💵 ' + me.nom + ' te donne ' + money(m) + ' cash', rm.to);
       rm.form = false; rm.err = ''; drawPop();
     } catch (e) { rm.err = msg(e); drawPop(); }
@@ -2052,7 +2055,12 @@ function drawRemCard() {
   box.querySelectorAll('[data-ryes]').forEach((b) => { b.onclick = () => updRemise(b.dataset.ryes, 'recue'); });
   box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => updRemise(b.dataset.rno, 'refusee'); });
 }
-function updRemise(id, statut) { writeBatch(db).update(doc(db, 'remises', id), { statut, recueLe: serverTimestamp() }).commit().catch((e) => alertBar(msg(e))); }
+function updRemise(id, statut) { writeBatch(db).update(doc(db, 'remises', id), { statut, recueLe: serverTimestamp() }).commit().then(() => { if (statut === 'recue' && !isOwner()) notifyRemise(id); }).catch((e) => alertBar(msg(e))); }
+// v59 : Wayne est averti (notification) quand on lui remet de l'argent, ou quand l'argent change de main entre eux (confirmé « Reçu »).
+async function notifyRemise(rid) {
+  try { const t = await auth.currentUser.getIdToken();
+    fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'remise', rid }) }).catch(() => {}); } catch (e) {}
+}
 // v54 : le livreur a donné plus que ce qu'il devait (sa paye comprise) → le dispatch lui doit la différence.
 function drawRemDrv() {
   let box = $('remDrv');
@@ -2684,7 +2692,7 @@ async function notifyDispatch(texte, pour) {
 // Carte « Activer les notifications » en haut d'En direct pour MOUSSE et lost.
 function drawNotifD() {
   const box = $('notifD'); if (!box) return;
-  if (!me || !isStaff() || !isDispatcher()) { box.innerHTML = ''; return; }
+  if (!me || !(isOwner() || (isStaff() && isDispatcher()))) { box.innerHTML = ''; return; }
   box.innerHTML = notifCard(true);
   if ($('notifGoD')) $('notifGoD').onclick = () => { if (notifBusy) return; notifBusy = true; saveToken(true).finally(() => { notifBusy = false; }); };
 }
@@ -4019,7 +4027,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 58;
+const APP_V = 59;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4200,9 +4208,10 @@ function drawFil() {
     if (!(m > 0)) { fil.err = 'Écris le montant.'; return drawFil(); }
     $('filGive').disabled = true;
     try { const b = writeBatch(db);
-      b.set(doc(collection(db, 'remises')), { de: mid, deNom: me.nom || nomDe(mid), vers: 'proprietaire', versNom: OWNER, montant: m, statut: 'attente', le: serverTimestamp() });
+      const rref = doc(collection(db, 'remises'));
+      b.set(rref, { de: mid, deNom: me.nom || nomDe(mid), vers: 'proprietaire', versNom: OWNER, montant: m, statut: 'attente', le: serverTimestamp() });
       b.update(doc(db, 'fils', mid), { dernierM: Date.now(), vuM: Date.now() });
-      await b.commit(); fil.remTxt = ''; fil.err = ''; } catch (e) { fil.err = msg(e); }
+      await b.commit(); notifyRemise(rref.id); fil.remTxt = ''; fil.err = ''; } catch (e) { fil.err = msg(e); }
     loadCash();
   };
   o.querySelectorAll('[data-fok]').forEach((b) => { b.onclick = () => { updRemise(b.dataset.fok, 'recue'); filPoke(); }; });
