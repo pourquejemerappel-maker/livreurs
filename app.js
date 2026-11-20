@@ -1254,7 +1254,10 @@ async function assignExisting(id, opt) {
 function alertBar(t) { const el = $('dErr'); if (el) { el.textContent = t; setTimeout(() => { el.textContent = ''; }, 6000); } }
 
 // ---------- Ma file (livreur) ----------
-const mapsUrl = (c) => 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + encodeURIComponent(c.lat != null ? c.lat + ',' + c.lon : c.adresse);
+// v60 : Google Maps reçoit l'adresse écrite (le livreur voit l'adresse, pas des coordonnées GPS).
+// Les coordonnées servent seulement si l'adresse est vide ou trop courte pour être trouvée (pas de virgule).
+const mapsUrl = (c) => { const a = String(c.adresse || '').trim(); const ok = a && (a.includes(',') || c.lat == null);
+  return 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + encodeURIComponent(ok ? a : c.lat != null ? c.lat + ',' + c.lon : a); };
 // v52 : écran livreur plein écran, une étape à la fois.
 //  1. Reçue : adresse en gros (Google Maps), client en petit, 📦 Commande, « 🚗 Je suis en route » (avertit le dispatch).
 //  2. En route : l'heure d'arrivée en gros, la commande en petit, « ⏱ +5 min » (sans alerte) et « 📍 Je suis arrivé ».
@@ -4027,7 +4030,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 59;
+const APP_V = 60;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
