@@ -1210,9 +1210,12 @@ async function qAct(a, id) {
     if (a === 'msg') { msgOpen = msgOpen === id ? null : id; return renderQueues(); }
     if (a === 'paid') {
       if (needCoin(c) && !cry.ok) { cry.id = id; cry.kind = 'paid'; cry.coin = null; cry.autre = ''; cry.err = ''; return fx.id === id ? renderFocus() : openFocus(id); }
-      const coin = cry.ok || ''; cry.ok = null; cry.id = null;
+      const pm = (prive[id] && prive[id].mode) || c.paieMode || 'int', needR = !needCoin(c) && emtIn(pm === 'mixc' ? 'x' : pm);
+      if (needR && !er.ok) { er.id = id; er.kind = 'paid'; er.txt = ''; er.err = ''; return fx.id === id ? renderFocus() : openFocus(id); }
+      const coin = cry.ok || ''; cry.ok = null; cry.id = null; const R = needR ? er.ok : ''; er.ok = null; er.id = null;
       const b = writeBatch(db);
-      b.update(doc(db, 'commandes', id), Object.assign({ bloque: false, paye: !(c.encaisser > 0), confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin, paieMode: c.paieMode === 'mixc' ? 'mixc' : 'cry' } : {}));
+      b.update(doc(db, 'commandes', id), Object.assign({ bloque: false, paye: !(c.encaisser > 0), confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin, paieMode: c.paieMode === 'mixc' ? 'mixc' : 'cry' } : {}, R ? { emtRef: R } : {}));
+      if (R) refSet(b, R, c);
       b.update(doc(db, 'cmdPrive', id), Object.assign({ recu: true }, coin ? { crypto: coin } : {}));
       await b.commit();
       if (c.type === 'uber' && c.livreur) notifyMsg(c.livreur, '✓ Paiement reçu pour ' + c.client + ' — tu peux commander le Uber');
@@ -2331,7 +2334,7 @@ function renderFocus() {
     }
     h += uberBtns({ L: c.L, XL: c.XL, int: !(c.encaisser > 0), adr: c.adresse && c.adresse !== 'Pick-up' });
     h += (lp.id === c.id ? lpBox(c) : fBtn('chpay', '💳 Changer le paiement'));
-    h += (cry.id === c.id ? cryBox() : c.bloque ? fBtn('paid', '✓ ' + payWord(c) + ' reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
+    h += (cry.id === c.id ? cryBox() : er.id === c.id ? refBox() : c.bloque ? fBtn('paid', '✓ ' + payWord(c) + ' reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
   } else {
     const q = queueOf(c.livreur), plan = planOf(q), nx = q[1];
     h += '<div class="small">' + (c.type === 'uber' ? '🚕' : c.type === 'pickup' ? '📍' : '🚗') + ' <b style="color:var(--text)">' + esc(c.livreurNom || nomDe(c.livreur)) + '</b> ' + (c.type === 'uber' ? 'envoie un Uber à' : c.type === 'pickup' ? 'attend au pick-up' : u.k === 'ici' ? 'est chez' : 's’en va chez') + '</div><div class="fclient">' + esc(c.client) + '</div>' + testTag(c) +
@@ -2347,11 +2350,12 @@ function renderFocus() {
     if (c.demandePaie) { const dq = c.demandePaie, neuf = dq.emt != null || dq.cry != null;
       h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(dq, c)) + '</div>' + (dq.pasRecu ? '<div class="small" style="color:#fca5a5;margin:4px 0">❌ Marqué pas reçu — ' + esc(c.livreurNom || 'le livreur') + ' attend (il ne donne pas)</div>' : '');
       if (cry.id === c.id) h += cryBox();
+      else if (er.id === c.id) h += refBox();
       else if (!neuf) h += fBtn('dpOk', dq.mode === 'cash' ? '✓ OK, il encaisse en cash' : dq.mode === 'cry' ? '✓ J’ai reçu la crypto' : '✓ J’ai reçu l’EMT', 'ok') + fBtn('dpNo0', 'Refuser (on garde comme avant)');
       else h += fBtn('dpOk', '✅ Reçu', 'ok') + '<div class="two">' + fBtn('dpNo', '❌ Pas reçu') + (canDette() ? fBtn('dpDette', '📒 Dette') : '') + '</div>' + (dpd.id === c.id ? dpdForm(c) : ''); }
     h += confLine(c) + (c.paieModLe ? '<div class="small">✏️ paiement changé par ' + esc(dispName(c.paieModNom || '')) + '</div>' : '');
     if (!c.demandePaie) h += lp.id === c.id ? lpBox(c) : fBtn('chpay', '💳 Changer le paiement');
-    h += (c.bloque && !c.demandePaie ? (cry.id === c.id ? cryBox() : fBtn('paid', '✓ ' + payWord(c) + ' reçu', 'ok')) : '') +
+    h += (c.bloque && !c.demandePaie ? (cry.id === c.id ? cryBox() : er.id === c.id ? refBox() : fBtn('paid', '✓ ' + payWord(c) + ' reçu', 'ok')) : '') +
       '<div class="two">' + fBtn('msg', '💬 Client') + (canDette() && !c.dette && !c.demandePaie ? fBtn('dette', '📒 Dette') : '') + '</div>' +
       (fx.client ? msgBox(c, plan[0]) : '') + (dt.disp && dt.disp.id === c.id ? detteDispForm(c) : '') +
       '<div class="two">' + fBtn('unassign', fx.ask === 'unassign' ? 'Confirmer : retirer' : 'Retirer') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>' +
@@ -2413,7 +2417,10 @@ async function paieOk(c, ok) {
   const tot = (prive[c.id] && prive[c.id].total) || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0));
   const cash = dp.mode === 'cash' ? tot : (dp.mode === 'mix' || dp.mode === 'mixc') ? Math.min(tot, dp.cash) : 0;
   const coin = (dp.mode === 'cry' || dp.mode === 'mixc') ? (cry.ok || '') : ''; cry.ok = null;
-  b.update(doc(db, 'commandes', c.id), Object.assign({ demandePaie: null, bloque: false, encaisser: cash, paye: cash === 0, paieMode: dp.mode, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}));
+  const R = emtIn(dp.mode) ? (er.ok || '') : ''; er.ok = null;
+  if (emtIn(dp.mode) && !R) throw new Error('Numéro de référence de l’EMT manquant.');
+  b.update(doc(db, 'commandes', c.id), Object.assign({ demandePaie: null, bloque: false, encaisser: cash, paye: cash === 0, paieMode: dp.mode, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}, R ? { emtRef: R } : {}));
+  if (R) refSet(b, R, c);
   b.set(doc(db, 'cmdPrive', c.id), Object.assign({ mode: dp.mode, cash, interac: tot - cash, recu: true }, coin ? { crypto: coin } : {}), { merge: true });
   await b.commit();
   notifyMsg(c.livreur, dp.emt != null || dp.cry != null ? '✅ ' + (dp.cry ? 'Crypto' : 'EMT') + ' de ' + c.client + ' reçu — tu peux donner' : '✓ Paiement confirmé pour ' + c.client + (cash ? ' : encaisse ' + cash + ' $ cash' : ' : déjà payé'));
@@ -2444,6 +2451,10 @@ async function paieDette(c, raison) {
 async function focusAct(c, a) {
   if (a === 'chpay' || a === 'lpX' || a === 'lpGo') return lpAct(c, a);
   if (a === 'cryX') { cry.id = null; return renderFocus(); }
+  if (a === 'erX') { er.id = null; er.err = ''; return renderFocus(); }
+  if (a === 'erGo') { const R = normRef(($('erTxt') && $('erTxt').value) || er.txt); er.txt = R; const bad = await refCheck(R); if (bad) { er.err = bad; return renderFocus(); }
+    er.ok = R; er.err = ''; const kind = er.kind; try { if (kind === 'dpOk') await paieOk(c, true); else await qAct('paid', c.id); } catch (e) { er.ok = null; er.err = msg(e); return renderFocus(); } er.id = null; return renderFocus(); }
+  if (a === 'dpOk' && c.demandePaie && emtIn(c.demandePaie.mode) && !er.ok) { er.id = c.id; er.kind = 'dpOk'; er.txt = ''; er.err = ''; return renderFocus(); }
   if (a === 'cryGo') { const k = coinOf(cry.coin, cry.autre); if (!k) { cry.err = 'Choisis la crypto (BTC, ETH…).'; return renderFocus(); }
     cry.ok = k; const kind = cry.kind; try { if (kind === 'dpOk') await paieOk(c, true); else await qAct('paid', c.id); } catch (e) { cry.ok = null; if ($('fxErr')) $('fxErr').textContent = msg(e); } cry.id = null; return renderFocus(); }
   if (a === 'dpNo' && c.demandePaie) { try { await writeBatch(db).update(doc(db, 'commandes', c.id), { demandePaie: Object.assign({}, c.demandePaie, { pasRecu: Date.now() }) }).commit(); } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); } return renderFocus(); }
@@ -3186,7 +3197,7 @@ function hsTags(c, nom) {
   const t = [];
   if (c.statut === 'ajout') t.push('⏳ attend ' + nom);
   if (c.type === 'uber') t.push('🚕 Uber'); else if (c.type === 'pickup') t.push('📍 pick-up');
-  if (c.envoyePar) t.push('✓ EMT de ' + String(c.envoyePar).trim().split(/\s+/)[0]);
+  if (c.emtRef) t.push('✓ réf. ' + c.emtRef); else if (c.envoyePar) t.push('✓ EMT de ' + String(c.envoyePar).trim().split(/\s+/)[0]);
   if (c.nonRecu) t.push('🔴 pas reçu');
   if (c.paieModLe && !c.chg) t.push('✏️ modifié');
   if (c.qtyAvant) t.push('✏️ quantité');
@@ -3467,7 +3478,7 @@ function payEditHtml(c) {
       '<button data-prc="0" class="btn ghost sm" style="flex:1;margin:0;' + (!pe.recu ? 'border:2px solid #ef4444;color:#fca5a5;background:#3a1517' : '') + '">⏳ Pas encore reçu</button></div>' +
       (!pe.recu ? '<div class="small" style="color:#fca5a5;line-height:1.5">La livraison va montrer 🔴 pas reçu. Ça ne compte pas dans les totaux tant que quelqu’un ne touche pas « ✓ reçu ».</div>' : '');
   }
-  if (pe.recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int'))) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Envoyé par</b> (nom sur le virement, obligatoire)</div><input id="peEnv" maxlength="60" placeholder="Ex. Marc Tremblay" value="' + esc(pe.env || '') + '">'; // v47
+  if (pe.recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int')) && !c.emtRef) h += refInput('peEnv', pe.env); // v63
   if (peC && pe.recu) h += '<div class="small" style="margin-top:6px"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, pe.coin, 'data-pc') +
     (pe.coin === 'autre' ? '<input id="peAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(pe.autre) + '">' : '');
   return h + '<div class="two" style="margin-top:8px"><button class="btn ghost sm" data-hx="1">Fermer</button><button class="btn ok sm" data-psave="' + c.id + '"' + (hx.busy ? ' disabled' : '') + '>' + (hx.busy ? '…' : 'Enregistrer') + '</button></div>';
@@ -3480,12 +3491,12 @@ function bindPayEdit(C, run) {
   box.querySelectorAll('[data-prc]').forEach((el) => { el.onclick = () => { if ($('peCash')) pe.cash = $('peCash').value; pe.recu = el.dataset.prc === '1'; hx.err = ''; drawHisto(); }; });
   if ($('peAutre')) $('peAutre').oninput = (e) => { pe.autre = e.target.value; };
   if ($('peCash')) $('peCash').oninput = (e) => { pe.cash = e.target.value; const c = C(hx.edit); if (c && $('peRest')) $('peRest').textContent = money(Math.max(0, payTotal(c) - (Number(pe.cash) || 0))); if (c && $('peAmt')) $('peAmt').textContent = money(Math.max(0, payTotal(c) - (Number(pe.cash) || 0))); };
-  box.querySelectorAll('[data-psave]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.psave); if (!c) return;
+  box.querySelectorAll('[data-psave]').forEach((el) => { el.onclick = async () => { const c = C(el.dataset.psave); if (!c) return;
     const tot = payTotal(c), cashPart = Math.round(Number(pe.cash) || 0);
     const recu = pe.mode === 'cash' || pe.recu !== false;
     const needC = pe.mode === 'cry' || (pe.mode === 'mix' && pe.reste === 'cry'), coin = needC && recu ? coinOf(pe.coin, pe.autre) : '';
-    const needEnv = recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int')), env = String(($('peEnv') && $('peEnv').value) || pe.env || '').trim();
-    if (needEnv && !env) { hx.err = 'Écris le nom de la personne qui a envoyé l’EMT.'; return drawHisto(); }
+    const needEnv = recu && (pe.mode === 'int' || (pe.mode === 'mix' && pe.reste === 'int')) && !c.emtRef, env = normRef(($('peEnv') && $('peEnv').value) || pe.env || '');
+    if (needEnv) { const bad = await refCheck(env); if (bad) { hx.err = bad; return drawHisto(); } }
     if (needC && recu && !coin) { hx.err = 'Choisis la crypto (BTC, ETH…).'; return drawHisto(); }
     if (pe.mode === 'mix' && !(cashPart > 0 && cashPart < tot)) { hx.err = 'Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).'; return drawHisto(); }
     const mode = pe.mode === 'mix' ? (pe.reste === 'cry' ? 'mixc' : 'mix') : pe.mode;
@@ -3495,8 +3506,9 @@ function bindPayEdit(C, run) {
     // v40 : si le livreur a PLUS de cash à remettre qu'avant, il doit confirmer qu'il l'a reçu.
     const ask = c.livreur && c.livreur !== myMid() && c.statut === 'livree' && (mode !== (c.paieMode || payOld(c)) || cash !== (Number(c.cashRecu) || 0)); // v42 : toujours l'accord du livreur
     run(async () => {
-      const b = writeBatch(db), mod = Object.assign({ paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, needEnv ? { envoyePar: env.slice(0, 60) } : {}, ask ? {} : { nonRecu: !recu },
+      const b = writeBatch(db), mod = Object.assign({ paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, needEnv ? { emtRef: env } : {}, ask ? {} : { nonRecu: !recu },
         !ask && recu && c.nonRecu && mode !== 'cash' ? { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() } : {});
+      if (needEnv) refSet(b, env, c); // v63
       if (ask) {
         b.update(doc(db, 'commandes', c.id), Object.assign({ chg: { paieMode: mode, cashRecu: cash, encaisser: enc, crypto: coin || null, avant: Number(c.cashRecu) || 0, nonRecu: !recu }, chgRep: null, aValider: true }, mod));
         b.set(doc(db, 'cmdPrive', c.id), { next: pv }, { merge: true });
@@ -3523,6 +3535,7 @@ function lpBox(c) {
   let h = '<div class="msgc" style="margin:8px 0;border:2px solid #f5b301"><div style="font-weight:800">Changer le paiement · total ' + money(tot) + '</div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto'], ['mix', 'Mélange']], lp.mode, 'data-lm');
   if (lp.mode === 'mix') h += '<div class="small" style="margin-top:6px">Partie cash ($)</div><input id="lpCash" type="number" inputmode="numeric" value="' + esc(lp.cash) + '"><div class="small">Le reste en :</div>' + seg([['int', '🟡 EMT'], ['cry', '🟣 Crypto']], lp.rest, 'data-lr');
   if (lp.mode !== 'cash') h += '<label class="chk"><input type="checkbox" id="lpRecu" ' + (lp.recu ? 'checked' : '') + '> ' + (needC ? 'Crypto' : 'EMT') + ' déjà reçu <span class="small">(sinon le livreur attend ta confirmation)</span></label>';
+  if (!needC && lp.mode !== 'cash' && lp.recu) h += refInput('lpRef', lp.ref); // v63
   if (needC && lp.recu) h += '<div class="small"><b style="color:var(--text)">Quelle crypto ?</b> (obligatoire)</div>' + seg(COINS, lp.coin, 'data-lc') + (lp.coin === 'autre' ? '<input id="lpAutre" placeholder="Laquelle ? (ex. LTC)" value="' + esc(lp.autre) + '">' : '');
   return h + '<div class="err">' + esc(lp.err) + '</div><div class="two"><button class="btn ghost" data-fa="lpX">Fermer</button><button class="btn ok" data-fa="lpGo">Enregistrer</button></div></div>';
 }
@@ -3537,19 +3550,22 @@ function bindLp() {
 }
 async function lpAct(c, a) {
   if (a === 'chpay') { const p = prive[c.id] || {}, m = p.mode || c.paieMode || 'cash';
-    Object.assign(lp, { id: c.id, mode: m === 'mixc' ? 'mix' : m, cash: p.cash || Math.round(lpTotal(c) / 2), rest: m === 'mixc' ? 'cry' : 'int', coin: null, autre: '', recu: false, err: '' }); return renderFocus(); }
+    Object.assign(lp, { id: c.id, mode: m === 'mixc' ? 'mix' : m, cash: p.cash || Math.round(lpTotal(c) / 2), rest: m === 'mixc' ? 'cry' : 'int', coin: null, autre: '', recu: false, err: '', ref: '' }); return renderFocus(); }
   if (a === 'lpX') { lp.id = null; return renderFocus(); }
   const tot = lpTotal(c), cashPart = Math.round(Number(lp.cash) || 0);
   const mode = lp.mode === 'mix' ? (lp.rest === 'cry' ? 'mixc' : 'mix') : lp.mode;
   const needC = mode === 'cry' || mode === 'mixc', recu = mode === 'cash' ? true : !!lp.recu;
   const coin = needC && recu ? coinOf(lp.coin, lp.autre) : '';
   if (needC && recu && !coin) { lp.err = 'Choisis la crypto (BTC, ETH…).'; return renderFocus(); }
+  const R = recu && emtIn(mode) ? normRef(($('lpRef') && $('lpRef').value) || lp.ref) : '';
+  if (recu && emtIn(mode)) { const bad = await refCheck(R); if (bad) { lp.err = bad; return renderFocus(); } }
   if ((mode === 'mix' || mode === 'mixc') && !(cashPart > 0 && cashPart < tot)) { lp.err = 'Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).'; return renderFocus(); }
   const enc = mode === 'cash' ? tot : mode === 'mix' || mode === 'mixc' ? cashPart : 0;
   try {
     const b = writeBatch(db);
     b.update(doc(db, 'commandes', c.id), Object.assign({ paieMode: mode, encaisser: enc, bloque: !recu, paye: recu && enc === 0, demandePaie: null, crypto: coin || null,
-      paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, recu && mode !== 'cash' ? { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() } : {}));
+      paieModPar: myMid(), paieModNom: me.nom || OWNER, paieModLe: serverTimestamp() }, recu && mode !== 'cash' ? { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() } : {}, R ? { emtRef: R } : {}));
+    if (R) refSet(b, R, c);
     b.set(doc(db, 'cmdPrive', c.id), { total: tot, mode, cash: enc, interac: mode === 'int' ? tot : mode === 'mix' ? tot - cashPart : 0, cryPart: mode === 'cry' ? tot : mode === 'mixc' ? tot - cashPart : 0, recu, crypto: coin || null }, { merge: true });
     await b.commit();
     if (c.livreur) notifyMsg(c.livreur, '💳 Paiement changé pour ' + c.client + ' : ' + (mode === 'cash' ? 'encaisse ' + tot + ' $ cash' : enc ? 'encaisse ' + enc + ' $ cash, le reste ' + (recu ? 'est déjà payé' : 'attend le dispatch') : recu ? 'déjà payé, rien à encaisser' : 'pas encore payé, attends le dispatch'));
@@ -3575,6 +3591,7 @@ function addNote(c, nom, who) {
   if (c.chg) h += r('⏳ changement vers ' + payWord2(c.chg.paieMode, c.chg.cashRecu) + ' · ' + nom + ' doit être d’accord', '#fcd34d');
   if (c.vente) h += r('🛒 vente ajoutée par ' + nom);
   if (c.qtyAvant) h += r('✏️ quantité changée par ' + nom + ' (' + esc(qtyTxt(c.qtyAvant)) + ' → ' + esc(qtyTxt(c)) + ')');
+  if (c.emtRef) h += r('EMT réf. <b style="color:var(--text);font-family:ui-monospace,Menlo,monospace">' + esc(c.emtRef) + '</b>'); // v63
   if (c.envoyePar) h += r('envoyé par <b style="color:var(--text)">' + esc(c.envoyePar) + '</b>'); // v47
   if (c.ajoutPar) h += r('➕ ajoutée par ' + esc(dispName(c.ajoutNom || '')) + (c.ajoutRep === 'ok' ? ' · ✓ approuvée par ' + nom : ''));
   if (c.paieModLe && !c.chg) h += r('✏️ paiement modifié par ' + esc(dispName(c.paieModNom || '')) + (c.chgRep === 'ok' ? ' · ✓ accepté par ' + nom : '') +
@@ -3724,16 +3741,37 @@ async function valAct(c, oui) {
 //       en haut de l'Historique + 🔴 sur l'onglet ; Wayne, MOUSSE ou lost (dispatch) touchent « ✓ reçu ».
 // =====================================================================
 const nr = { list: [], prv: {}, pick: null, busy: null, nom: '', err: '' };
-document.addEventListener('input', (e) => { if (e.target && e.target.dataset && e.target.dataset.nrnom) nr.nom = e.target.value; if (e.target && e.target.id === 'peEnv') pe.env = e.target.value; });
+document.addEventListener('input', (e) => { if (e.target && e.target.dataset && e.target.dataset.nrnom) nr.nom = e.target.value; if (e.target && e.target.id === 'peEnv') pe.env = e.target.value; if (e.target && e.target.id === 'erTxt') er.txt = e.target.value; if (e.target && e.target.id === 'lpRef') lp.ref = e.target.value; });
 function nrAmt(c) { const p = nr.prv[c.id] || (hs.prv && hs.prv[c.id]) || {}; const tot = p.total || ((c.L || 0) * cfg.prixL + (c.XL || 0) * cfg.prixXL + (c.frais || 0)); return Math.max(0, tot - (Number(c.encaisser) || 0)); }
 function nrKind(c) { const m = c.paieMode || (nr.prv[c.id] || {}).mode; return m === 'cry' || m === 'mixc' ? 'cry' : 'int'; }
+// v63 : chaque EMT confirmé porte son numéro de référence (obligatoire, unique). Le nom de l'envoyeur n'est plus demandé.
+//       emtRefs/{REF} : { cmd, client, livreur, livreurNom, par, parNom, le } — créé une seule fois (un numéro = une seule commande).
+const normRef = (t) => String(t || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+async function refCheck(R) {
+  if (R.length < 6 || R.length > 40) return 'Colle le numéro de référence de l’EMT (6 à 40 lettres ou chiffres).';
+  try { const s = await getDoc(doc(db, 'emtRefs', R)); if (s.exists()) { const d = s.data(), t = tsMs(d.le);
+    return '⛔ Ce numéro est déjà utilisé : ' + (d.client || '?') + (d.livreurNom ? ' · ' + d.livreurNom : '') + (t ? ' · ' + new Date(t).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + hm(t) : '') + (d.parNom ? ' (confirmé par ' + d.parNom + ')' : '') + '. Vérifie : c’est sûrement un autre EMT.'; } } catch (e) {}
+  return '';
+}
+function refSet(b, R, c) { b.set(doc(db, 'emtRefs', R), { cmd: c.id, client: String(c.client || 'Client').slice(0, 60), livreur: c.livreur || '', livreurNom: String(c.livreurNom || '').slice(0, 60), par: myMid(), parNom: String(me.nom || OWNER).slice(0, 60), le: serverTimestamp() }); }
+function refInput(id, val, extra) { return '<div class="small" style="margin-top:6px"><b style="color:var(--text)">N° de référence de l’EMT</b> (obligatoire)</div><div class="crow" style="margin:4px 0"><input id="' + id + '" ' + (extra || '') + ' value="' + esc(val || '') + '" placeholder="Ex. CA7K2QM9XP" autocapitalize="characters" autocomplete="off" spellcheck="false" style="font-family:ui-monospace,Menlo,monospace;letter-spacing:.03em"><button class="btn sm ghost" type="button" data-paste="' + id + '" style="width:auto;white-space:nowrap">📋 Coller</button></div><div class="small">Dans le courriel de l’EMT : copie le numéro de référence.</div>'; }
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest && e.target.closest('[data-paste]'); if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const inp = document.getElementById(b.dataset.paste); if (!inp) return;
+  try { const t = await navigator.clipboard.readText(); const tok = (String(t).match(/[A-Za-z0-9]{6,40}/g) || []).filter((x) => /\d/.test(x)).sort((x, y) => y.length - x.length)[0]; inp.value = tok ? tok.toUpperCase() : (normRef(t) || t.trim()); inp.dispatchEvent(new Event('input', { bubbles: true })); inp.focus(); }
+  catch (err) { inp.focus(); alertBar('Colle le numéro avec un appui long dans la case (Coller).'); }
+}, true);
+const er = { id: null, kind: '', txt: '', err: '', ok: null };
+function refBox() { return '<div class="msgc" style="margin:8px 0;border:2px solid #f5b301">' + refInput('erTxt', er.txt) + (er.err ? '<div class="err">' + esc(er.err) + '</div>' : '') +
+  '<div class="two" style="margin-top:6px">' + fBtn('erX', 'Annuler') + fBtn('erGo', '✅ EMT reçu', 'ok') + '</div></div>'; }
+const emtIn = (mode) => mode === 'int' || mode === 'mix';
 function nrPrv() { nr.list.forEach((c) => { if (!nr.prv[c.id]) getDoc(doc(db, 'cmdPrive', c.id)).then((d) => { if (d.exists()) { nr.prv[c.id] = d.data(); if (curTab === 'histo') drawHisto(); } }).catch(() => {}); }); }
 function nrBadge() { const tb = document.querySelector('#tabs button[data-t="histo"]'); if (tb) tb.textContent = 'Historique' + (nr.list.length && isDispatcher() ? ' 🔴' + nr.list.length : ''); }
 function nrBtn(c) {
   if (!isDispatcher()) return '';
   const k = nrKind(c);
-  if (nr.pick === c.id && k !== 'cry') return '<div data-nrbox="' + c.id + '" style="margin-top:8px;background:var(--card2);border-radius:12px;padding:10px"><div class="small"><b style="color:var(--text)">Envoyé par</b> (nom sur le virement, obligatoire)</div>' + // v47
-    '<input data-nrnom="' + c.id + '" placeholder="Ex. Marc Tremblay" maxlength="60" value="' + esc(nr.nom || '') + '" style="margin:6px 0">' + (nr.err ? '<div class="err">' + esc(nr.err) + '</div>' : '') +
+  if (nr.pick === c.id && k !== 'cry') return '<div data-nrbox="' + c.id + '" style="margin-top:8px;background:var(--card2);border-radius:12px;padding:10px">' + refInput('nrRef' + c.id, nr.nom, 'data-nrnom="' + c.id + '"') + (nr.err ? '<div class="err">' + esc(nr.err) + '</div>' : '') +
     '<div class="two"><button class="btn ghost sm" data-nrx="1">Annuler</button><button class="btn ok sm" data-nrgo="' + c.id + '">Confirmer</button></div></div>';
   if (nr.pick === c.id) return '<div style="margin-top:6px"><div class="small"><b style="color:var(--text)">Quelle crypto ?</b></div><div class="seg" style="flex-wrap:wrap">' + COINS.filter((x) => x[0] !== 'autre').map((x) => '<button data-nrc="' + c.id + '|' + x[0] + '">' + x[1] + '</button>').join('') + '</div></div>';
   return '<div style="text-align:right;margin-top:6px"><button class="btn ok sm" style="width:auto;padding:8px 12px;margin:0" data-nrok="' + c.id + '"' + (nr.busy === c.id ? ' disabled' : '') + '>' + (nr.busy === c.id ? '…' : '✓ ' + (k === 'cry' ? 'Crypto' : 'EMT') + ' reçu') + '</button></div>';
@@ -3747,12 +3785,17 @@ function nrHtml() {
 async function nrConfirm(id, coin, nom) {
   const c = nr.list.find((x) => x.id === id) || (hs.all || []).find((x) => x.id === id); if (!c || nr.busy) return;
   if (nrKind(c) === 'cry' && !coin) { nr.pick = id; return drawHisto(); }
-  if (nrKind(c) !== 'cry') { nom = String(nom || '').trim(); if (!nom) { if (nr.pick === id) nr.err = 'Écris le nom de la personne qui a envoyé.'; else { nr.pick = id; nr.err = ''; nr.nom = ''; } return drawHisto(); } }
+  let R = '';
+  if (nrKind(c) !== 'cry') { // v63 : numéro de référence obligatoire et unique
+    if (nr.pick !== id) { nr.pick = id; nr.err = ''; nr.nom = ''; return drawHisto(); }
+    R = normRef(nom); const bad = await refCheck(R); if (bad) { nr.err = bad; nr.nom = nom || ''; return drawHisto(); }
+  }
   nr.err = ''; nr.nom = '';
   nr.busy = id; nr.pick = null; drawHisto();
   try {
     const b = writeBatch(db);
-    b.update(doc(db, 'commandes', id), Object.assign({ nonRecu: false, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}, nom ? { envoyePar: nom.slice(0, 60) } : {}));
+    b.update(doc(db, 'commandes', id), Object.assign({ nonRecu: false, confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, coin ? { crypto: coin } : {}, R ? { emtRef: R } : {}));
+    if (R) refSet(b, R, c);
     b.set(doc(db, 'cmdPrive', id), Object.assign({ recu: true }, coin ? { crypto: coin } : {}), { merge: true });
     await b.commit();
     detteSweep();
@@ -3866,7 +3909,7 @@ function venteHtml(s) {
       '<div class="small">Livraison</div>' + seg([['uber', '🚕 Uber'], ['pickup', '🏠 Pick-up']], vt.typ, 'data-vty') +
       '<div class="small">Le client paie comment ? · total <b id="vtTot" style="color:var(--text)">' + money(tot) + '</b></div>' + seg([['cash', '🔵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto']], vt.mode, 'data-vm') +
       (vt.mode === 'cash' ? '<div class="small">Cash reçu (laisse vide = le total)</div><input id="vtRecu" type="number" inputmode="numeric" value="' + esc(vt.recu) + '" placeholder="' + tot + '">' : '') +
-      (vt.mode === 'int' ? '<div class="small">EMT envoyé par (nom de la personne)</div><input id="vtEnv" value="' + esc(vt.env) + '" placeholder="Ex. Kevin Tremblay" maxlength="60">' : '') +
+      (vt.mode === 'int' ? refInput('vtEnv', vt.env) : '') +
       (vt.mode !== 'cash' ? '<label class="chk" style="background:rgba(47,191,113,.10);border:1px solid rgba(47,191,113,.4);border-radius:12px;padding:10px;margin-top:6px"><input type="checkbox" id="vtVu"' + (vt.vu ? ' checked' : '') + '> <span><b>J’ai vu ' + dig + ' rentrer</b><br><span class="small">Obligatoire. Pas besoin du dispatch.</span></span></label>' : '') +
       (vt.err ? '<div class="err">' + esc(vt.err) + '</div>' : '') +
       '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="vtX">Fermer</button><button class="btn ok sm" id="vtGo"' + (vt.busy ? ' disabled' : '') + '>' + (vt.busy ? '…' : 'Enregistrer') + '</button></div></div>';
@@ -3902,7 +3945,8 @@ document.addEventListener('click', async (e) => {
   if (mode === 'mix' && !(cashPart > 0 && cashPart < tot)) return fail('Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).');
   const U = !!me.uber, env = String(vt.env || '').trim();
   if (U && mode === 'mix') return fail('Pas de mélange : choisis Cash, EMT ou Crypto.');
-  if (U && mode === 'int' && !env) return fail('Écris le nom de la personne qui a envoyé l’EMT.');
+  const Rv = U && mode === 'int' ? normRef(env) : '';
+  if (Rv) { const bad = await refCheck(Rv); if (bad) return fail(bad); } else if (U && mode === 'int') return fail('Colle le numéro de référence de l’EMT.');
   if (U && mode !== 'cash' && !vt.vu) return fail('Coche « J’ai vu ' + (mode === 'int' ? 'l’EMT' : 'la crypto') + ' rentrer ».');
   const enc = mode === 'cash' ? tot : mode === 'mix' ? cashPart : 0;
   const recu = mode === 'cash' ? (String(vt.recu).trim() === '' ? tot : Math.max(0, Math.round(Number(vt.recu) || 0))) : enc;
@@ -3911,14 +3955,15 @@ document.addEventListener('click', async (e) => {
     const ref = doc(collection(db, 'commandes')), b = writeBatch(db);
     b.set(ref, Object.assign({ client: client.slice(0, 60), adresse: '', L, XL, frais: 0, encaisser: enc, paieMode: mode, crypto: null, paye: enc === 0, bloque: false,
       livreur: me.mid, livreurNom: me.nom, statut: 'livree', livreeLe: serverTimestamp(), creeLe: serverTimestamp(), cashRecu: recu, soiree: s.id, vente: true, venteJour: dayKey(soirStart()),
-      nonRecu: mode !== 'cash' && !U }, U ? Object.assign({ type: vt.typ === 'pickup' ? 'pickup' : 'uber' }, mode === 'int' ? { envoyePar: env.slice(0, 60) } : {}, mode !== 'cash' ? { recuParLivreur: true } : {}) : {},
+      nonRecu: mode !== 'cash' && !U }, U ? Object.assign({ type: vt.typ === 'pickup' ? 'pickup' : 'uber' }, Rv ? { emtRef: Rv } : {}, mode !== 'cash' ? { recuParLivreur: true } : {}) : {},
       test ? { test: true } : paies[me.mid] != null ? { paie: paies[me.mid] } : {}));
+    if (Rv) refSet(b, Rv, { id: ref.id, client, livreur: me.mid, livreurNom: me.nom });
     if (!test) {
       b.set(doc(db, 'stocks', me.mid), { L: increment(-L), XL: increment(-XL), cmd: ref.id }, { merge: true });
       b.update(doc(db, 'soirees', s.id), { livrees: increment(1) });
     }
     await b.commit();
-    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : U ? (mode === 'int' ? tot + ' $ EMT de ' + env : tot + ' $ crypto') + ' · ✓ confirmé par ' + me.nom : mode === 'mix' ? enc + ' $ cash + EMT (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'EMT (à confirmer)'));
+    notifyDispatch('🛒 ' + me.nom + ' a fait une vente : ' + client + ' · ' + qtyTxt({ L, XL }) + ' · ' + (mode === 'cash' ? recu + ' $ cash' : U ? (mode === 'int' ? tot + ' $ EMT réf. ' + Rv : tot + ' $ crypto') + ' · ✓ confirmé par ' + me.nom : mode === 'mix' ? enc + ' $ cash + EMT (à confirmer)' : mode === 'cry' ? 'crypto (à confirmer)' : 'EMT (à confirmer)'));
     vt.ok = U ? 'Commande de ' + client + ' enregistrée' : ''; if (U) { vt.client = ''; vt.L = 0; vt.XL = 0; vt.recu = ''; vt.env = ''; vt.vu = false; vt.mode = 'cash'; }
     vt.open = false; vt.busy = false; renderSoiree();
   } catch (err) { vt.busy = false; fail(msg(err)); }
@@ -4060,7 +4105,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 62;
+const APP_V = 63;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
