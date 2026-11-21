@@ -4141,7 +4141,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 70;
+const APP_V = 71;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4441,7 +4441,7 @@ function mnItems() {
     out.push({ sec: 'Opérations' }, ...ops);
     out.push({ sec: 'Argent' });
     if (cash) out.push(Object.assign(cash, { lab: 'Cash' }));
-    if (isOwner()) { try { if (fil && fil.docs && fil.docs.mousse) out.push({ ic: '🤝', lab: 'Fil avec MOUSSE', n: filUnread('mousse') ? 1 : 0, go: () => openFil('mousse') }); } catch (e) {} }
+    if (isOwner()) Object.keys(team).filter((id) => team[id].role === 'complet' && team[id].actif !== false).forEach((id) => { let u = 0; try { u = filUnread(id) ? 1 : 0; } catch (e) {} out.push({ ic: '🤝', lab: 'Fil avec ' + (team[id].nom || id), n: u, go: () => openFil(id) }); });
     else if ($('filBtn')) out.push({ ic: '🤝', lab: 'Fil avec ' + OWNER, n: filUnread(me.mid) ? 1 : 0, go: () => openFil(me.mid) });
     out.push({ sec: isOwner() ? 'Gestion' : 'Moi' });
     if (eq) out.push(eq);
