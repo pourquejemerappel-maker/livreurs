@@ -1009,6 +1009,8 @@ async function saveOrder(opt) {
     const mode = f.meth, recu = f.meth === 'cash' ? true : f.recu;
     const coin = mode === 'cry' && recu ? coinOf(f.coin, f.coinA) : '';
     if (mode === 'cry' && recu && !coin) { f.busy = false; return ($('nfErr').textContent = 'Choisis la crypto (BTC, ETH…).'); }
+    // v68 : un mix doit avoir une vraie partie cash.
+    if (mode === 'mix' && !(f.cashPart > 0 && f.cashPart < tot)) { f.busy = false; return ($('nfErr').textContent = 'Écris la partie cash (entre 1 et ' + (tot - 1) + ' $).'); }
     const encaisser = mode === 'cash' ? tot : mode === 'mix' ? f.cashPart : 0;
     const ref = doc(collection(db, 'commandes'));
     const code = newCode();
@@ -1274,6 +1276,15 @@ function lvSave() { try { localStorage.setItem(LV_KEY, JSON.stringify({ for: lv.
 function lvLoad(id) { try { const x = JSON.parse(localStorage.getItem(LV_KEY) || 'null'); if (x && x.for === id) return x; } catch (e) {} return null; }
 const totNow = (c, L, XL) => L * cfg.prixL + XL * cfg.prixXL + (Number(c.frais) || 0);
 const dueOf = (c) => (c.bloque ? totNow(c, c.L || 0, c.XL || 0) : Math.max(0, Number(c.encaisser) || 0));
+// v68 : EMT/crypto déjà reçu avant la livraison (commande mix/EMT confirmée à la création).
+const dejaOf = (c) => (c.bloque ? 0 : Math.max(0, totNow(c, c.L || 0, c.XL || 0) - (Number(c.encaisser) || 0)));
+// Si le livreur réécrit à la porte l'EMT déjà reçu (ex. Lala 20 nov. : « 220 cash 220 emt » sur 220 cash + 220 EMT déjà reçu),
+// on ne le recompte pas : avant, cet EMT « couvrait » le cash à prendre et tout le cash devenait pourboire.
+function payNorm(c, p) {
+  const d = dejaOf(c); if (!p || !d) return p;
+  const e = Math.min(p.emt, d), y = Math.min(p.cry, d - e);
+  return Object.assign({}, p, { emt: p.emt - e, cry: p.cry - y, deja: e + y });
+}
 // « 150 emt reste cash », « 100 cash 80 crypto reste emt », « tout cash », « crypto » → { cash, emt, cry } ; null si on ne comprend pas.
 function parsePaie(t, tot) {
   t = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -1329,8 +1340,8 @@ function myOrdersHtml(s) {
       '<div class="lvPrice">Prix<b>' + (lv.L + lv.XL ? money(tot) : '—') + '</b></div><div class="lvGrow"></div>' +
       '<button class="btn lvBig lvGrey" id="lvCmdOk"' + (lv.L + lv.XL && !lv.busy ? '' : ' disabled') + '>' + (lv.busy ? '…' : 'OK') + '</button>' + more;
   } else if (!dp && lv.step === 'pay') {
-    const due = dueOf(c), p = parsePaie(lv.pay, due), sum = p ? p.cash + p.emt + p.cry : 0, diff = due - sum;
-    h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvOkBar"><span>✓ ' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</span><b>' + (due < totNow(c, c.L || 0, c.XL || 0) ? 'À payer ' : 'Total ') + money(due) + '</b></div>' +
+    const due = dueOf(c), p = payNorm(c, parsePaie(lv.pay, due)), sum = p ? p.cash + p.emt + p.cry : 0, diff = due - sum, deja = dejaOf(c);
+    h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvOkBar"><span>✓ ' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</span><b>' + (due < totNow(c, c.L || 0, c.XL || 0) ? 'À payer ' : 'Total ') + money(due) + '</b></div>' + (deja ? '<div class="small" style="text-align:center;color:#86efac;margin:-4px 0 6px">✓ ' + money(deja) + ' déjà reçu par ' + (c.paieMode === 'cry' ? 'crypto' : 'EMT') + ' · écris juste ce que le client te donne</div>' : '') +
       '<div class="lvQ">Le client paie comment ?</div><input id="lvPayTxt" class="lvTxt" autocomplete="off" autocapitalize="none" value="' + esc(lv.pay) + '">' +
       '<div id="lvPayRead">' + lvPayRead(p, due, diff) + '</div><div class="err" id="mcErr">' + esc(lv.err) + '</div><div class="lvGrow"></div>' +
       '<button class="btn lvBack" id="lvBack">↩️ Le client change d’avis (retour à la commande)</button><button class="btn lvBig ok" id="lvPayOk"' + (lv.busy ? ' disabled' : '') + '>' + (lv.busy ? '…' : 'OK') + '</button>';
@@ -1352,7 +1363,7 @@ function myOrdersHtml(s) {
 function lvPayRead(p, due, diff) {
   if (!lv.pay.trim()) return '';
   if (!p) return '<div class="err">⛔ Je comprends pas — écris le montant avec EMT, cash ou crypto.</div>';
-  return '<div class="lvRead">' + payLine(p) + '<div style="margin-top:4px;font-weight:700;color:' + (diff > 0 ? '#fbbf24' : '#4ade80') + '">' + (diff === 0 ? '✓ ' + money(due) : diff > 0 ? 'Il manque ' + money(diff) : '+' + money(-diff) + ' de pourboire pour toi 🎉') + '</div></div>';
+  return '<div class="lvRead">' + (p.deja ? '<div style="color:#86efac">✓ ' + money(p.deja) + ' déjà reçu (pas à reconfirmer)</div>' : '') + payLine(p) + '<div style="margin-top:4px;font-weight:700;color:' + (diff > 0 ? '#fbbf24' : '#4ade80') + '">' + (diff === 0 ? '✓ ' + money(due) : diff > 0 ? 'Il manque ' + money(diff) : '+' + money(-diff) + ' de pourboire pour toi 🎉') + '</div></div>';
 }
 function lvPanel(c) {
   if (lv.panel === 'more') return '<div class="msgc" style="margin-bottom:8px"><a class="btn ghost sm" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px" href="' + mapsUrl(c) + '" target="_blank" rel="noopener">🗺️ Ouvrir dans Google Maps</a>' +
@@ -1403,17 +1414,19 @@ function bindMyOrders(s) {
   };
   // 3b : le paiement
   if ($('lvPayTxt')) {
-    $('lvPayTxt').oninput = (e) => { lv.pay = e.target.value; lv.err = ''; const due = dueOf(c), p = parsePaie(lv.pay, due); $('lvPayRead').innerHTML = lvPayRead(p, due, due - (p ? p.cash + p.emt + p.cry : 0)); if ($('mcErr')) $('mcErr').textContent = ''; };
+    $('lvPayTxt').oninput = (e) => { lv.pay = e.target.value; lv.err = ''; lv.tipOk = 0; const due = dueOf(c), p = payNorm(c, parsePaie(lv.pay, due)); $('lvPayRead').innerHTML = lvPayRead(p, due, due - (p ? p.cash + p.emt + p.cry : 0)); if ($('mcErr')) $('mcErr').textContent = ''; };
   }
   if ($('lvBack')) $('lvBack').onclick = () => { if ($('lvPayTxt')) $('lvPayTxt').blur(); lv.step = 'cmd'; lv.L = c.L || 0; lv.XL = c.XL || 0; lv.err = ''; lvSave(); renderSoiree(); };
   if ($('lvPayOk')) $('lvPayOk').onclick = async () => {
     if ($('lvPayTxt')) { lv.pay = $('lvPayTxt').value; $('lvPayTxt').blur(); }
-    const due = dueOf(c), p = parsePaie(lv.pay, due);
+    const due = dueOf(c), p = payNorm(c, parsePaie(lv.pay, due));
     if (!p) { lv.err = '⛔ Je comprends pas — écris le montant avec EMT, cash ou crypto.'; return renderSoiree(); }
     const sum = p.cash + p.emt + p.cry;
     if (sum < due) { lv.err = '⛔ Il manque ' + money(due - sum) + ' — le total doit être payé.'; return renderSoiree(); }
     if (p.emt && p.cry) { lv.err = '⛔ EMT et crypto ensemble : pas possible. Garde un des deux (avec du cash si tu veux).'; return renderSoiree(); }
-    const dig = p.emt + p.cry;
+    const dig = p.emt + p.cry, tip = sum - due;
+    // v68 : gros pourboire (20 $ et +) → le livreur doit le confirmer (2e appui sur OK).
+    if (tip >= 20 && lv.tipOk !== tip) { lv.tipOk = tip; lv.err = '⚠️ Ça fait ' + money(tip) + ' de pourboire pour toi. C’est vrai ? Appuie encore sur OK. Sinon, corrige.'; return renderSoiree(); }
     lv.busy = true; renderSoiree();
     try {
       if (dig) {
@@ -2357,7 +2370,7 @@ function renderFocus() {
     h += '<div class="fchat"><div class="small">💬 ' + esc(c.livreurNom || '') + '</div>' + (dl.slice(-3).map((m) => '<div><b>' + (m.de === 'livreur' ? esc(c.livreurNom || '') : 'Toi') + ' :</b> ' + esc(m.txt || '') + (m.img ? '<img class="thumb" src="' + esc(m.img) + '" alt="photo">' : '') + '</div>').join('') || '<div class="small">Pas de message.</div>') +
       '<div class="crow" style="margin-top:6px"><input id="fxTxt" maxlength="300" placeholder="Écrire à ' + esc(c.livreurNom || '') + '…"><button class="btn sm" id="fxSend">➤</button></div></div>';
     if (c.demandePaie) { const dq = c.demandePaie, neuf = dq.emt != null || dq.cry != null;
-      h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(dq, c)) + '</div>' + (dq.pasRecu ? '<div class="small" style="color:#fca5a5;margin:4px 0">❌ Marqué pas reçu — ' + esc(c.livreurNom || 'le livreur') + ' attend (il ne donne pas)</div>' : '');
+      h += '<div class="fban s-ici">💳 ' + esc(c.livreurNom || '') + ' : ' + esc(demPaieTxt(dq, c)) + '</div>' + (neuf ? payCheck(dq, c) : '') + (dq.pasRecu ? '<div class="small" style="color:#fca5a5;margin:4px 0">❌ Marqué pas reçu — ' + esc(c.livreurNom || 'le livreur') + ' attend (il ne donne pas)</div>' : '');
       if (cry.id === c.id) h += cryBox();
       else if (er.id === c.id) h += refBox();
       else if (!neuf) h += fBtn('dpOk', dq.mode === 'cash' ? '✓ OK, il encaisse en cash' : dq.mode === 'cry' ? '✓ J’ai reçu la crypto' : '✓ J’ai reçu l’EMT', 'ok') + fBtn('dpNo0', 'Refuser (on garde comme avant)');
@@ -2407,6 +2420,13 @@ async function focusAssign(c, opt) {
   } catch (e) { if ($('fxErr')) $('fxErr').textContent = msg(e); }
 }
 
+// v68 : avant de confirmer, le dispatch voit le prix, ce qui est payé et le pourboire (s'il y en a).
+function payCheck(dq, c) {
+  const prix = totNow(c, c.L || 0, c.XL || 0), deja = dejaOf(c), paye = deja + (dq.cashDonne || dq.cash || 0) + (dq.emt || 0) + (dq.cry || 0), tip = Math.max(0, (dq.cashDonne || 0) - (dq.cash || 0));
+  const sub = 'Prix ' + money(prix) + (deja ? ' · déjà reçu ' + money(deja) : '') + ' · payé en tout ' + money(paye);
+  if (tip) return '<div style="background:#422006;border:1px solid #a16207;color:#fde68a;border-radius:10px;padding:8px 10px;margin:6px 0;font-weight:700">⚠️ ' + money(tip) + ' de pourboire pour ' + esc(c.livreurNom || 'le livreur') + '<div class="small" style="color:#fcd34d;font-weight:400">' + sub + '</div></div>';
+  return '<div class="small" style="color:#86efac;margin:6px 0">' + sub + ' ✓ pas de pourboire</div>';
+}
 // Demande de paiement du livreur (« le client paie autrement ») : texte pour le dispatch, et confirmation.
 function demPaieTxt(dp, c) {
   if (dp.emt != null || dp.cry != null) { // v52 : écrit par le livreur à la porte
@@ -4115,7 +4135,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 67;
+const APP_V = 68;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
