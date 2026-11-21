@@ -2089,6 +2089,10 @@ function drawRemDrv() {
   box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => updRemise(b.dataset.rno, 'refusee'); });
 }
 async function rendreA(mid, nom, m) {
+  // v67 : un seul don à la fois — si un don au livreur attend sa confirmation, on n'en crée pas un autre (bogue des 6 × 120 $ de Moo, 20 nov.).
+  const q = await getDocs(query(collection(db, 'remises'), where('vers', '==', mid), where('statut', '==', 'attente')));
+  let dej = 0; q.forEach((d) => { if (d.data().rend === true) dej += d.data().montant || 0; });
+  if (dej) throw new Error('Déjà ' + money(dej) + ' donné, on attend que ' + (nom || nomDe(mid)) + ' confirme « Reçu ».');
   await setDoc(doc(collection(db, 'remises')), { de: myMid(), deNom: me.nom || OWNER, vers: mid, versNom: nom || nomDe(mid), montant: Math.round(m), statut: 'attente', le: serverTimestamp(), rend: true });
   notifyMsg(mid, '💵 ' + (me.nom || OWNER) + ' te rend ' + money(Math.round(m)) + ' — confirme « Reçu »');
 }
@@ -4019,7 +4023,7 @@ async function loadCash() {
       const t = tsMs(r.le), ok = r.statut === 'recue', att = r.statut === 'attente';
       if (!ok && !att) return;
       if (r.de && r.de !== 'proprietaire') { const p = per(r.de, r.deNom); day(p, t).lines.push({ t, txt: '→ ' + (r.versNom || nomDe(r.vers)), m: -(r.montant || 0), ok, att }); if (ok) p.solde -= r.montant || 0; }
-      if (r.vers && r.vers !== 'proprietaire') { const p = per(r.vers, r.versNom); day(p, t).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; }
+      if (r.vers && r.vers !== 'proprietaire') { const p = per(r.vers, r.versNom); day(p, t).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; if (att && r.rend) p.rendAtt = (p.rendAtt || 0) + (r.montant || 0); }
     });
     // Dettes : ouvertes = notées à part (pas encore de cash) ; réglées en cash = le cash s'ajoute au solde du responsable.
     dts.forEach((x) => {
@@ -4048,7 +4052,8 @@ function drawCash() {
     const o = cs.sel === p.id, disp = team[p.id] && ['complet', 'limite'].includes(team[p.id].role);
     h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-cs="' + esc(p.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer"><div><b style="font-size:16px">' + esc(p.nom) + '</b> <span class="small">' + (disp ? 'dispatch' : 'livreur') + '</span>' +
       '<div class="small">' + (Math.round(p.solde) ? (disp ? 'sur lui' : p.solde < 0 ? 'on lui doit' : 'à remettre') : '✓ tout remis') + (p.dette ? ' · <span style="color:#f87171">📒 ' + money(p.dette) + ' en dettes</span>' : '') + '</div></div><b style="font-size:19px;color:' + (Math.round(p.solde) ? '#fcd34d' : '#86efac') + '">' + money(p.solde) + ' ' + (o ? '▲' : '▼') + '</b></div>';
-    if (!disp && Math.round(p.solde) < 0 && (isStaff() || isOwner())) h += '<div style="padding:8px 14px 12px;border-top:1px solid var(--line)"><div style="color:#c4b5fd;font-weight:800;margin-bottom:6px">💜 Tu lui dois ' + money(-p.solde) + '</div>' +
+    if (!disp && p.rendAtt && (isStaff() || isOwner())) h += '<div style="padding:8px 14px 12px;border-top:1px solid var(--line);color:#c4b5fd">⏳ <b>' + money(p.rendAtt) + '</b> donné · attend que ' + esc(p.nom) + ' confirme « Reçu ✓ »</div>';
+    else if (!disp && Math.round(p.solde) < 0 && (isStaff() || isOwner())) h += '<div style="padding:8px 14px 12px;border-top:1px solid var(--line)"><div style="color:#c4b5fd;font-weight:800;margin-bottom:6px">💜 Tu lui dois ' + money(-p.solde) + '</div>' +
       (cs.rend === p.id ? '<button class="btn sm" style="background:#7c3aed;color:#fff" data-rend="' + esc(p.id) + '">Sûr ? Appuie encore : je lui ai donné ' + money(-p.solde) + '</button>' : '<button class="btn sm" style="background:#7c3aed;color:#fff" data-rend="' + esc(p.id) + '">💵 Je lui ai donné ' + money(-p.solde) + '</button>') + '<div class="small" style="margin-top:4px">Il devra confirmer « Reçu ✓ ».</div></div>';
     if (o) Object.values(p.days).sort((a, b) => b.k - a.k).forEach((d) => {
       h += '<div style="padding:6px 14px;background:var(--card2);border-top:1px solid var(--line);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">' + esc(new Date(d.k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })) + '</div>';
@@ -4110,7 +4115,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 66;
+const APP_V = 67;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
