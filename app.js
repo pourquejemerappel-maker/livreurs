@@ -4008,17 +4008,21 @@ document.addEventListener('input', (e) => { if (e.target && (e.target.id === 'vt
 const CASH_START = new Date(2026, 10, 18, 6, 0, 0);
 const cs = { busy: false, data: null, sel: null, err: '' };
 const soirOf = (ms) => { const d = new Date(ms); if (d.getHours() < 6) d.setDate(d.getDate() - 1); d.setHours(6, 0, 0, 0); return d; };
+// v69 : départ du compte par personne (members/{mid}.cashDepuis, ms) + remises à ignorer (cashExclu) — ex. Moo : jeudi 19 nov. réglé entre Wayne et lui.
+const cutOf = (m) => ({ t: (m && Number(m.cashDepuis)) || 0, ex: (m && m.cashExclu) || [] });
 async function soldeMoi() {
-  const mid = me.mid, d0 = CASH_START, t0 = soirStart(), list = [];
+  let cm0 = null; try { const md = await getDoc(doc(db, 'members', me.mid)); cm0 = md.exists() ? md.data() : null; } catch (e) {}
+  const cut = cutOf(cm0);
+  const mid = me.mid, d0 = new Date(Math.max(CASH_START.getTime(), cut.t)), t0 = soirStart(), list = [];
   const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', mid), where('statut', '==', 'livree')));
   qs.forEach((x) => { const c = x.data(); if (tsMs(c.livreeLe) >= d0.getTime()) list.push(c); });
   const all = (sumUp(list)[0] || { reste: 0 }).reste, tonight = (sumUp(list.filter((c) => tsMs(c.livreeLe) >= t0.getTime()))[0] || { reste: 0 }).reste;
   let out = 0, outT = 0, inn = 0, innT = 0;
   const rs = await getDocs(query(collection(db, 'remises'), where('de', '==', mid)));
-  rs.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime()) return; out += r.montant || 0; if (t >= t0.getTime()) outT += r.montant || 0; });
+  rs.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime() || cut.ex.includes(x.id)) return; out += r.montant || 0; if (t >= t0.getTime()) outT += r.montant || 0; });
   { // v54 : aussi pour le livreur (le dispatch lui rend l'argent qu'il a donné en trop)
     const rv = await getDocs(query(collection(db, 'remises'), where('vers', '==', mid)));
-    rv.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; });
+    rv.forEach((x) => { const r = x.data(), t = tsMs(r.le); if (r.statut !== 'recue' || t < d0.getTime() || cut.ex.includes(x.id)) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; });
   }
   try { const dq = await getDocs(query(collection(db, 'dettes'), where('responsable', '==', mid))); // dette réglée en cash = cash à remettre
     dq.forEach((x) => { const r = x.data(), t = tsMs(r.regleLe); if (r.statut !== 'reglee' || r.regleMode !== 'cash' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; }); } catch (e) {}
@@ -4035,19 +4039,21 @@ async function loadCash() {
     const P = {};
     const per = (id, nom) => P[id] || (P[id] = { id, nom: nom || nomDe(id), solde: 0, dette: 0, days: {} });
     const day = (p, ms) => { const k = soirOf(ms).getTime(); return p.days[k] || (p.days[k] = { k, n: 0, cash: 0, garde: 0, lines: [] }); };
-    cm.filter((c) => c.statut === 'livree' && !c.test && c.livreur).forEach((c) => {
+    const skip = (id, t, rid) => { const k = cutOf(team[id]); return t < k.t || (rid && k.ex.includes(rid)); };
+    cm.filter((c) => c.statut === 'livree' && !c.test && c.livreur && !skip(c.livreur, tsMs(c.livreeLe))).forEach((c) => {
       const p = per(c.livreur, c.livreurNom), d = day(p, tsMs(c.livreeLe)), r = sumUp([c])[0]; if (!r) return;
       d.n += 1; d.cash += r.cash; d.garde += r.cash - r.reste; p.solde += r.reste;
     });
     rems.forEach((r) => {
       const t = tsMs(r.le), ok = r.statut === 'recue', att = r.statut === 'attente';
       if (!ok && !att) return;
-      if (r.de && r.de !== 'proprietaire') { const p = per(r.de, r.deNom); day(p, t).lines.push({ t, txt: '→ ' + (r.versNom || nomDe(r.vers)), m: -(r.montant || 0), ok, att }); if (ok) p.solde -= r.montant || 0; }
-      if (r.vers && r.vers !== 'proprietaire') { const p = per(r.vers, r.versNom); day(p, t).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; if (att && r.rend) p.rendAtt = (p.rendAtt || 0) + (r.montant || 0); }
+      if (r.de && r.de !== 'proprietaire' && !skip(r.de, t, r.id)) { const p = per(r.de, r.deNom); day(p, t).lines.push({ t, txt: '→ ' + (r.versNom || nomDe(r.vers)), m: -(r.montant || 0), ok, att }); if (ok) p.solde -= r.montant || 0; }
+      if (r.vers && r.vers !== 'proprietaire' && !skip(r.vers, t, r.id)) { const p = per(r.vers, r.versNom); day(p, t).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; if (att && r.rend) p.rendAtt = (p.rendAtt || 0) + (r.montant || 0); }
     });
     // Dettes : ouvertes = notées à part (pas encore de cash) ; réglées en cash = le cash s'ajoute au solde du responsable.
     dts.forEach((x) => {
       const rid = x.responsable; if (!rid || rid === 'dispatch' || rid === 'proprietaire') return;
+      if (skip(rid, tsMs(x.statut === 'reglee' ? x.regleLe : x.creeLe))) return;
       if (x.statut === 'ouverte') { const p = per(rid); p.dette += x.montant || 0; day(p, tsMs(x.creeLe)).lines.push({ t: tsMs(x.creeLe), txt: '📒 Dette ouverte · ' + (x.client || ''), m: 0, dm: x.montant || 0, att: true }); }
       if (x.statut === 'reglee' && tsMs(x.regleLe) >= CASH_START.getTime()) { const p = per(rid), cash = x.regleMode === 'cash';
         day(p, tsMs(x.regleLe)).lines.push({ t: tsMs(x.regleLe), txt: '📒 Dette réglée ' + (cash ? 'en cash' : 'par EMT') + ' · ' + (x.client || ''), m: cash ? (x.montant || 0) : 0, dm: cash ? 0 : x.montant || 0, ok: true });
@@ -4071,7 +4077,7 @@ function drawCash() {
   L.forEach((p) => {
     const o = cs.sel === p.id, disp = team[p.id] && ['complet', 'limite'].includes(team[p.id].role);
     h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:8px' + (o ? ';border-color:#f5b301' : '') + '"><div data-cs="' + esc(p.id) + '" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer"><div><b style="font-size:16px">' + esc(p.nom) + '</b> <span class="small">' + (disp ? 'dispatch' : 'livreur') + '</span>' +
-      '<div class="small">' + (Math.round(p.solde) ? (disp ? 'sur lui' : p.solde < 0 ? 'on lui doit' : 'à remettre') : '✓ tout remis') + (p.dette ? ' · <span style="color:#f87171">📒 ' + money(p.dette) + ' en dettes</span>' : '') + '</div></div><b style="font-size:19px;color:' + (Math.round(p.solde) ? '#fcd34d' : '#86efac') + '">' + money(p.solde) + ' ' + (o ? '▲' : '▼') + '</b></div>';
+      (cutOf(team[p.id]).t ? '<div class="small" style="color:#93c5fd">compté depuis le ' + esc(new Date(cutOf(team[p.id]).t).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })) + (team[p.id].cashNote ? ' · ' + esc(team[p.id].cashNote) : '') + '</div>' : '') + '<div class="small">' + (Math.round(p.solde) ? (disp ? 'sur lui' : p.solde < 0 ? 'on lui doit' : 'à remettre') : '✓ tout remis') + (p.dette ? ' · <span style="color:#f87171">📒 ' + money(p.dette) + ' en dettes</span>' : '') + '</div></div><b style="font-size:19px;color:' + (Math.round(p.solde) ? '#fcd34d' : '#86efac') + '">' + money(p.solde) + ' ' + (o ? '▲' : '▼') + '</b></div>';
     if (!disp && p.rendAtt && (isStaff() || isOwner())) h += '<div style="padding:8px 14px 12px;border-top:1px solid var(--line);color:#c4b5fd">⏳ <b>' + money(p.rendAtt) + '</b> donné · attend que ' + esc(p.nom) + ' confirme « Reçu ✓ »</div>';
     else if (!disp && Math.round(p.solde) < 0 && (isStaff() || isOwner())) h += '<div style="padding:8px 14px 12px;border-top:1px solid var(--line)"><div style="color:#c4b5fd;font-weight:800;margin-bottom:6px">💜 Tu lui dois ' + money(-p.solde) + '</div>' +
       (cs.rend === p.id ? '<button class="btn sm" style="background:#7c3aed;color:#fff" data-rend="' + esc(p.id) + '">Sûr ? Appuie encore : je lui ai donné ' + money(-p.solde) + '</button>' : '<button class="btn sm" style="background:#7c3aed;color:#fff" data-rend="' + esc(p.id) + '">💵 Je lui ai donné ' + money(-p.solde) + '</button>') + '<div class="small" style="margin-top:4px">Il devra confirmer « Reçu ✓ ».</div></div>';
@@ -4135,7 +4141,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 68;
+const APP_V = 69;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
