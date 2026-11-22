@@ -1362,7 +1362,7 @@ function myOrdersHtml(s) {
       (dig ? (digOk ? '<div class="lvPay lvDone">✅ ' + dl + ' reçu<small>confirmé par le dispatch</small></div>'
         : '<div class="lvPay lvWait">⏳ ' + dl + '<small' + (dp && dp.pasRecu ? ' style="color:#fca5a5">pas encore reçu — en attente, ne pas donner' : '>attends que le dispatch confirme') + '</small></div>') : '') +
       (!dig && !p.cash ? '<div class="lvPay lvDone">✅ Déjà payé</div>' : '') +
-      '<div class="lvGrow"></div><div class="err" id="mcErr"></div>' + (all ? '<div class="lvGive">✅ Tu peux donner <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div>' : '<div class="lvWarn">⚠️ Ne donne rien tant que tout n’est pas ✅</div>') +
+      '<div class="lvGrow"></div><div class="err" id="mcErr"></div>' + (all ? (xtBusy(c) ? '' : '<div class="lvGive">✅ Tu peux donner <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div>') : '<div class="lvWarn">⚠️ Ne donne rien tant que tout n’est pas ✅</div>') +
       (all ? xtHtml(c) : '<button class="btn lvBig lvGo" id="mcDone" disabled>➡️ Commande suivante</button>');
   }
   h += '</div>' + soir + venteHtml(s);
@@ -4191,7 +4191,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 78;
+const APP_V = 79;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5250,3 +5250,6 @@ function startV78() {
     const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); xtMine(a);
   }, (e) => console.warn('v78m', e)));
 }
+
+// v79 : pendant un extra, on n'affiche plus « Tu peux donner … » de la commande d'avant (ça portait à confusion).
+function xtBusy(c) { return !!((XT.open && XT.cid === c.id) || (XT.ok && XT.cid === c.id) || XT.list.some((x) => x.cid === c.id && ['attente', 'non', 'ok'].includes(x.statut))); }
