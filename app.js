@@ -30,7 +30,7 @@ const $ = (id) => document.getElementById(id);
 const OWNER = 'Wayne'; // v33 : nom affiché du propriétaire
 const dispName = (n) => (n === 'Propriétaire' ? OWNER : n);
 // v56 : personnes cachées d'office pour le dispatch limité (Lost) : jamais visibles nulle part.
-const CACHES = ['jabari'];
+const CACHES = ['jabari', 'moo'];
 const hidId = (x) => !!(me && me.role === 'limite' && x && CACHES.includes(x));
 const hidDoc = (r) => !!(me && me.role === 'limite' && r && ['livreur', 'mid', 'de', 'vers', 'par', 'responsable'].some((k) => CACHES.includes(r[k])));
 const ROLES = { proprio: 'Propriétaire', complet: 'Dispatch complet', limite: 'Dispatch limité', livreur: 'Livreur' };
@@ -4155,7 +4155,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 73;
+const APP_V = 74;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
