@@ -1365,7 +1365,7 @@ function myOrdersHtml(s) {
       '<div class="lvGrow"></div><div class="err" id="mcErr"></div>' + (all ? (xtBusy(c) ? '' : '<div class="lvGive">✅ Tu peux donner <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div>') : '<div class="lvWarn">⚠️ Ne donne rien tant que tout n’est pas ✅</div>') +
       (all ? xtHtml(c) : '<button class="btn lvBig lvGo" id="mcDone" disabled>➡️ Commande suivante</button>');
   }
-  h += '</div>' + soir + venteHtml(s);
+  h += siteChatBlock(c, dp) + '</div>' + soir + venteHtml(s);
   return h;
 }
 function lvPayRead(p, due, diff) {
@@ -1380,8 +1380,9 @@ function lvPanel(c) {
 }
 function bindMyOrders(s) {
   const c = myCmds[0];
-  watchChat(null); syncEtas();
+  watchChat(c && c.source === 'site' && siteOn() ? c : null); syncEtas(); // v80 : chat client ↔ livreur (commandes du site)
   if (!c) return;
+  siteChatBind(c, s);
   const act = async (fn) => { document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = true; }); try { await fn(); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); } document.querySelectorAll('#soiree button').forEach((b) => { b.disabled = false; }); };
   if ($('lvMore')) $('lvMore').onclick = () => { lv.panel = lv.panel === 'more' ? null : 'more'; renderSoiree(); };
   document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => { lv.panel = null; renderSoiree(); }; });
@@ -1464,7 +1465,7 @@ function bindMyOrders(s) {
     if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 }); // la suivante part maintenant (2 min de marge)
     await b.commit();
     try { localStorage.removeItem(LV_KEY); } catch (e) {}
-    closeSuivi(c.suivi, 'livree');
+    closeSuivi(c.suivi, 'livree', c.source === 'site');
   });
 }
 
@@ -1657,8 +1658,8 @@ function watchChat(c) {
   if (!code) return;
   chatSub = onSnapshot(query(collection(db, 'suivi', code, 'msgs'), orderBy('le', 'asc'), limit(60)), (qs) => {
     const before = chatMsgs.length; chatMsgs = []; qs.forEach((d) => chatMsgs.push(d.data()));
-    if (chatMsgs.length > before && chatMsgs.length && chatMsgs[chatMsgs.length - 1].de === 'client') bip();
-    drawChat();
+    if (chatMsgs.length > before && chatMsgs.length && chatMsgs[chatMsgs.length - 1].de === 'client') { bip(); try { if (navigator.vibrate) navigator.vibrate([150, 80, 150]); } catch (e) {} }
+    drawChat(); if (typeof SC !== 'undefined' && !SC.open) try { renderSoiree(); } catch (e) {} // v80 : rond rouge sur 💬 Client
   }, () => {});
 }
 function bip() { try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; o.connect(g); g.connect(a.destination); g.gain.value = 0.15; o.start(); o.stop(a.currentTime + 0.25); if (navigator.vibrate) navigator.vibrate(200); } catch (e) {} }
@@ -1676,8 +1677,10 @@ function drawChat() {
     '<div class="small">Le client voit ici tes messages. Il peut te répondre ou envoyer une photo.</div>';
   box.scrollTop = box.scrollHeight;
 }
+const PHONE_RE = /\d(\D{0,2}\d){6,}/; // v80 : pas de numéro de téléphone dans le chat (7 chiffres ou plus)
 async function chatSend(txt, img) {
   if (!chatFor || (!txt && !img)) return;
+  if (PHONE_RE.test(String(txt || ''))) { if ($('chatErr')) $('chatErr').textContent = '⛔ Pas de numéro de téléphone dans le chat.'; return; }
   const d = { de: 'livreur', txt: String(txt || '').slice(0, 300), le: serverTimestamp() }; if (img) d.img = img;
   try { await setDoc(doc(collection(db, 'suivi', chatFor, 'msgs')), d); } catch (e) { if ($('mcErr')) $('mcErr').textContent = msg(e); }
 }
@@ -1686,19 +1689,20 @@ function bindChat() {
   document.querySelectorAll('#soiree [data-say]').forEach((b) => { b.onclick = () => chatSend(b.dataset.say); });
   if ($('chatSend')) $('chatSend').onclick = () => { const v = $('chatTxt').value.trim(); if (v) { chatSend(v); $('chatTxt').value = ''; } };
   if ($('chatTxt')) $('chatTxt').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('chatSend').click(); });
-  if ($('chatPic')) $('chatPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { chatSend('📷 Photo', await shrinkImg(f)); } catch (x) {} } };
+  if ($('chatPic')) $('chatPic').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) { try { chatSend('📷 Photo', await shrinkImg(f, true)); } catch (x) {} } };
 }
-function shrinkImg(file) {
+function shrinkImg(file, big) {
   return new Promise((ok, ko) => {
     const img = new Image(), url = URL.createObjectURL(file);
-    img.onload = () => { const k = Math.min(1, 900 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); let q = 0.7, out = c.toDataURL('image/jpeg', q); while (out.length > 350000 && q > 0.3) { q -= 0.1; out = c.toDataURL('image/jpeg', q); } ok(out); };
+    img.onload = () => { const k = Math.min(1, (big ? 1400 : 900) / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); let q = big ? 0.85 : 0.7, out = c.toDataURL('image/jpeg', q); while (out.length > (big ? 800000 : 350000) && q > 0.3) { q -= 0.1; out = c.toDataURL('image/jpeg', q); } ok(out); };
     img.onerror = ko; img.src = url;
   });
 }
 // À la livraison : on ferme la page du client et on efface les messages et photos.
-async function closeSuivi(code, statut) {
+async function closeSuivi(code, statut, site) {
   if (!code) return;
   try {
+    if (site) { await writeBatch(db).update(doc(db, 'suivi', code), { actif: false, statut, fermeLe: serverTimestamp() }).commit(); return; } // v80 : site → messages gardés 7 jours (Wayne seulement)
     await writeBatch(db).update(doc(db, 'suivi', code), { actif: false, statut }).commit();
     const qs = await getDocs(collection(db, 'suivi', code, 'msgs'));
     const b = writeBatch(db); let n = 0; qs.forEach((d) => { b.delete(d.ref); n++; }); if (n) await b.commit();
@@ -4191,7 +4195,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 79;
+const APP_V = 80;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5038,7 +5042,7 @@ function siteEnvHtml() {
   const a = SITE.env || [];
   return '<div id="siteEnv" style="margin-top:10px"><div class="label">Avis envoyés au site</div>' + (a.length ? a.map((e) => '<div class="small" style="padding:3px 0;border-bottom:1px solid #2b3545">' + (e.ok ? '✅' : '⚠️') + ' ' + hm(tsMs(e.le)) + ' · <b>' + esc(e.cmd || '') + '</b> · ' + esc(e.statut || '') + (e.ok ? '' : ' · ' + esc(e.err || ('HTTP ' + e.code)) + ' (' + (e.essais || 1) + ' essais)') + '</div>').join('') : '<div class="small">Aucun pour l’instant.</div>') + '</div>';
 }
-function closeSite() { if (SITE.envSub) { SITE.envSub(); SITE.envSub = null; } const ov = $('siteOv'); if (ov) ov.remove(); Object.assign(SITE, { txt: '', p: null, err: '', busy: false, hit: null, sugs: [], ok: '' }); }
+function closeSite() { SCH.list = null; SCH.open = null; if (SITE.envSub) { SITE.envSub(); SITE.envSub = null; } const ov = $('siteOv'); if (ov) ov.remove(); Object.assign(SITE, { txt: '', p: null, err: '', busy: false, hit: null, sugs: [], ok: '' }); }
 function drawSite() {
   const ov = $('siteOv'); if (!ov) return;
   if (!siteOn()) return closeSite();
@@ -5049,7 +5053,7 @@ function drawSite() {
     '<button class="btn big" id="siteRead" style="margin-top:8px">👁 Lire le bloc</button>';
   if (SITE.err) h += '<div style="background:#3f1d1d;border:1px solid #7f1d1d;color:#fecaca;border-radius:10px;padding:9px;margin-top:8px">⛔ ' + esc(String(SITE.err).replace(/^⛔\s*/, '')) + '</div>';
   if (SITE.ok) h += '<div style="background:#14321f;border:1px solid #166534;color:#bbf7d0;border-radius:10px;padding:9px;margin-top:8px">✅ ' + SITE.ok + '</div>';
-  h += siteEnvHtml();
+  h += siteEnvHtml() + siteChatsHtml();
   if (p) {
     const pay = p.mode === 'cash' ? '💵 Cash à encaisser : <b>' + money(p.tot) + '</b>' : '<span style="color:#86efac;font-weight:700">✓ déjà payé (' + (p.mode === 'cry' ? 'ETH' : 'EMT') + ')</span>' + (p.ref ? '<br><span class="small">réf. ' + esc(p.ref) + '</span>' : '');
     const adr = SITE.hit ? esc(SITE.hit.l1 + ', ' + SITE.hit.l2) + ' <span style="color:#86efac">✓</span>' : '<span style="color:#fbbf24">⚠️ adresse pas trouvée sur la carte — choisis ci-dessous</span>';
@@ -5253,3 +5257,82 @@ function startV78() {
 
 // v79 : pendant un extra, on n'affiche plus « Tu peux donner … » de la commande d'avant (ça portait à confusion).
 function xtBusy(c) { return !!((XT.open && XT.cid === c.id) || (XT.ok && XT.cid === c.id) || XT.list.some((x) => x.cid === c.id && ['attente', 'non', 'ok'].includes(x.statut))); }
+
+// =====================================================================
+// v80 (étape 4) : commandes du site — chat client ↔ livreur (photos nettes), « 📦 Laissé à la porte » (photo obligatoire, déjà payé),
+// suivi fermé à la livraison (règles), chats gardés 7 jours (photo de porte 30 jours) pour Wayne seulement.
+// =====================================================================
+const SC = { open: false, seen: {}, busy: false, err: '' };
+function siteChatBlock(c, dp) {
+  if (c.source !== 'site' || !siteOn() || !c.suivi) return '';
+  const nCl = chatFor === c.suivi ? chatMsgs.filter((m) => m.de === 'client').length : 0, unread = SC.open ? 0 : Math.max(0, nCl - (SC.seen[c.id] || 0));
+  let h = '<button class="btn lvBig lvGrey" data-sc="tog" style="margin-top:8px">💬 Client' + (unread ? ' <span style="background:#ef4444;color:#fff;border-radius:999px;padding:0 7px;font-size:13px">' + unread + '</span>' : '') + (SC.open ? ' ▴' : '') + '</button>';
+  if (SC.open) h += chatHtml(c) + '<div class="err" id="chatErr"></div>';
+  if (c.statut === 'ici' && !dp && !c.bloque && dueOf(c) === 0) h += '<label class="btn lvBig" style="margin-top:8px;display:block;text-align:center;background:#2563eb;color:#fff">' + (SC.busy ? '…' : '📦 Laissé à la porte (client absent)') + '<input type="file" id="scPorte" accept="image/*" capture="environment" class="hide"></label><div class="small" style="text-align:center">Photo obligatoire · seulement quand c’est déjà payé</div>' + (SC.err ? '<div class="err" style="text-align:center">' + esc(SC.err) + '</div>' : '');
+  return h;
+}
+function siteChatBind(c, s) {
+  if (c.source !== 'site') return;
+  document.querySelectorAll('#soiree [data-sc]').forEach((b) => { b.onclick = () => { SC.open = !SC.open; if (chatFor === c.suivi) SC.seen[c.id] = chatMsgs.filter((m) => m.de === 'client').length; renderSoiree(); }; });
+  if (SC.open) {
+    bindChat();
+    const ti = $('chatTxt'); if (ti) { ti.value = SC.draft || ''; ti.oninput = (e) => { SC.draft = e.target.value; }; }
+    if ($('chatSend')) { const f0 = $('chatSend').onclick; $('chatSend').onclick = () => { if (PHONE_RE.test(($('chatTxt') || {}).value || '')) { if ($('chatErr')) $('chatErr').textContent = '⛔ Pas de numéro de téléphone dans le chat.'; return; } SC.draft = ''; if ($('chatErr')) $('chatErr').textContent = ''; f0(); }; }
+    SC.seen[c.id] = chatMsgs.filter((m) => m.de === 'client').length;
+  }
+  if ($('scPorte')) $('scPorte').onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f || SC.busy) return;
+    SC.busy = true; SC.err = ''; renderSoiree();
+    try {
+      const img = await shrinkImg(f, true), b = writeBatch(db);
+      b.set(doc(collection(db, 'suivi', c.suivi, 'msgs')), { de: 'livreur', txt: '📦 Ta commande est devant ta porte', img, porte: true, le: serverTimestamp() });
+      b.update(doc(db, 'suivi', c.suivi), { statut: 'laisse', actif: false, laisseLe: serverTimestamp(), fermeLe: serverTimestamp() });
+      b.update(doc(db, 'commandes', c.id), { statut: 'livree', livreeLe: serverTimestamp(), cashRecu: 0, soiree: s.id, ...(paies[me.mid] != null && !c.test ? { paie: paies[me.mid] } : {}) });
+      if (!c.test) {
+        b.set(doc(db, 'stocks', me.mid), { L: increment(-(c.L || 0)), XL: increment(-(c.XL || 0)), cmd: c.id }, { merge: true });
+        b.update(doc(db, 'soirees', s.id), Object.assign({ livrees: increment(1) }, c.lat != null ? { dernier: { lat: c.lat, lon: c.lon, adresse: c.adresse || '', le: Date.now() } } : {}));
+      }
+      const nx = myCmds[1]; if (nx) b.update(doc(db, 'commandes', nx.id), { depart: Date.now() - (MARGE1 - MARGE) * 60000 });
+      await b.commit();
+      try { localStorage.removeItem(LV_KEY); } catch (x) {}
+      notifyDispatch('📦 ' + me.nom + ' a laissé la commande de ' + c.client + ' à la porte (photo envoyée)');
+      SC.open = false;
+    } catch (x) { SC.err = msg(x); }
+    SC.busy = false; renderSoiree();
+  };
+}
+// Wayne : « Chats du site » (7 jours) dans le panel 🌐.
+const SCH = { list: null, open: null, msgs: [], busy: false };
+async function siteChatsLoad() {
+  SCH.busy = true;
+  try {
+    const qs = await getDocs(query(collection(db, 'commandes'), where('source', '==', 'site')));
+    const ds = []; qs.forEach((d) => ds.push(d));
+    const a = []; for (const d of ds) { const c = d.data(); if (c.statut !== 'livree' || Date.now() - tsMs(c.livreeLe) > 30 * 86400000) continue;
+      let su = null; try { const x = await getDoc(doc(db, 'suivi', c.suivi)); su = x.exists() ? x.data() : null; } catch (e) {}
+      a.push(Object.assign({ id: d.id, su }, c)); }
+    a.sort((x, y) => tsMs(y.livreeLe) - tsMs(x.livreeLe)); SCH.list = a;
+  } catch (e) { SCH.list = []; }
+  SCH.busy = false; if ($('siteOv')) drawSite();
+}
+function siteChatsHtml() {
+  if (SCH.list == null) { if (!SCH.busy) siteChatsLoad(); return '<div class="label" style="margin-top:12px">Chats du site</div><div class="small">Chargement…</div>'; }
+  const d7 = (t) => new Date(t + 7 * 86400000).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' });
+  let h = '<div class="label" style="margin-top:12px">Chats du site (7 jours · photo de porte 30 jours)</div><div class="small">Visibles seulement par toi.</div>';
+  if (!SCH.list.length) return h + '<div class="small">Aucune commande du site livrée.</div>';
+  SCH.list.forEach((c) => {
+    const t = tsMs(c.livreeLe), su = c.su || {};
+    h += '<div style="padding:7px 0;border-bottom:1px solid #2b3545"><b>' + esc(c.siteCmd || '') + '</b> · ' + esc(c.client || '') + ' · livrée ' + hm(t) + (c.su && c.su.laisseLe ? ' · 📦 à la porte' : '') +
+      '<br><span class="small">' + (su.photoVue ? 'photo vue par le client à ' + hm(tsMs(su.photoVue)) + ' · ' : c.su && c.su.laisseLe ? 'photo pas encore vue · ' : '') + 'messages effacés le ' + d7(t) + '</span> <button class="btn ghost sm" data-sch="' + c.id + '" style="width:auto;float:right">💬 Voir</button></div>';
+    if (SCH.open === c.id) h += '<div style="background:#1f2937;border-radius:10px;padding:8px;margin:6px 0">' + (SCH.msgs.length ? SCH.msgs.map((m) => '<div style="margin:4px 0;' + (m.de === 'client' ? '' : 'text-align:right') + '"><span style="display:inline-block;background:' + (m.de === 'client' ? '#374151' : '#1d4ed8') + ';border-radius:10px;padding:5px 9px;max-width:85%;text-align:left">' + esc(m.txt || '') + (m.img ? '<img src="' + esc(m.img) + '" style="display:block;max-width:100%;border-radius:8px;margin-top:4px">' : '') + '</span><div class="small">' + (m.de === 'client' ? 'Client' : 'Livreur') + ' · ' + hm(tsMs(m.le)) + '</div></div>').join('') : '<div class="small">Aucun message.</div>') + '</div>';
+  });
+  return h;
+}
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest && e.target.closest('[data-sch]'); if (!t) return;
+  const id = t.dataset.sch, c = (SCH.list || []).find((x) => x.id === id); if (!c) return;
+  if (SCH.open === id) { SCH.open = null; return drawSite(); }
+  SCH.open = id; SCH.msgs = [];
+  try { const qs = await getDocs(query(collection(db, 'suivi', c.suivi, 'msgs'), orderBy('le', 'asc'))); qs.forEach((d) => SCH.msgs.push(d.data())); } catch (x) {}
+  drawSite();
+});
