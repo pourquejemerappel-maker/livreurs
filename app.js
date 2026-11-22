@@ -942,7 +942,7 @@ function drawNfSugs() {
 function stockLeft(mid) { const s = st(mid); const q = queueOf(mid); return { L: (s.L || 0) - q.reduce((a, c) => a + (c.L || 0), 0), XL: (s.XL || 0) - q.reduce((a, c) => a + (c.XL || 0), 0) }; }
 async function optionsFor(o, skipId) {
   const X = pos(o);
-  const people = Object.values(soirees).filter((s) => working(s) && !isUberMid(s.mid));
+  const people = Object.values(soirees).filter((s) => working(s) && !isUberMid(s.mid) && (o.source !== 'site' || siteMids().includes(s.mid))); // v76 : commande du site → livreurs du test seulement
   const cand = [];
   people.forEach((s) => {
     const q = queueOf(s.mid).filter((c) => c.id !== skipId), plan = planOf(q);
@@ -1279,7 +1279,7 @@ const lv = { panel: null, for: null, step: 'cmd', L: 0, XL: 0, pay: '', p: null,
 const LV_KEY = 'gothamLv';
 function lvSave() { try { localStorage.setItem(LV_KEY, JSON.stringify({ for: lv.for, step: lv.step, p: lv.p, cashOk: lv.cashOk, ok: lv.ok, L: lv.L, XL: lv.XL })); } catch (e) {} }
 function lvLoad(id) { try { const x = JSON.parse(localStorage.getItem(LV_KEY) || 'null'); if (x && x.for === id) return x; } catch (e) {} return null; }
-const totNow = (c, L, XL) => L * cfg.prixL + XL * cfg.prixXL + (Number(c.frais) || 0);
+const totNow = (c, L, XL) => (c && c.source === 'site' && c.siteTot != null ? Number(c.siteTot) : L * cfg.prixL + XL * cfg.prixXL + (Number(c.frais) || 0)); // v76 : commande du site = prix du site
 const dueOf = (c) => (c.bloque ? totNow(c, c.L || 0, c.XL || 0) : Math.max(0, Number(c.encaisser) || 0));
 // v68 : EMT/crypto déjà reçu avant la livraison (commande mix/EMT confirmée à la création).
 const dejaOf = (c) => (c.bloque ? 0 : Math.max(0, totNow(c, c.L || 0, c.XL || 0) - (Number(c.encaisser) || 0)));
@@ -1338,9 +1338,11 @@ function myOrdersHtml(s) {
       '<div class="lvTwo"><button class="btn lvBig lvGrey" id="mcEarly">⏱ −5 min</button><button class="btn lvBig lvGrey" id="mcLate">⏱ +5 min</button></div><button class="btn lvBig ok" id="mcHere">📍 Je suis arrivé</button>' + more;
   } else if (!dp && lv.step === 'cmd') {
     const others = myCmds.slice(1), maxL = (mine.L || 0) - others.reduce((a, x) => a + (x.L || 0), 0), maxXL = (mine.XL || 0) - others.reduce((a, x) => a + (x.XL || 0), 0);
-    const row = (k, mx) => '<div class="lvCtr"><button data-lq="' + k + '|-1">−</button><div><span>' + lv[k] + '</span> ' + k + '</div><button data-lq="' + k + '|1"' + (!c.test && lv[k] >= mx ? ' style="opacity:.3"' : '') + '>+</button></div>';
+    const row = (k, mx) => c.source === 'site' ? '<div class="lvCtr"><div style="flex:1;text-align:center"><span>' + (c[k] || 0) + '</span> ' + k + '</div></div>' : '<div class="lvCtr"><button data-lq="' + k + '|-1">−</button><div><span>' + lv[k] + '</span> ' + k + '</div><button data-lq="' + k + '|1"' + (!c.test && lv[k] >= mx ? ' style="opacity:.3"' : '') + '>+</button></div>';
+    if (c.source === 'site') { lv.L = c.L || 0; lv.XL = c.XL || 0; }
     const tot = totNow(c, lv.L, lv.XL);
     h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvQ">Le client veut quoi ?</div>' + row('L', maxL) + row('XL', maxXL) +
+      (c.source === 'site' ? '<div class="small" style="text-align:center;color:#93c5fd">🌐 Commande du site : quantité fixe. Le client veut plus ? Livre celle-ci, puis ajoute une vente.</div>' : '') +
       '<div class="small" style="text-align:center">Sur toi : ' + esc(qty(mine)) + '</div><div class="err" id="mcErr" style="text-align:center">' + esc(lv.err) + '</div>' +
       '<div class="lvPrice">Prix<b>' + (lv.L + lv.XL ? money(tot) : '—') + '</b></div><div class="lvGrow"></div>' +
       '<button class="btn lvBig lvGrey" id="lvCmdOk"' + (lv.L + lv.XL && !lv.busy ? '' : ' disabled') + '>' + (lv.busy ? '…' : 'OK') + '</button>' + more;
@@ -2359,7 +2361,7 @@ function renderFocus() {
       h += b.ok ? '<button class="btn ok big" data-fo="0">Assigner à ' + esc(b.nom) + ' · arrivée ~' + hm(b.arr) + '</button>' : '<div class="small">Personne n’a assez de stock.</div>';
       h += fx.alt ? fx.opts.slice(1).map((o, i) => optLine(o, false, i + 1)).join('') : (fx.opts.length > 1 ? '<button class="linkbtn" id="fxAlt">Autre livreur ▾</button>' : '');
     }
-    h += uberBtns({ L: c.L, XL: c.XL, int: !(c.encaisser > 0), adr: c.adresse && c.adresse !== 'Pick-up' });
+    if (c.source !== 'site') h += uberBtns({ L: c.L, XL: c.XL, int: !(c.encaisser > 0), adr: c.adresse && c.adresse !== 'Pick-up' });
     h += (lp.id === c.id ? lpBox(c) : fBtn('chpay', '💳 Changer le paiement'));
     h += (cry.id === c.id ? cryBox() : er.id === c.id ? refBox() : c.bloque ? fBtn('paid', '✓ ' + payWord(c) + ' reçu') : '') + '<div class="two">' + fBtn('msg', '💬 Client') + fBtn('cancel', fx.ask === 'cancel' ? 'Sûr ? Appuie encore pour supprimer' : '🗑 Supprimer la commande', 'red') + '</div>';
   } else {
@@ -3402,7 +3404,7 @@ function openDmWith(mid) {
 // pas de paie, et elle ne compte dans aucun total (résumés, bulle 💰, historique). Elle reste visible en gris dans
 // l'historique, puis le propriétaire ou MOUSSE l'efface toute seule 15 minutes après (commande + montants + lien client).
 const isTestName = (n) => /^test$/i.test(String(n || '').trim()) || (String(n || '').match(/(^|[^\p{L}\p{N}])test\d*(?![\p{L}])/giu) || []).length >= 2; // v51 : « test » tout seul, ou le mot « test » écrit 2 fois
-function testTag(c) { return c && c.test ? '<div style="display:inline-block;margin:4px 0;padding:3px 10px;border-radius:999px;background:#3a2a05;color:#fcd34d;font-size:13px;font-weight:700">🧪 TEST — ne compte pas</div>' : ''; }
+function testTag(c) { return (c && c.source === 'site' ? '<div style="display:inline-block;margin:4px 4px 4px 0;padding:3px 10px;border-radius:999px;background:#1e3a8a;color:#bfdbfe;font-size:13px;font-weight:700">🌐 SITE ' + esc(c.siteCmd || '') + '</div>' : '') + (c && c.test ? '<div style="display:inline-block;margin:4px 0;padding:3px 10px;border-radius:999px;background:#3a2a05;color:#fcd34d;font-size:13px;font-weight:700">🧪 TEST — ne compte pas</div>' : ''); }
 let testSweepOn = false;
 async function sweepTests() {
   if (!me || !(isOwner() || me.role === 'complet')) return;
@@ -4188,7 +4190,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 75;
+const APP_V = 76;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4492,6 +4494,7 @@ function mnItems() {
     else if ($('filBtn')) out.push({ ic: '🤝', lab: 'Fil avec ' + OWNER, n: filUnread(me.mid) ? 1 : 0, go: () => openFil(me.mid) });
     out.push({ sec: isOwner() ? 'Gestion' : 'Moi' });
     if (eq) out.push(eq);
+    if (isOwner() && siteOn()) out.push({ ic: '🌐', lab: 'Coller une commande (test)', go: () => openSite() }); // v76
     if (document.querySelector('.card.notif')) out.push({ ic: '🔔', lab: 'Notifications', go: () => { const d = mnTabs().find((x) => x.t === 'direct'); if (d) d.b.click(); mnScroll('.card.notif'); } });
   }
   out.push({ ic: '⏻', lab: 'Déconnexion', out: true, go: () => $('logout').click() });
@@ -4994,3 +4997,105 @@ function startV75() {
   s.textContent = '.v75g{margin:2px 14px 2px 40px;padding:3px 9px;border-left:2px dashed #22c55e;font-size:12px;color:#86efac;background:rgba(34,197,94,.07);border-radius:0 8px 8px 0}.v75g.in{border-left-color:#a78bfa;color:#c4b5fd;background:rgba(167,139,250,.07)}.v75g b{color:inherit}';
   document.head.appendChild(s);
 })();
+
+// =====================================================================
+// v76 : test du site mongomongo.ca (interrupteur config/app.testSite) — Wayne colle un bloc #MONGO … #FIN
+// =====================================================================
+const siteOn = () => !!(cfg && cfg.testSite && cfg.testSite.actif === true);
+const siteMids = () => (siteOn() && Array.isArray(cfg.testSite.livreursMid) ? cfg.testSite.livreursMid : []);
+const SITE = { txt: '', p: null, err: '', busy: false, hit: null, sugs: [], ok: '' };
+function siteCmdId(v) { return String(v || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 60); }
+function parseMongo(t) {
+  t = String(t || '').replace(/\r/g, '');
+  const a = t.indexOf('#MONGO'), b = t.indexOf('#FIN', a + 1);
+  if (a < 0 || b < 0) return { err: 'Le bloc doit commencer par #MONGO et finir par #FIN.' };
+  const f = {};
+  t.slice(a + 6, b).split('\n').forEach((ln) => { const m = ln.match(/^\s*([A-Za-z]+)\s*:\s*(.*)$/); if (m) f[m[1].toUpperCase()] = m[2].trim(); });
+  const need = ['CMD', 'CLIENT', 'ADR', 'L', 'XL', 'TOTAL', 'PAIE'].filter((k) => !(k in f) || f[k] === '');
+  if (need.length) return { err: 'Il manque : ' + need.join(', ') + '. Rien n’a été créé.' };
+  const n = (x) => (/^\d+$/.test(x) ? Number(x) : NaN);
+  const L = n(f.L), XL = n(f.XL), tot = Number(String(f.TOTAL).replace(/[$\s]/g, '').replace(',', '.'));
+  if (isNaN(L) || isNaN(XL) || L + XL < 1 || L > 50 || XL > 50) return { err: 'L et XL doivent être des nombres entiers (au moins 1 en tout).' };
+  if (!(tot > 0) || tot > 100000 || Math.round(tot) !== tot) return { err: 'TOTAL doit être un montant entier en $.' };
+  const cmd = siteCmdId(f.CMD); if (!cmd) return { err: 'CMD invalide.' };
+  const pm = String(f.PAIE).trim(), up = pm.toUpperCase();
+  let mode, ref = '';
+  if (/^INTERAC-OK\b/.test(up)) { mode = 'int'; ref = normRef(pm.slice(10)); if (pm.slice(10).trim() && !ref) return { err: 'Le numéro après INTERAC-OK n’est pas valide (6 à 40 lettres/chiffres).' }; }
+  else if (/^ETH-OK\b/.test(up)) mode = 'cry';
+  else if (/^COMPTANT\b/.test(up)) mode = 'cash';
+  else return { err: 'PAIE doit commencer par INTERAC-OK, ETH-OK ou COMPTANT.' };
+  return { cmd, cmdTxt: f.CMD.trim(), client: f.CLIENT.slice(0, 80), tel: (f.TEL || '').slice(0, 40), adr: f.ADR.slice(0, 200), L, XL, tot, mode, ref, note: (f.NOTE || '').slice(0, 300) };
+}
+function openSite() {
+  if (!(isOwner() && siteOn())) return;
+  let ov = $('siteOv'); if (!ov) { ov = document.createElement('div'); ov.id = 'siteOv'; ov.className = 'v72ov'; document.body.appendChild(ov); }
+  drawSite();
+}
+function closeSite() { const ov = $('siteOv'); if (ov) ov.remove(); Object.assign(SITE, { txt: '', p: null, err: '', busy: false, hit: null, sugs: [], ok: '' }); }
+function drawSite() {
+  const ov = $('siteOv'); if (!ov) return;
+  if (!siteOn()) return closeSite();
+  const p = SITE.p, R = (k, v) => '<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #2b3545"><span class="small">' + k + '</span><span style="text-align:right">' + v + '</span></div>';
+  let h = '<div class="v72sh"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:18px">🌐 Commande du site</b><button class="linkbtn" id="siteX">Fermer</button></div>' +
+    '<div class="small" style="margin:4px 0 8px">Colle le bloc reçu de mongomongo.ca (#MONGO … #FIN). Test : livreur Alpha seulement.</div>' +
+    '<textarea id="siteTxt" rows="9" style="width:100%;box-sizing:border-box;font:13px/1.4 ui-monospace,Menlo,monospace;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:10px;padding:8px">' + esc(SITE.txt) + '</textarea>' +
+    '<button class="btn big" id="siteRead" style="margin-top:8px">👁 Lire le bloc</button>';
+  if (SITE.err) h += '<div style="background:#3f1d1d;border:1px solid #7f1d1d;color:#fecaca;border-radius:10px;padding:9px;margin-top:8px">⛔ ' + esc(String(SITE.err).replace(/^⛔\s*/, '')) + '</div>';
+  if (SITE.ok) h += '<div style="background:#14321f;border:1px solid #166534;color:#bbf7d0;border-radius:10px;padding:9px;margin-top:8px">✅ ' + SITE.ok + '</div>';
+  if (p) {
+    const pay = p.mode === 'cash' ? '💵 Cash à encaisser : <b>' + money(p.tot) + '</b>' : '<span style="color:#86efac;font-weight:700">✓ déjà payé (' + (p.mode === 'cry' ? 'ETH' : 'EMT') + ')</span>' + (p.ref ? '<br><span class="small">réf. ' + esc(p.ref) + '</span>' : '');
+    const adr = SITE.hit ? esc(SITE.hit.l1 + ', ' + SITE.hit.l2) + ' <span style="color:#86efac">✓</span>' : '<span style="color:#fbbf24">⚠️ adresse pas trouvée sur la carte — choisis ci-dessous</span>';
+    h += '<div style="background:#1f2937;border-radius:12px;padding:10px;margin-top:10px">' + R('Commande site', '<b>' + esc(p.cmd) + '</b>') + R('Client', esc(p.client) + (p.tel ? ' · ' + esc(p.tel) : '')) + R('Adresse', adr) +
+      R('Quantité', '<b>' + esc([p.L ? p.L + ' L' : '', p.XL ? p.XL + ' XL' : ''].filter(Boolean).join(' + ')) + '</b>') + R('Total (prix du site)', '<b>' + money(p.tot) + '</b>') + R('Paiement', pay) + (p.note ? R('Note', esc(p.note)) : '') + R('Livreur', '🧪 ' + esc(siteMids().map((m) => nomDe(m)).join(', ') || '—') + ' seulement') + '</div>';
+    if (!SITE.hit && SITE.sugs.length) h += '<div class="label" style="margin-top:8px">Choisis l’adresse</div>' + SITE.sugs.slice(0, 4).map((x, i) => '<button class="btn ghost sm" style="display:block;width:100%;margin-top:4px;text-align:left" data-ssug="' + i + '">' + esc(x.l1) + '<br><span class="small">' + esc(x.l2) + '</span></button>').join('');
+    h += '<button class="btn ok big" id="siteGo" style="margin-top:10px"' + (SITE.hit && !SITE.busy ? '' : ' disabled') + '>' + (SITE.busy ? '…' : '✅ Créer la commande') + '</button>';
+  }
+  ov.innerHTML = h + '</div>';
+  $('siteX').onclick = closeSite;
+  $('siteTxt').oninput = (e) => { SITE.txt = e.target.value; };
+  $('siteRead').onclick = siteRead;
+  ov.querySelectorAll('[data-ssug]').forEach((el) => { el.onclick = () => { SITE.hit = SITE.sugs[+el.dataset.ssug]; drawSite(); }; });
+  if ($('siteGo')) $('siteGo').onclick = siteCreate;
+}
+async function siteRead() {
+  SITE.txt = $('siteTxt') ? $('siteTxt').value : SITE.txt;
+  Object.assign(SITE, { p: null, err: '', ok: '', hit: null, sugs: [] });
+  const p = parseMongo(SITE.txt);
+  if (p.err) { SITE.err = p.err; return drawSite(); }
+  try {
+    const d = await getDoc(doc(db, 'siteCmds', p.cmd));
+    if (d.exists()) { SITE.err = 'La commande ' + p.cmd + ' existe déjà (créée à ' + hm(tsMs(d.data().le)) + '). Rien n’a été créé.'; return drawSite(); }
+    if (p.ref) { const used = await refCheck(p.ref); if (used) { SITE.err = used; return drawSite(); } }
+  } catch (e) { SITE.err = msg(e); return drawSite(); }
+  SITE.p = p; drawSite();
+  const cp = (p.adr.match(/[a-z]\d[a-z]\s?\d[a-z]\d/i) || [''])[0].toUpperCase().replace(/\s/g, '');
+  const q = p.adr.replace(/[a-z]\d[a-z]\s?\d[a-z]\d/i, '').replace(/,\s*$/, '').trim() || p.adr;
+  try {
+    const sugs = await photon(q); if (SITE.p !== p) return;
+    SITE.sugs = sugs;
+    SITE.hit = sugs.find((x) => cp && (x.l2 || '').toUpperCase().replace(/\s/g, '').indexOf(cp.slice(0, 3)) >= 0) || (sugs.length === 1 ? sugs[0] : null);
+  } catch (e) {}
+  drawSite();
+}
+async function siteCreate() {
+  const p = SITE.p; if (!p || !SITE.hit || SITE.busy) return;
+  if (!(isOwner() && siteOn())) return closeSite();
+  SITE.busy = true; SITE.err = ''; drawSite();
+  try {
+    if ((await getDoc(doc(db, 'siteCmds', p.cmd))).exists()) throw new Error('La commande ' + p.cmd + ' existe déjà. Rien n’a été créé.');
+    if (p.ref) { const used = await refCheck(p.ref); if (used) throw new Error(used); }
+    const ref = doc(collection(db, 'commandes')), code = newCode(), cash = p.mode === 'cash';
+    const data = { test: false, source: 'site', siteCmd: p.cmd, siteTot: p.tot, suivi: code, client: p.client || 'Client', tel: p.tel, adresse: SITE.hit.l1 + ', ' + SITE.hit.l2, L: p.L, XL: p.XL, frais: 0, note: p.note,
+      encaisser: cash ? p.tot : 0, paye: !cash, bloque: false, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: myMid(), paieMode: p.mode };
+    if (!cash) Object.assign(data, { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, p.mode === 'cry' ? { crypto: 'ETH' } : {}, p.ref ? { emtRef: p.ref } : {});
+    if (SITE.hit.lat != null) { data.lat = SITE.hit.lat; data.lon = SITE.hit.lon; }
+    const b = writeBatch(db);
+    b.set(ref, data);
+    b.set(doc(db, 'siteCmds', p.cmd), { cid: ref.id, suivi: code, le: serverTimestamp() });
+    b.set(doc(db, 'suivi', code), { actif: true, statut: 'attente', eta: null, luid: null, prenom: prenom(data.client), source: 'site', le: serverTimestamp() });
+    b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: p.tot, mode: p.mode, cash: cash ? p.tot : 0, interac: cash ? 0 : p.tot, recu: true, prixL: cfg.prixL, prixXL: cfg.prixXL, source: 'site', le: serverTimestamp() });
+    if (p.ref) refSet(b, p.ref, Object.assign({ id: ref.id }, data));
+    await b.commit();
+    const cmd = p.cmd; Object.assign(SITE, { txt: '', p: null, hit: null, sugs: [], busy: false, ok: 'Commande ' + esc(cmd) + ' créée. Elle est dans En direct, à assigner à Alpha.' }); drawSite();
+  } catch (e) { SITE.busy = false; SITE.err = msg(e); drawSite(); }
+}
