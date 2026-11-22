@@ -739,7 +739,7 @@ function startOrders() {
   stops.push(onSnapshot(doc(db, 'config', 'app'), (s) => { if (s.exists()) cfg = Object.assign({ prixL: 150, prixXL: 220, mapsKey: '' }, s.data()); renderAll(); renderSoiree(); renderCfg(); }, () => {}));
   if (isOwner() || isStaff()) {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('statut', 'in', ['attente', 'assignee', 'ici'])), (qs) => {
-      cmds = {}; qs.forEach((d) => { if (!hidDoc(d.data())) cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll(); qtySync();
+      cmds = {}; qs.forEach((d) => { if (!hidDoc(d.data())) cmds[d.id] = Object.assign({ id: d.id }, d.data()); }); renderAll(); qtySync(); try { siteWatch('o', Object.values(cmds)); } catch (e) {}
     }, (e) => console.warn(e)));
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('nonRecu', '==', true)), (qs) => { // v41
       nr.list = []; qs.forEach((d) => nr.list.push(Object.assign({ id: d.id }, d.data()))); nr.list = nr.list.filter((c) => c.statut === 'livree' && !hidDoc(c)).sort((a, b) => tsMs(a.livreeLe) - tsMs(b.livreeLe));
@@ -756,7 +756,7 @@ function startOrders() {
   if (delivers() && me.uber) stops.push(onSnapshot(doc(db, 'reglages', me.mid), (s) => { myReg = s.exists() ? s.data() : {}; renderSoiree(); }, () => {}));
   if (delivers()) {
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('statut', 'in', ['assignee', 'ici'])), (qs) => {
-      myCmds = []; qs.forEach((d) => myCmds.push(Object.assign({ id: d.id }, d.data()))); myCmds.sort((a, b) => a.ordre - b.ordre); renderSoiree();
+      myCmds = []; qs.forEach((d) => myCmds.push(Object.assign({ id: d.id }, d.data()))); myCmds.sort((a, b) => a.ordre - b.ordre); renderSoiree(); try { siteWatch('m', myCmds); } catch (e) {}
     }, (e) => console.warn(e)));
     // v40 : commandes ajoutées et changements vers cash à approuver
     stops.push(onSnapshot(query(collection(db, 'commandes'), where('livreur', '==', me.mid), where('aValider', '==', true)), (qs) => {
@@ -1341,7 +1341,7 @@ function myOrdersHtml(s) {
     const row = (k, mx) => c.source === 'site' ? '<div class="lvCtr"><div style="flex:1;text-align:center"><span>' + (c[k] || 0) + '</span> ' + k + '</div></div>' : '<div class="lvCtr"><button data-lq="' + k + '|-1">−</button><div><span>' + lv[k] + '</span> ' + k + '</div><button data-lq="' + k + '|1"' + (!c.test && lv[k] >= mx ? ' style="opacity:.3"' : '') + '>+</button></div>';
     if (c.source === 'site') { lv.L = c.L || 0; lv.XL = c.XL || 0; }
     const tot = totNow(c, lv.L, lv.XL);
-    h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvQ">Le client veut quoi ?</div>' + row('L', maxL) + row('XL', maxXL) +
+    h += '<span class="lvState lvSt2">📍 Sur place · ' + esc(c.client) + '</span><div class="lvQ">' + (c.source === 'site' ? 'Le client veut :' : 'Le client veut quoi ?') + '</div>' + row('L', maxL) + row('XL', maxXL) +
       (c.source === 'site' ? '<div class="small" style="text-align:center;color:#93c5fd">🌐 Commande du site : quantité fixe. Le client veut plus ? Livre celle-ci, puis ajoute une vente.</div>' : '') +
       '<div class="small" style="text-align:center">Sur toi : ' + esc(qty(mine)) + '</div><div class="err" id="mcErr" style="text-align:center">' + esc(lv.err) + '</div>' +
       '<div class="lvPrice">Prix<b>' + (lv.L + lv.XL ? money(tot) : '—') + '</b></div><div class="lvGrow"></div>' +
@@ -4190,7 +4190,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 76;
+const APP_V = 77;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5031,7 +5031,13 @@ function openSite() {
   let ov = $('siteOv'); if (!ov) { ov = document.createElement('div'); ov.id = 'siteOv'; ov.className = 'v72ov'; document.body.appendChild(ov); }
   drawSite();
 }
-function closeSite() { const ov = $('siteOv'); if (ov) ov.remove(); Object.assign(SITE, { txt: '', p: null, err: '', busy: false, hit: null, sugs: [], ok: '' }); }
+// v77 : les 8 derniers avis envoyés au site (pour voir si mongomongo.ca répond).
+function siteEnvHtml() {
+  if (!SITE.envSub) SITE.envSub = onSnapshot(query(collection(db, 'siteEnvois'), orderBy('le', 'desc'), limit(8)), (qs) => { SITE.env = []; qs.forEach((d) => SITE.env.push(d.data())); if ($('siteEnv')) $('siteEnv').outerHTML = siteEnvHtml(); }, () => {});
+  const a = SITE.env || [];
+  return '<div id="siteEnv" style="margin-top:10px"><div class="label">Avis envoyés au site</div>' + (a.length ? a.map((e) => '<div class="small" style="padding:3px 0;border-bottom:1px solid #2b3545">' + (e.ok ? '✅' : '⚠️') + ' ' + hm(tsMs(e.le)) + ' · <b>' + esc(e.cmd || '') + '</b> · ' + esc(e.statut || '') + (e.ok ? '' : ' · ' + esc(e.err || ('HTTP ' + e.code)) + ' (' + (e.essais || 1) + ' essais)') + '</div>').join('') : '<div class="small">Aucun pour l’instant.</div>') + '</div>';
+}
+function closeSite() { if (SITE.envSub) { SITE.envSub(); SITE.envSub = null; } const ov = $('siteOv'); if (ov) ov.remove(); Object.assign(SITE, { txt: '', p: null, err: '', busy: false, hit: null, sugs: [], ok: '' }); }
 function drawSite() {
   const ov = $('siteOv'); if (!ov) return;
   if (!siteOn()) return closeSite();
@@ -5042,6 +5048,7 @@ function drawSite() {
     '<button class="btn big" id="siteRead" style="margin-top:8px">👁 Lire le bloc</button>';
   if (SITE.err) h += '<div style="background:#3f1d1d;border:1px solid #7f1d1d;color:#fecaca;border-radius:10px;padding:9px;margin-top:8px">⛔ ' + esc(String(SITE.err).replace(/^⛔\s*/, '')) + '</div>';
   if (SITE.ok) h += '<div style="background:#14321f;border:1px solid #166534;color:#bbf7d0;border-radius:10px;padding:9px;margin-top:8px">✅ ' + SITE.ok + '</div>';
+  h += siteEnvHtml();
   if (p) {
     const pay = p.mode === 'cash' ? '💵 Cash à encaisser : <b>' + money(p.tot) + '</b>' : '<span style="color:#86efac;font-weight:700">✓ déjà payé (' + (p.mode === 'cry' ? 'ETH' : 'EMT') + ')</span>' + (p.ref ? '<br><span class="small">réf. ' + esc(p.ref) + '</span>' : '');
     const adr = SITE.hit ? esc(SITE.hit.l1 + ', ' + SITE.hit.l2) + ' <span style="color:#86efac">✓</span>' : '<span style="color:#fbbf24">⚠️ adresse pas trouvée sur la carte — choisis ci-dessous</span>';
@@ -5098,4 +5105,25 @@ async function siteCreate() {
     await b.commit();
     const cmd = p.cmd; Object.assign(SITE, { txt: '', p: null, hit: null, sugs: [], busy: false, ok: 'Commande ' + esc(cmd) + ' créée. Elle est dans En direct, à assigner à Alpha.' }); drawSite();
   } catch (e) { SITE.busy = false; SITE.err = msg(e); drawSite(); }
+}
+
+// =====================================================================
+// v77 (étape 3) : commande du site qui change (assignée, en route, ±5 min, ici, livrée) → on avertit le notifier.
+// C'est le notifier (serveur) qui relit la commande, décide quoi envoyer à mongomongo.ca et signe l'envoi.
+// =====================================================================
+const SW = { o: {}, m: {} };
+const siteSig = (c) => [c.statut, c.livreur || '', c.enRouteLe ? 1 : 0, c.retard || 0].join('|');
+function siteWatch(k, list) {
+  if (!siteOn()) { SW[k] = {}; return; }
+  const prev = SW[k], now = {};
+  (list || []).forEach((c) => { if (c.source !== 'site') return; now[c.id] = siteSig(c); if (prev[c.id] !== now[c.id]) notifySite(c.id); });
+  Object.keys(prev).forEach((id) => { if (!(id in now)) notifySite(id); }); // sortie de la liste = livrée (ou annulée)
+  SW[k] = now;
+}
+const siteT = {};
+function notifySite(cid) {
+  clearTimeout(siteT[cid]);
+  siteT[cid] = setTimeout(async () => { // petit délai : l'heure d'arrivée du suivi est écrite juste après
+    try { const t = await auth.currentUser.getIdToken(); fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'site', cid }) }).catch(() => {}); } catch (e) {}
+  }, 2500);
 }
