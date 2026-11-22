@@ -380,6 +380,7 @@ function startLive() {
   dons.list = []; setTimeout(startDons, 0);
   setTimeout(startV72, 0); // v72
   setTimeout(startV73, 0); // v73
+  setTimeout(startV75, 0); // v75
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   sortis = {}; setTimeout(startSortis, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { if (!hidId(d.id)) team[d.id] = d.data(); }); renderTeam(); limStocks(); renderAll(); }, () => {}));
@@ -404,7 +405,7 @@ function startLive() {
       if (me.role === 'limite' && wasLocked !== locked()) { setTimeout(() => location.reload(), 300); return; }
       document.querySelectorAll('#tabs button').forEach((b) => { b.disabled = locked() && (b.dataset.t === 'direct' || b.dataset.t === 'stock'); });
       if (locked()) setTab('soiree'); else if (wasLocked) setTab('direct');
-      drawDm(); drawMine(); drawCashBtn(); syncDispo();
+      drawDm(); drawMine(); drawCashBtn(); syncDispo(); try { v72Alerts(); } catch (e) {} // v75 : « Es-tu encore là ? »
     }, (e) => console.warn(e)));
   }
   startOrders();
@@ -2616,9 +2617,16 @@ async function rangeDocs(col, field, a, b) {
 async function loadHisto() {
   const [a, b] = histoRange();
   hs.busy = true; drawHisto();
-  const [cmdsH, rems, dts, rets] = await Promise.all([
-    rangeDocs('commandes', 'livreeLe', a, b), rangeDocs('remises', 'le', a, b),
+  const H12 = 12 * 3600000, bW = new Date(b.getTime() + 30 * 3600000); // v75 : on va chercher plus large, puis on garde le jour de la soirée du livreur
+  const [cmdsW, remsW, dts, rets] = await Promise.all([
+    rangeDocs('commandes', 'livreeLe', new Date(a.getTime() - H12), bW), rangeDocs('remises', 'le', new Date(a.getTime() - H12), bW),
     canDette() ? rangeDocs('dettes', 'creeLe', a, b) : Promise.resolve([]), rangeDocs('retours', 'le', a, b)]);
+  await soirLoad(cmdsW);
+  const inR = (k) => k >= a.getTime() && k < b.getTime(), byP = {};
+  cmdsW.forEach((c) => { if (c.statut === 'livree' && c.livreur) (byP[c.livreur] = byP[c.livreur] || []).push(c); });
+  const cmdsH = cmdsW.filter((c) => inR(cmdDay(c)) && (tsMs(c.livreeLe) >= a.getTime() || c.soiree));
+  const rems = remsW.filter((r) => inR(remDayOf(tsMs(r.le), byP[remWho(r)])));
+  hs.rems = rems.filter((r) => r.statut === 'recue' || r.statut === 'attente');
   const livrees = cmdsH.filter((c) => c.statut === 'livree');
   const remis = {}; rems.forEach((r) => { if (r.statut === 'recue') remis[r.de] = (remis[r.de] || 0) + (r.montant || 0); });
   const dtt = {}; dts.forEach((x) => { if (x.statut !== 'refusee') dtt[x.livreur] = (dtt[x.livreur] || 0) + (x.montant || 0); });
@@ -3297,7 +3305,9 @@ function histoPeople() {
     const F = hs.f || 'tout', isAnn = (c) => c.annuleTest || c.statut === 'refusee';
     const okF = (c) => { if (F === 'tout') return true; const q = payOf(c); if (F === 'cash') return q.cash > 0; if (F === 'emt') return q.int > 0 || q.cry > 0 || (q.no || 0) > 0; return !!(c.paieModLe || c.ajoutPar || c.dette || c.nonRecu || c.qtyAvant || c.chg || c.statut === 'ajout' || c.vente); };
     const anns = mine.filter(isAnn);
+    const rq = (F === 'tout' || F === 'cash') ? (hs.rems || []).filter((r) => remWho(r) === k).sort((x, y) => tsMs(x.le) - tsMs(y.le)) : []; let rj = 0; // v75
     mine.forEach((c, i) => {
+      if (!isAnn(c)) while (rj < rq.length && tsMs(rq[rj].le) < cmdT(c)) h += v75RemLine(rq[rj++], k);
       if (isAnn(c) && !hs.anOpen) return;
       if (!isAnn(c) && !okF(c)) return;
       if (isAnn(c) && F !== 'tout') return;
@@ -3325,6 +3335,7 @@ function histoPeople() {
       if (hx.err) h += '<div class="err">' + esc(hx.err) + '</div>';
       h += '</div>';
     });
+    while (rj < rq.length) h += v75RemLine(rq[rj++], k);
     if (anns.length && F === 'tout') h += '<div class="hsAnn" data-hann2="1">⊘ ' + anns.length + ' annulée' + (anns.length > 1 ? 's' : '') + ' ' + (hs.anOpen ? '▴' : '▾') + '</div>';
     if (owner && k !== '?') h += '<div class="small" style="padding:8px 14px;border-top:1px solid var(--line)">Touche une livraison pour voir les détails. · 📦 Stock de ' + nom + ' : ' + esc(qty(st(k))) + '</div>';
     return h + '</div>';
@@ -4014,12 +4025,32 @@ document.addEventListener('input', (e) => { if (e.target && (e.target.id === 'vt
 const CASH_START = new Date(2026, 10, 18, 6, 0, 0);
 const cs = { busy: false, data: null, sel: null, err: '' };
 const soirOf = (ms) => { const d = new Date(ms); if (d.getHours() < 6) d.setDate(d.getDate() - 1); d.setHours(6, 0, 0, 0); return d; };
+// v75 : une livraison compte pour le jour où le livreur a commencé sa soirée (même s'il finit après 6 h).
+const SOIR_T = {};
+const ms0 = (t) => (t ? tsMs(t) : 0); // tsMs(vide) = maintenant ; ici on veut 0
+async function soirLoad(list) {
+  const ids = [...new Set((list || []).map((c) => c.soiree).filter((id) => id && !(id in SOIR_T)))];
+  await Promise.all(ids.map((id) => getDoc(doc(db, 'soirees', id)).then((d) => { const x = d.exists() ? d.data() : null; SOIR_T[id] = x ? (ms0(x.ouverteLe) || ms0(x.creeLe)) : 0; }).catch(() => { SOIR_T[id] = 0; })));
+}
+const cmdT = (c) => tsMs(c.livreeLe) || tsMs(c.creeLe);
+// Jusqu'au lendemain 14 h au plus (si la soirée est restée ouverte plus longtemps, on revient à l'heure).
+function cmdDay(c) { const t = cmdT(c), s0 = c.soiree && SOIR_T[c.soiree]; if (s0 && t >= s0 - 3600000) { const k = soirOf(s0).getTime(); if (t < k + 32 * 3600000) return k; } return soirOf(t).getTime(); }
+// Remise (cash donné) : même jour que la dernière livraison de cette personne dans les 10 h avant ; sinon l'heure.
+function remDayOf(t, cms) { let b = null; (cms || []).forEach((c) => { const ct = cmdT(c); if (ct <= t && t - ct < 36000000 && (!b || ct > cmdT(b))) b = c; }); return b ? cmdDay(b) : soirOf(t).getTime(); }
+const remWho = (r) => (r.rend ? r.vers : r.de);
+function v75RemLine(r, k, drv) {
+  const give = r.de === k, ok = r.statut === 'recue', m = '<b>' + money(r.montant || 0) + '</b>';
+  const qui = drv ? 'dispatch' : esc(give ? (r.versNom || nomDe(r.vers)) : (r.deNom || nomDe(r.de)));
+  return '<div class="v75g' + (give ? '' : ' in') + '">' + (give ? '💵 ' : '💜 ') + hm(tsMs(r.le)) + ' · ' + (give ? (drv ? 'donné ' : 'a donné ') + m + (drv ? ' au ' : ' à ') + qui : (drv ? 'reçu ' : 'a reçu ') + m + ' ' + (drv ? 'du dispatch' : 'de ' + qui)) +
+    (ok ? ' ✓' : ' <span style="color:#fcd34d">⏳ pas encore confirmé</span>') + '</div>';
+}
 // v69 : départ du compte par personne (members/{mid}.cashDepuis, ms) + remises à ignorer (cashExclu) — ex. Moo : jeudi 19 nov. réglé entre Wayne et lui.
 const cutOf = (m) => ({ t: (m && Number(m.cashDepuis)) || 0, ex: (m && m.cashExclu) || [] });
 async function soldeMoi() {
   let cm0 = null; try { const md = await getDoc(doc(db, 'members', me.mid)); cm0 = md.exists() ? md.data() : null; } catch (e) {}
   const cut = cutOf(cm0);
-  const mid = me.mid, d0 = new Date(Math.max(CASH_START.getTime(), cut.t)), t0 = soirStart(), list = [];
+  const st0 = mySoiree && mySoiree.statut === 'ouverte' ? (ms0(mySoiree.ouverteLe) || ms0(mySoiree.creeLe)) : 0; // v75 : « ce soir » = depuis le début de sa soirée
+  const mid = me.mid, d0 = new Date(Math.max(CASH_START.getTime(), cut.t)), t0 = st0 && st0 < soirStart().getTime() ? new Date(st0) : soirStart(), list = [];
   const qs = await getDocs(query(collection(db, 'commandes'), where('livreur', '==', mid), where('statut', '==', 'livree')));
   qs.forEach((x) => { const c = x.data(); if (tsMs(c.livreeLe) >= d0.getTime()) list.push(c); });
   const all = (sumUp(list)[0] || { reste: 0 }).reste, tonight = (sumUp(list.filter((c) => tsMs(c.livreeLe) >= t0.getTime()))[0] || { reste: 0 }).reste;
@@ -4046,17 +4077,19 @@ async function loadCash() {
     let dts = []; if (canDette()) { try { const q = await getDocs(collection(db, 'dettes')); q.forEach((x) => dts.push(Object.assign({ id: x.id }, x.data()))); } catch (e) {} }
     const P = {};
     const per = (id, nom) => P[id] || (P[id] = { id, nom: nom || nomDe(id), solde: 0, dette: 0, days: {} });
-    const day = (p, ms) => { const k = soirOf(ms).getTime(); return p.days[k] || (p.days[k] = { k, n: 0, cash: 0, garde: 0, lines: [] }); };
+    await soirLoad(cm); const byP = {}; cm.forEach((c) => { if (c.statut === 'livree' && c.livreur) (byP[c.livreur] = byP[c.livreur] || []).push(c); }); // v75
+    const dayK = (p, k) => p.days[k] || (p.days[k] = { k, n: 0, cash: 0, garde: 0, lines: [] });
+    const day = (p, ms) => dayK(p, soirOf(ms).getTime());
     const skip = (id, t, rid) => { const k = cutOf(team[id]); return t < k.t || (rid && k.ex.includes(rid)); };
     cm.filter((c) => c.statut === 'livree' && !c.test && c.livreur && !skip(c.livreur, tsMs(c.livreeLe))).forEach((c) => {
-      const p = per(c.livreur, c.livreurNom), d = day(p, tsMs(c.livreeLe)), r = sumUp([c])[0]; if (!r) return;
+      const p = per(c.livreur, c.livreurNom), d = dayK(p, cmdDay(c)), r = sumUp([c])[0]; if (!r) return;
       d.n += 1; d.cash += r.cash; d.garde += r.cash - r.reste; p.solde += r.reste;
     });
     rems.forEach((r) => {
       const t = tsMs(r.le), ok = r.statut === 'recue', att = r.statut === 'attente';
       if (!ok && !att) return;
-      if (r.de && r.de !== 'proprietaire' && !skip(r.de, t, r.id)) { const p = per(r.de, r.deNom); day(p, t).lines.push({ t, txt: '→ ' + (r.versNom || nomDe(r.vers)), m: -(r.montant || 0), ok, att }); if (ok) p.solde -= r.montant || 0; }
-      if (r.vers && r.vers !== 'proprietaire' && !skip(r.vers, t, r.id)) { const p = per(r.vers, r.versNom); day(p, t).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; if (att && r.rend) p.rendAtt = (p.rendAtt || 0) + (r.montant || 0); }
+      if (r.de && r.de !== 'proprietaire' && !skip(r.de, t, r.id)) { const p = per(r.de, r.deNom); dayK(p, remDayOf(t, byP[r.de])).lines.push({ t, txt: '→ ' + (r.versNom || nomDe(r.vers)), m: -(r.montant || 0), ok, att }); if (ok) p.solde -= r.montant || 0; }
+      if (r.vers && r.vers !== 'proprietaire' && !skip(r.vers, t, r.id)) { const p = per(r.vers, r.versNom); dayK(p, remDayOf(t, byP[r.vers])).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; if (att && r.rend) p.rendAtt = (p.rendAtt || 0) + (r.montant || 0); }
     });
     // v73 : bonus (gardé du cash comme la paye) ; en attente = affiché seulement.
     bons.forEach((b) => { if (!b.mid || !['ok', 'attente'].includes(b.statut)) return; const t = tsMs(b.le); if (skip(b.mid, t)) return; const p = per(b.mid, b.nom);
@@ -4155,7 +4188,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 74;
+const APP_V = 75;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4523,7 +4556,10 @@ function startV72() {
   if (!$('v72Card')) { const d = document.createElement('div'); d.id = 'v72Card'; const r = $('donCard'); if (r && r.parentNode) r.parentNode.insertBefore(d, r); }
   const L = (q, set) => stops.push(onSnapshot(q, (qs) => { const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); set(a); }, (e) => console.warn('v72', e)));
   if (!isOwner() && me.role !== 'complet') {
-    L(query(collection(db, 'commandes'), where('livreur', '==', me.mid)), (a) => { v72.cmds = a; if (curTab === 'mhist') v72Hist(); });
+    L(query(collection(db, 'commandes'), where('livreur', '==', me.mid)), (a) => { v72.cmds = a; soirLoad(a).then(() => { if (curTab === 'mhist') v72Hist(); }); if (curTab === 'mhist') v72Hist(); });
+    { const R = { de: [], vers: [] }, up = () => { v72.rems = R.de.concat(R.vers.filter((r) => r.rend)); if (curTab === 'mhist') v72Hist(); }; // v75 : cash donné, dans Mon historique
+      L(query(collection(db, 'remises'), where('de', '==', me.mid)), (a) => { R.de = a; up(); });
+      L(query(collection(db, 'remises'), where('vers', '==', me.mid)), (a) => { R.vers = a; up(); }); }
     L(query(collection(db, 'transferts'), where('de', '==', me.mid)), (a) => { v72.tr = a; v72Alerts(); if (curTab === 'mstock') v72Stock(); });
     L(query(collection(db, 'dons'), where('vers', '==', me.mid)), (a) => { v72.dons = a; if (curTab === 'mstock') v72Stock(); });
     stops.push(onSnapshot(doc(db, 'stocks', me.mid), (s) => { v72.st = s.exists() ? s.data() : { L: 0, XL: 0 }; if (curTab === 'mstock') v72Stock(); }, () => {}));
@@ -4539,6 +4575,15 @@ function startV72() {
 // ---------- Alertes au milieu de l'écran (restent jusqu'à OK) ----------
 function v72Alerts() {
   const q = [];
+  { const s = mySoiree; // v75 : midi puis toutes les 2 h — « Es-tu encore là ? »
+    if (s && s.statut === 'ouverte' && ms0(s.demandeEncore) && ms0(s.demandeEncore) > ms0(s.encore)) {
+      const jr = new Date(soirOf(ms0(s.ouverteLe) || ms0(s.creeLe) || Date.now())).toLocaleDateString('fr-CA', { weekday: 'long' });
+      q.push({ ic: '👋', cls: 'al', t: 'Es-tu encore là ?', x: 'Ta soirée de <b>' + esc(jr) + '</b> est encore ouverte.<br><span class="small">Sans réponse en 30 min, elle se ferme toute seule.</span>',
+        b: [['✅ Oui, je travaille encore', 'bg', () => v72Up(doc(db, 'soirees', s.id), { encore: serverTimestamp() }).catch((e) => alertBar(msg(e)))],
+            ['🏁 Non, terminer ma soirée', 'bgh', () => writeBatch(db).update(doc(db, 'soirees', s.id), { statut: 'terminee', finLe: serverTimestamp() }).commit().catch((e) => alertBar(msg(e)))]], done: async () => {} });
+    } }
+  (v75.auto || []).filter((s) => !s.finAutoVu).forEach((s) => q.push({ ic: '⏰', cls: 'al', t: 'Soirée de ' + esc(s.nom || nomDe(s.mid)) + ' fermée toute seule', x: 'Il n’a pas répondu à « Es-tu encore là ? » (' + hm(tsMs(s.demandeEncore)) + ').<br>Fermée à ' + hm(tsMs(s.finLe)) + '. Son stock et son cash restent sur lui.',
+    b: [['OK', 'bg', null]], done: () => v72Up(doc(db, 'soirees', s.id), { finAutoVu: true }) }));
   (v72.tr || []).filter((t) => t.statut === 'retour' && !t.vuDe).forEach((t) => q.push({ ic: '↩️', cls: 'al', t: 'Ton stock est revenu : ' + qty(t), x: 'Le transfert n’a pas marché. Refais la demande pour qu’elle soit approuvée.',
     b: [['📦 Refaire la demande', 'bb', () => { v72.give = { vers: t.vers, L: t.L || 0, XL: t.XL || 0 }; setTab('mstock'); }], ['OK', 'bgh', null]], done: () => v72Up(doc(db, 'transferts', t.id), { vuDe: true }) }));
   (v72.trRet || []).filter((t) => !t.vuRep).forEach((t) => q.push({ ic: '❌', cls: 'no', t: (t.destNom || 'Le livreur') + ' a refusé ' + qty(t), x: 'Le stock <b>retourne chez ' + esc(t.deNom || nomDe(t.de)) + '</b>.<br>Refais la transaction si tu veux le donner à quelqu’un d’autre.',
@@ -4583,7 +4628,9 @@ function v72Range() {
 function v72Hist() {
   const box = $('tabMhist'); if (!box || !me) return;
   const [a, b] = v72Range(), lim = soirStart().getTime() - 6 * 86400000;
-  let list = v72.cmds.filter((c) => c.statut === 'livree' && !c.test).map((c) => Object.assign({ _t: tsMs(c.livreeLe) || tsMs(c.creeLe) }, c)).filter((c) => c._t >= Math.max(a, lim) && c._t < b);
+  let list = v72.cmds.filter((c) => c.statut === 'livree' && !c.test).map((c) => Object.assign({ _t: tsMs(c.livreeLe) || tsMs(c.creeLe), _d: cmdDay(c) }, c)).filter((c) => c._d >= Math.max(a, lim) && c._d < b);
+  const vMine = v72.cmds.filter((c) => c.statut === 'livree' && !c.test);
+  const rq = (F0 => F0 === 'tout' || F0 === 'cash')(v72.f) ? (v72.rems || []).filter((r) => (r.statut === 'recue' || r.statut === 'attente') && remWho(r) === me.mid).filter((r) => { const k = remDayOf(tsMs(r.le), vMine); return k >= Math.max(a, lim) && k < b; }).sort((x, y) => tsMs(y.le) - tsMs(x.le)) : []; let rj = 0; // v75
   const F = v72.f;
   const ok = (c) => F === 'tout' || (F === 'cash' && (Number(c.cashRecu) || 0) > 0) || (F === 'emt' && (c.paieMode || 'cash') !== 'cash') || (F === 'verif' && (c.nonRecu || c.demStatut === 'attente' || c.chg));
   const shown = list.filter(ok).sort((x, y) => y._t - x._t);
@@ -4594,7 +4641,8 @@ function v72Hist() {
     '<div class="seg" style="margin:8px 0"><button class="' + (v72.per === 'soir' ? 'on' : '') + '" data-v72p="soir">Soirée</button><button class="' + (v72.per === 'sem' ? 'on' : '') + '" data-v72p="sem">Semaine</button></div>' +
     '<div style="display:flex;gap:5px;flex-wrap:wrap">' + chip('tout', 'Tout') + chip('cash', '💵 Cash') + chip('emt', '🟡 EMT') + chip('verif', '⚠️ À vérifier') + '</div></div>' +
     '<div class="two" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:10px"><div class="card center" style="margin:0"><b style="font-size:18px">' + list.length + '</b><div class="small">livraisons</div></div><div class="card center" style="margin:0"><b style="font-size:18px;color:#60a5fa">' + money(cash) + '</b><div class="small">cash</div></div><div class="card center" style="margin:0"><b style="font-size:18px">' + money(paie) + '</b><div class="small">ta paye</div></div></div>';
-  h += '<div class="card">' + (shown.length ? shown.map((c) => '<div class="v72ln" data-v72c="' + c.id + '"><span class="small" style="width:44px;flex:none">' + v72Hm(c._t) + '</span><div style="flex:1;min-width:0"><b>' + esc(c.client || '') + '</b><div class="small">' + qty(c) + (Number(c.frais) ? ' · +' + money(c.frais) + ' frais' : '') + '</div>' + v72Tags(c) + '</div><div style="text-align:right;font-weight:800">' + v72PayHtml(c) + '</div></div>').join('') : '<div class="small">Rien pour cette période.</div>') + '</div>' +
+  const remBefore = (t) => { let o = ''; while (rj < rq.length && (t == null || tsMs(rq[rj].le) > t)) o += v75RemLine(rq[rj++], me.mid, true); return o; };
+  h += '<div class="card">' + (shown.length || rq.length ? shown.map((c) => remBefore(c._t) + '<div class="v72ln" data-v72c="' + c.id + '"><span class="small" style="width:44px;flex:none">' + v72Hm(c._t) + '</span><div style="flex:1;min-width:0"><b>' + esc(c.client || '') + '</b><div class="small">' + qty(c) + (Number(c.frais) ? ' · +' + money(c.frais) + ' frais' : '') + '</div>' + v72Tags(c) + '</div><div style="text-align:right;font-weight:800">' + v72PayHtml(c) + '</div></div>').join('') + remBefore(null) : '<div class="small">Rien pour cette période.</div>') + '</div>' +
     '<div class="small center" style="margin-bottom:14px">Tu vois tes 7 derniers jours. Pour changer une commande, touche-la : MOUSSE ou ' + OWNER + ' doit approuver.</div>';
   box.innerHTML = h + v72SheetHtml();
   box.querySelectorAll('[data-v72d]').forEach((el) => { el.onclick = () => { v72.day = Math.max(0, Math.min(6, v72.day + Number(el.dataset.v72d))); v72Hist(); }; });
@@ -4866,10 +4914,11 @@ async function v73Load() {
     const [cm, de, vers, bon, sm] = await Promise.all([get(query(collection(db, 'commandes'), where('livreur', '==', mid))), get(query(collection(db, 'remises'), where('de', '==', mid))),
       get(query(collection(db, 'remises'), where('vers', '==', mid))), get(query(collection(db, 'bonus'), where('mid', '==', mid))), soldeMoi().catch(() => null)]);
     const lim = soirStart().getTime() - 6 * 86400000, D = {};
-    const day = (ms) => { const k = soirOf(ms).getTime(); return D[k] || (D[k] = { k, list: [], remis: [], recu: [], bon: [] }); };
-    cm.filter((c) => c.statut === 'livree' && !c.test && tsMs(c.livreeLe) >= lim).forEach((c) => day(tsMs(c.livreeLe)).list.push(c));
-    de.filter((r) => r.statut === 'recue' && tsMs(r.le) >= lim).forEach((r) => day(tsMs(r.le)).remis.push(r));
-    vers.filter((r) => r.statut === 'recue' && tsMs(r.le) >= lim).forEach((r) => day(tsMs(r.le)).recu.push(r));
+    await soirLoad(cm); const liv = cm.filter((c) => c.statut === 'livree' && !c.test); // v75 : jour de la soirée
+    const dayK = (k) => D[k] || (D[k] = { k, list: [], remis: [], recu: [], bon: [] }), day = (ms) => dayK(soirOf(ms).getTime());
+    liv.filter((c) => cmdDay(c) >= lim).forEach((c) => dayK(cmdDay(c)).list.push(c));
+    de.filter((r) => r.statut === 'recue' && remDayOf(tsMs(r.le), liv) >= lim).forEach((r) => dayK(remDayOf(tsMs(r.le), liv)).remis.push(r));
+    vers.filter((r) => r.statut === 'recue' && remDayOf(tsMs(r.le), liv) >= lim).forEach((r) => dayK(remDayOf(tsMs(r.le), liv)).recu.push(r));
     bon.filter((b) => b.statut === 'ok' && tsMs(b.le) >= lim).forEach((b) => day(tsMs(b.le)).bon.push(b));
     Object.values(D).forEach((d) => {
       const r = sumUp(d.list)[0] || { n: 0, cash: 0, frais: 0, tips: 0, paie: 0, reste: 0 };
@@ -4926,5 +4975,22 @@ function v73Draw() {
   const s = document.createElement('style');
   s.textContent = '.v73r{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;border-top:1px solid var(--line,#2a2f3a)}.v73r:first-child{border-top:none}.v73r.k{cursor:pointer}.v73r.o{background:#18202c;border-radius:10px;padding-left:6px;padding-right:6px}' +
     '.v73s{background:#0f131b;border:1px solid var(--line,#2a2f3a);border-radius:10px;padding:6px 10px;margin:0 0 6px}.v73l{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;color:var(--muted,#8b93a1)}.v73l b{color:var(--text,#fff)}';
+  document.head.appendChild(s);
+})();
+
+// =====================================================================
+// v75 : soirée fermée toute seule (robot) → alerte à Wayne et MOUSSE ; ligne « cash donné » dans les historiques
+// =====================================================================
+const v75 = { auto: [] };
+function startV75() {
+  if (!me || !(isOwner() || me.role === 'complet')) return;
+  stops.push(onSnapshot(query(collection(db, 'soirees'), where('finAuto', '==', true)), (qs) => {
+    const a = [], lim = Date.now() - 3 * 86400000; qs.forEach((d) => { const x = d.data(); if (!hidDoc(x) && tsMs(x.finLe) > lim) a.push(Object.assign({ id: d.id }, x)); });
+    v75.auto = a; v72Alerts();
+  }, (e) => console.warn('v75', e)));
+}
+(() => {
+  const s = document.createElement('style');
+  s.textContent = '.v75g{margin:2px 14px 2px 40px;padding:3px 9px;border-left:2px dashed #22c55e;font-size:12px;color:#86efac;background:rgba(34,197,94,.07);border-radius:0 8px 8px 0}.v75g.in{border-left-color:#a78bfa;color:#c4b5fd;background:rgba(167,139,250,.07)}.v75g b{color:inherit}';
   document.head.appendChild(s);
 })();
