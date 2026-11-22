@@ -382,6 +382,7 @@ function startLive() {
   setTimeout(startV73, 0); // v73
   setTimeout(startV75, 0); // v75
   setTimeout(startV78, 0); // v78
+  setTimeout(startV82, 0); // v82
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   sortis = {}; setTimeout(startSortis, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { if (!hidId(d.id)) team[d.id] = d.data(); }); renderTeam(); limStocks(); renderAll(); }, () => {}));
@@ -4070,7 +4071,7 @@ async function soldeMoi() {
   }
   try { const dq = await getDocs(query(collection(db, 'dettes'), where('responsable', '==', mid))); // dette réglée en cash = cash à remettre
     dq.forEach((x) => { const r = x.data(), t = tsMs(r.regleLe); if (r.statut !== 'reglee' || r.regleMode !== 'cash' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; }); } catch (e) {}
-  try { const bq = await getDocs(query(collection(db, 'bonus'), where('mid', '==', mid))); // v73 : bonus acceptés = gardés du cash
+  try { const bq = await getDocs(query(collection(db, 'bonus'), where('mid', '==', mid), where('statut', '==', 'ok'))); // v73 (v82 : statut filtré) : bonus acceptés = gardés du cash
     bq.forEach((x) => { const b = x.data(), t = tsMs(b.le); if (b.statut !== 'ok' || t < d0.getTime()) return; out += b.montant || 0; if (t >= t0.getTime()) outT += b.montant || 0; }); } catch (e) {}
   const tot = all - out + inn, ceSoir = tonight - outT + innT;
   return { tot, ceSoir, avant: tot - ceSoir };
@@ -4099,7 +4100,7 @@ async function loadCash() {
       if (r.vers && r.vers !== 'proprietaire' && !skip(r.vers, t, r.id)) { const p = per(r.vers, r.versNom); dayK(p, remDayOf(t, byP[r.vers])).lines.push({ t, txt: 'Reçu de ' + (r.deNom || nomDe(r.de)), m: r.montant || 0, ok, att }); if (ok) p.solde += r.montant || 0; if (att && r.rend) p.rendAtt = (p.rendAtt || 0) + (r.montant || 0); }
     });
     // v73 : bonus (gardé du cash comme la paye) ; en attente = affiché seulement.
-    bons.forEach((b) => { if (!b.mid || !['ok', 'attente'].includes(b.statut)) return; const t = tsMs(b.le); if (skip(b.mid, t)) return; const p = per(b.mid, b.nom);
+    bons.forEach((b) => { if (!b.mid || !['ok', 'attente'].includes(b.statut) || !(b.montant > 0)) return; const t = tsMs(b.le); if (skip(b.mid, t)) return; const p = per(b.mid, b.nom);
       day(p, t).lines.push({ t, txt: '🎁 Bonus · ' + (b.raison || ''), m: -(b.montant || 0), ok: b.statut === 'ok', att: b.statut === 'attente', lab: b.statut === 'ok' ? '✓ accepté · de ' + (b.parNom || '') : '⏳ pas encore accepté · de ' + (b.parNom || '') });
       if (b.statut === 'ok') p.solde -= b.montant || 0; });
     // Dettes : ouvertes = notées à part (pas encore de cash) ; réglées en cash = le cash s'ajoute au solde du responsable.
@@ -4120,6 +4121,7 @@ function drawCash() {
   const L = cs.data || [], tot = L.reduce((a, p) => a + p.solde, 0);
   let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div class="label" style="margin:0">💵 Cash pas encore rendu à ' + OWNER + '</div><button class="linkbtn" id="csReload">↻</button></div>' +
     '<div style="font-size:26px;font-weight:900;margin:6px 0 2px">' + (cs.busy && !cs.data ? '…' : money(tot)) + '</div><div class="small">Le solde de chacun continue d’un jour à l’autre (depuis la soirée du 18 nov.).</div>' + (cs.err ? '<div class="err">' + esc(cs.err) + '</div>' : '') + '</div>';
+  h += v82Html(); // v82 : bonus de Lost à valider
   // v58 : le fil privé avec chaque dispatch complet (MOUSSE), pour Wayne.
   if (isOwner()) Object.keys(team).filter((id) => team[id].role === 'complet' && team[id].actif !== false).forEach((id) => {
     const p = L.find((x) => x.id === id), att = (rm.toMe || []).some((r) => r.de === id && r.statut === 'attente');
@@ -4150,6 +4152,7 @@ function drawCash() {
   box.querySelectorAll('[data-cs]').forEach((el) => { el.onclick = () => { cs.sel = cs.sel === el.dataset.cs ? null : el.dataset.cs; drawCash(); }; });
   if ($('csReload')) $('csReload').onclick = () => loadCash();
   v73BindBon(box); // v73
+  v82Bind(box); // v82
   box.querySelectorAll('[data-rend]').forEach((el) => { el.onclick = async () => {
     const id = el.dataset.rend, p = (cs.data || []).find((x) => x.id === id); if (!p) return;
     if (cs.rend !== id) { cs.rend = id; return drawCash(); }
@@ -4195,7 +4198,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 80;
+const APP_V = 82;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4598,6 +4601,7 @@ function v72Alerts() {
     b: [['OK', 'bg', null]], done: () => v72Up(doc(db, 'transferts', t.id), { vuRep: true }) }));
   (v72.chgNon || []).filter((c) => !c.chgVu).forEach((c) => q.push({ ic: '❌', cls: 'no', t: esc(c.livreurNom || 'Le livreur') + ' a refusé ton changement', x: esc(c.client || '') + ' : la commande reste comme avant.',
     b: [['OK', 'bg', null]], done: () => v72Up(doc(db, 'commandes', c.id), { chgVu: true }) }));
+  v82Alerts(q); // v82
   let ov = $('v72Al');
   if (!q.length) { if (ov) ov.remove(); return; }
   const a = q[0];
@@ -4865,12 +4869,12 @@ function startV73() {
   if (!$('tabMcash')) { const d = document.createElement('div'); d.id = 'tabMcash'; d.className = 'tab hide'; $('home').appendChild(d); }
   if (!$('v73Bon')) { const d = document.createElement('div'); d.id = 'v73Bon'; const t = $('tabSoiree'); if (t) t.insertBefore(d, t.firstChild); }
   const L = (q, set) => stops.push(onSnapshot(q, (qs) => { const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); set(a); }, (e) => console.warn('v73', e)));
-  if (!isOwner() && me.role !== 'complet') L(query(collection(db, 'bonus'), where('mid', '==', me.mid), where('statut', '==', 'attente')), (a) => { v73.att = a; v73DrawAtt(); });
+  if (!isOwner() && me.role !== 'complet') L(query(collection(db, 'bonus'), where('mid', '==', me.mid), where('statut', '==', 'attente')), (a) => { v73.att = a; v73DrawAtt(); v72Alerts(); });
   if (isOwner() || me.role === 'complet') L(query(collection(db, 'bonus'), where('par', '==', myMid()), where('statut', '==', 'refuse')), (a) => { v73.ref = a; v73Alerts(); });
 }
 function v73DrawAtt() {
   const box = $('v73Bon'); if (!box) return;
-  box.innerHTML = v73.att.map((b) => '<div class="card" style="border-color:#a16207;background:#1c1606;text-align:center"><div style="font-size:34px">🎁</div><b style="font-size:18px;color:#fbbf24">Bonus de ' + money(b.montant || 0) + '</b>' +
+  box.innerHTML = v73.att.filter((b) => b.type !== 'auto').map((b) => '<div class="card" style="border-color:#a16207;background:#1c1606;text-align:center"><div style="font-size:34px">🎁</div><b style="font-size:18px;color:#fbbf24">Bonus de ' + money(b.montant || 0) + '</b>' +
     '<div class="small" style="margin:4px 0 10px">de ' + esc(b.parNom || OWNER) + ' · « ' + esc(b.raison || '') + ' »<br>Tu le gardes du cash, comme ta paye.</div>' +
     '<button class="btn ok" data-v73b="' + b.id + '|ok">✅ Merci, j’accepte</button><button class="linkbtn" style="margin-top:8px" data-v73b="' + b.id + '|refuse">Refuser</button></div>').join('');
   box.querySelectorAll('[data-v73b]').forEach((el) => { el.onclick = async () => { const [id, rep] = el.dataset.v73b.split('|'); el.disabled = true;
@@ -4920,7 +4924,7 @@ async function v73Load() {
   try {
     const mid = me.mid, get = async (q) => { const a = []; (await getDocs(q)).forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); return a; };
     const [cm, de, vers, bon, sm] = await Promise.all([get(query(collection(db, 'commandes'), where('livreur', '==', mid))), get(query(collection(db, 'remises'), where('de', '==', mid))),
-      get(query(collection(db, 'remises'), where('vers', '==', mid))), get(query(collection(db, 'bonus'), where('mid', '==', mid))), soldeMoi().catch(() => null)]);
+      get(query(collection(db, 'remises'), where('vers', '==', mid))), get(query(collection(db, 'bonus'), where('mid', '==', mid), where('statut', '==', 'ok'))), soldeMoi().catch(() => null)]);
     const lim = soirStart().getTime() - 6 * 86400000, D = {};
     await soirLoad(cm); const liv = cm.filter((c) => c.statut === 'livree' && !c.test); // v75 : jour de la soirée
     const dayK = (k) => D[k] || (D[k] = { k, list: [], remis: [], recu: [], bon: [] }), day = (ms) => dayK(soirOf(ms).getTime());
@@ -4951,7 +4955,7 @@ function v73Draw() {
     h += R('🚗 Frais de livraison', money(d.frais), '#5eead4', d.frais ? 'frais' : null);
     if (v73.open === 'frais') h += '<div class="v73s">' + d.list.filter((c) => Number(c.frais)).map((c) => '<div class="v73l"><span>' + hm(tsMs(c.livreeLe)) + ' · ' + esc(c.client || '') + '</span><b>+' + money(c.frais) + '</b></div>').join('') + '</div>';
     h += R('🎁 Bonus', d.bonT ? money(d.bonT) : '—', '#fbbf24', d.bonT ? 'bonus' : null);
-    if (v73.open === 'bonus') h += '<div class="v73s">' + d.bon.map((b) => '<div class="v73l"><span>' + esc(b.raison || '') + ' · de ' + esc(b.parNom || '') + '</span><b>+' + money(b.montant || 0) + '</b></div>').join('') + '</div>';
+    if (v73.open === 'bonus') h += '<div class="v73s">' + d.bon.map((b) => '<div class="v73l"><span>' + esc(b.raison || '') + ' · ' + (b.type === 'auto' ? 'validé par ' : 'de ') + esc(b.parNom || '') + (b.raisonChg && !b.chgRefuse ? ' · « ' + esc(b.raisonChg) + ' »' : '') + '</span><b>+' + money(b.montant || 0) + '</b></div>').join('') + '</div>';
     h += R('📤 Donné au dispatch', money(d.remisT), '#93c5fd', d.remisT ? 'disp' : null);
     if (v73.open === 'disp') h += '<div class="v73s">' + d.remis.sort((a, b) => tsMs(a.le) - tsMs(b.le)).map((r) => '<div class="v73l"><span>' + hm(tsMs(r.le)) + '</span><b>' + money(r.montant || 0) + '</b></div>').join('') + '</div>';
     if (d.recuT) { h += R('💜 Reçu du dispatch', '+' + money(d.recuT), '#c4b5fd', 'recu'); if (v73.open === 'recu') h += '<div class="v73s">' + d.recu.map((r) => '<div class="v73l"><span>' + hm(tsMs(r.le)) + '</span><b>+' + money(r.montant || 0) + '</b></div>').join('') + '</div>'; }
@@ -5336,3 +5340,96 @@ document.addEventListener('click', async (e) => {
   try { const qs = await getDocs(query(collection(db, 'suivi', c.suivi, 'msgs'), orderBy('le', 'asc'))); qs.forEach((d) => SCH.msgs.push(d.data())); } catch (x) {}
   drawSite();
 });
+
+// =====================================================================
+// v82 : 🎁 bonus automatiques de Lost (il a recruté FMJ). Le robot les calcule chaque soir :
+//   +50 $ si FMJ fait 5 livraisons ou plus · +100 $ si la soirée Dispatch de Lost est ouverte · +75 $ si les deux le même soir.
+//   1) « à valider » par Wayne ou MOUSSE (✅ / ✏️ changer / ❌ annuler, raison obligatoire) → 2) Lost approuve.
+//   S'il refuse un changement, le montant d'avant reste et celui qui a validé reçoit une alerte jusqu'à OK.
+//   Gardé du cash comme la paye (recette), jamais de la paye de FMJ. FMJ ne voit rien.
+//   Maquette approuvée 22 nov. : « b2.png ».
+// =====================================================================
+const v82 = { av: [], chg: [], ed: null, err: '', busy: false };
+const v82Jour = (k) => { try { return new Date(k + 'T12:00:00').toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'short' }); } catch (e) { return k; } };
+const v82Val = () => isOwner() || (me && me.role === 'complet');
+function startV82() {
+  if (!me) return;
+  const L = (q, set) => stops.push(onSnapshot(q, (qs) => { const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); set(a); }, (e) => console.warn('v82', e)));
+  if (v82Val()) {
+    L(query(collection(db, 'bonus'), where('statut', '==', 'avalider')), (a) => { v82.av = a; if ($('cashTab')) drawCash(); });
+    L(query(collection(db, 'bonus'), where('par', '==', myMid()), where('chgRefuse', '==', true)), (a) => { v82.chg = a; v72Alerts(); });
+  }
+}
+function v82Groups(list) {
+  const G = {}; list.forEach((b) => { (G[b.soir || '?'] = G[b.soir || '?'] || []).push(b); });
+  return Object.keys(G).sort().map((k) => ({ k, list: G[k].sort((a, b) => (a.ordre || 0) - (b.ordre || 0)) }));
+}
+// ---------- ① Wayne / MOUSSE : à valider (en haut de 💵 Cash) ----------
+function v82Html() {
+  if (!v82Val() || !v82.av.length) return '';
+  let h = '';
+  v82Groups(v82.av).forEach((g) => {
+    const tot = g.list.reduce((a, b) => a + (b.montant || 0), 0), nom = (g.list[0] && g.list[0].nom) || 'Lost';
+    h += '<div class="card" style="border-color:#a16207;background:#1c1606"><b style="color:#fbbf24;font-size:16px">🎁 Bonus de ' + esc(nom) + ' · ' + esc(v82Jour(g.k)) + '</b><div class="small" style="margin:2px 0 6px">Calculé tout seul. À valider avant que ' + esc(nom) + ' le voie.</div>';
+    g.list.forEach((b) => {
+      h += '<div style="border-top:1px solid #3a2f12;padding:8px 0"><div style="display:flex;justify-content:space-between;gap:8px"><span>' + esc(b.raison || '') + (b.nFmj ? '<div class="small">(FMJ en a fait ' + b.nFmj + ')</div>' : '') + '</span><b style="color:#86efac;white-space:nowrap">+' + money(b.montant || 0) + '</b></div>';
+      const e = v82.ed && v82.ed.id === b.id ? v82.ed : null;
+      if (e) {
+        h += '<div style="margin-top:6px">' + (e.mode === 'chg' ? '<div class="small">Nouveau montant</div><input id="v82M" type="number" inputmode="numeric" value="' + esc(e.m) + '">' : '<div class="small" style="color:#fca5a5">Annuler ce bonus (0 $)</div>') +
+          '<div class="small" style="margin-top:6px">Raison (obligatoire)</div><input id="v82W" maxlength="120" placeholder="Ex. en retard avec le téléphone du dispatch" value="' + esc(e.why) + '">' +
+          '<div class="err">' + esc(v82.err) + '</div><div class="two"><button class="btn ghost sm" data-v82x="1">Retour</button><button class="btn ok sm" data-v82s="' + esc(b.id) + '">Valider et envoyer à ' + esc(nom) + '</button></div></div>';
+      } else {
+        h += '<div style="text-align:right;margin-top:6px"><button class="btn sm" style="width:auto;margin-left:4px" data-v82ok="' + esc(b.id) + '">✅</button><button class="btn sm" style="width:auto;margin-left:4px" data-v82e="' + esc(b.id) + '|chg">✏️</button><button class="btn sm" style="width:auto;margin-left:4px" data-v82e="' + esc(b.id) + '|non">❌</button></div>';
+      }
+      h += '</div>';
+    });
+    if (!v82.ed) h += '<button class="btn ok" style="margin-top:6px" data-v82all="' + esc(g.k) + '">✅ Tout valider (' + money(tot) + ')</button>';
+    h += '<div class="small" style="margin-top:6px">FMJ ne voit jamais ces bonus.</div></div>';
+  });
+  return h;
+}
+async function v82Send(list, extra) {
+  const b = writeBatch(db), par = myMid(), parNom = String(me.nom || OWNER).slice(0, 60);
+  list.forEach((x) => b.update(doc(db, 'bonus', x.id), Object.assign({ statut: 'attente', par, parNom, valideLe: serverTimestamp() }, extra ? extra(x) : {})));
+  await b.commit();
+  const mid = list[0] && list[0].mid; if (mid) notifyMsg(mid, '🎁 Tes bonus sont prêts. Ouvre l’app pour les approuver.');
+}
+function v82Bind(box) {
+  if (!v82Val()) return;
+  const go = async (el, fn) => { if (v82.busy) return; v82.busy = true; el.disabled = true; try { await fn(); v82.ed = null; v82.err = ''; } catch (e) { v82.err = msg(e); } v82.busy = false; drawCash(); };
+  box.querySelectorAll('[data-v82ok]').forEach((el) => { el.onclick = () => { const b = v82.av.find((x) => x.id === el.dataset.v82ok); if (b) go(el, () => v82Send([b])); }; });
+  box.querySelectorAll('[data-v82all]').forEach((el) => { el.onclick = () => { const l = v82.av.filter((x) => x.soir === el.dataset.v82all); if (l.length) go(el, () => v82Send(l)); }; });
+  box.querySelectorAll('[data-v82e]').forEach((el) => { el.onclick = () => { const [id, mode] = el.dataset.v82e.split('|'), b = v82.av.find((x) => x.id === id); if (!b) return; v82.ed = { id, mode, m: String(b.montant || 0), why: '' }; v82.err = ''; drawCash(); }; });
+  box.querySelectorAll('[data-v82x]').forEach((el) => { el.onclick = () => { v82.ed = null; v82.err = ''; drawCash(); }; });
+  if ($('v82M')) $('v82M').oninput = (e) => { v82.ed.m = e.target.value; };
+  if ($('v82W')) $('v82W').oninput = (e) => { v82.ed.why = e.target.value; };
+  box.querySelectorAll('[data-v82s]').forEach((el) => { el.onclick = () => {
+    const e = v82.ed, b = e && v82.av.find((x) => x.id === e.id); if (!b) return;
+    const m = e.mode === 'non' ? 0 : Math.round(Number(e.m)), why = String(e.why || '').trim();
+    if (e.mode === 'chg' && !(m >= 0 && m <= 1000 && String(e.m).trim() !== '')) { v82.err = 'Montant entre 0 et 1 000 $.'; return drawCash(); }
+    if (!why) { v82.err = 'Écris la raison.'; return drawCash(); }
+    if (m === (b.montant || 0)) return go(el, () => v82Send([b]));
+    go(el, () => v82Send([b], () => ({ orig: b.montant || 0, montant: m, raisonChg: why.slice(0, 120) })));
+  }; });
+}
+// ---------- ③ Lost approuve · ④ alerte si refus (fenêtre au milieu de l'écran, avec les alertes v72) ----------
+function v82Alerts(q) {
+  if (!me) return;
+  if (!v82Val()) {
+    const att = (v73.att || []).filter((b) => b.type === 'auto');
+    v82Groups(att).forEach((g) => {
+      const tot = g.list.reduce((a, b) => a + (b.montant || 0), 0), chg = g.list.filter((b) => b.orig != null);
+      const lines = g.list.map((b) => esc(b.raison || '') + ' : ' + (b.orig != null ? '<s>' + money(b.orig) + '</s> → ' : '') + '<b>' + money(b.montant || 0) + '</b>' +
+        (b.orig != null ? '<br><span class="small">« ' + esc(b.raisonChg || '') + ' » — ' + esc(b.parNom || '') + '</span>' : '')).join('<br>');
+      const ok = async () => { const w = writeBatch(db); g.list.forEach((b) => w.update(doc(db, 'bonus', b.id), { statut: 'ok', repLe: serverTimestamp() })); await w.commit(); };
+      const non = async () => { const w = writeBatch(db); g.list.forEach((b) => w.update(doc(db, 'bonus', b.id), b.orig != null ? { statut: 'ok', montant: b.orig, chgRefuse: true, repLe: serverTimestamp() } : { statut: 'ok', repLe: serverTimestamp() })); await w.commit();
+        [...new Set(chg.map((b) => b.par))].forEach((p) => notifyMsg(p, '❌ ' + (me.nom || 'Lost') + ' a refusé le changement de son bonus. Le montant d’avant reste.')); };
+      const b = [['✅ J’approuve', 'bg', null]]; if (chg.length) b.push(['❌ Je refuse', 'bgh', null]);
+      q.push({ ic: '🎁', cls: 'al', t: 'Tes bonus de ' + esc(v82Jour(g.k)), x: '<div style="text-align:left">' + lines + '<br><b>Total ' + money(tot) + '</b> gardé de ton cash</div>' + (chg.length ? '<div class="small" style="margin-top:6px">Si tu refuses, le montant d’avant reste.</div>' : ''),
+        b: b.map((x, i) => [x[0], x[1], async () => { try { await (i === 0 ? ok() : non()); } catch (e) { alertBar(msg(e)); } }]), done: async () => {} });
+    });
+  } else {
+    (v82.chg || []).filter((b) => !b.vuPar).forEach((b) => q.push({ ic: '❌', cls: 'no', t: esc(b.nom || 'Lost') + ' a refusé le changement', x: esc(b.raison || '') + ' (' + esc(v82Jour(b.soir)) + ') : le bonus reste <b>' + money(b.montant || 0) + '</b>.<br><span class="small">« ' + esc(b.raisonChg || '') + ' »</span>',
+      b: [['OK', 'bg', null]], done: () => v72Up(doc(db, 'bonus', b.id), { vuPar: true }) }));
+  }
+}
