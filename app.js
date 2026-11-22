@@ -381,6 +381,7 @@ function startLive() {
   setTimeout(startV72, 0); // v72
   setTimeout(startV73, 0); // v73
   setTimeout(startV75, 0); // v75
+  setTimeout(startV78, 0); // v78
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   sortis = {}; setTimeout(startSortis, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { if (!hidId(d.id)) team[d.id] = d.data(); }); renderTeam(); limStocks(); renderAll(); }, () => {}));
@@ -1362,7 +1363,7 @@ function myOrdersHtml(s) {
         : '<div class="lvPay lvWait">⏳ ' + dl + '<small' + (dp && dp.pasRecu ? ' style="color:#fca5a5">pas encore reçu — en attente, ne pas donner' : '>attends que le dispatch confirme') + '</small></div>') : '') +
       (!dig && !p.cash ? '<div class="lvPay lvDone">✅ Déjà payé</div>' : '') +
       '<div class="lvGrow"></div><div class="err" id="mcErr"></div>' + (all ? '<div class="lvGive">✅ Tu peux donner <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div>' : '<div class="lvWarn">⚠️ Ne donne rien tant que tout n’est pas ✅</div>') +
-      '<button class="btn lvBig lvGo" id="mcDone"' + (all ? '' : ' disabled') + '>➡️ Commande suivante</button>';
+      (all ? xtHtml(c) : '<button class="btn lvBig lvGo" id="mcDone" disabled>➡️ Commande suivante</button>');
   }
   h += '</div>' + soir + venteHtml(s);
   return h;
@@ -1718,8 +1719,8 @@ function sumUp(list, remis) {
     const k = c.livreur || '?';
     const r = by[k] || (by[k] = { mid: k, nom: c.livreurNom || nomDe(k), n: 0, cash: 0, frais: 0, tips: 0, manque: 0, paie: 0, paieOk: true });
     const cash = Number(c.cashRecu) || 0, enc = Number(c.encaisser) || 0;
-    const p = c.paie != null ? c.paie : paies[k];
-    r.n++; r.cash += cash; r.frais += Number(c.frais) || 0;
+    const p = c.extraDe ? 0 : c.paie != null ? c.paie : paies[k]; // v78 : un extra fait partie de la même livraison (pas de 2e paye)
+    if (!c.extraDe) r.n++; r.cash += cash; r.frais += Number(c.frais) || 0;
     if (cash > enc) r.tips += cash - enc; else if (cash < enc) r.manque += enc - cash;
     if (p == null) r.paieOk = false; else r.paie += Number(p);
   });
@@ -4190,7 +4191,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 77;
+const APP_V = 78;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5126,4 +5127,126 @@ function notifySite(cid) {
   siteT[cid] = setTimeout(async () => { // petit délai : l'heure d'arrivée du suivi est écrite juste après
     try { const t = await auth.currentUser.getIdToken(); fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'site', cid }) }).catch(() => {}); } catch (e) {}
   }, 2500);
+}
+
+// =====================================================================
+// v78 : « Le client veut autre chose ? » après le paiement (toutes les commandes).
+// Extra = vente Gotham normale (prix de Gotham). Cash → enregistré tout de suite. EMT / crypto → extras/{id} :
+// bloc au milieu de l'écran de Wayne + du dispatch en service (✅ Reçu avec n° de référence / ❌ Pas reçu) ;
+// pas reçu → le livreur redemande quand le client dit « envoyé ». Accepté → la vente s'enregistre (commandes/x{id}).
+// =====================================================================
+const XT = { open: false, cid: null, L: 0, XL: 0, mode: 'cash', busy: false, err: '', ok: '', list: [], disp: [], refTxt: '', dErr: '', dBusy: false };
+const xtTot = (L, XL) => L * cfg.prixL + XL * cfg.prixXL;
+function xtLeft(c) { const mine = st(me.mid), qL = myCmds.reduce((a, x) => a + (x.L || 0), 0), qXL = myCmds.reduce((a, x) => a + (x.XL || 0), 0); return { L: Math.max(0, (mine.L || 0) - qL), XL: Math.max(0, (mine.XL || 0) - qXL) }; }
+function xtHtml(c) {
+  const live = XT.list.find((x) => x.cid === c.id && ['attente', 'non', 'ok'].includes(x.statut));
+  const done = XT.ok && XT.cid === c.id ? '<div class="lvPay lvDone" style="margin-top:8px">✅ ' + esc(XT.ok) + '</div>' : '';
+  const ask = (t) => '<div class="lvQ" style="margin-top:10px">' + t + '</div><button class="btn lvBig" data-xt="oui" style="margin-bottom:8px">➕ Oui</button><button class="btn lvBig lvGrey" id="mcDone">Non → Commande suivante</button>';
+  if (live) {
+    const q = qtyTxt(live).replace(' · ', ' + '), m = money(live.montant || 0) + ' ' + (live.mode === 'cry' ? 'crypto' : 'EMT');
+    if (live.statut === 'attente') return done + '<div class="lvPay lvWait" style="margin-top:8px">⏳ Extra ' + esc(q) + ' · ' + m + '<small>Attends le dispatch… ne donne rien encore' + (live.essai > 1 ? ' · ' + live.essai + 'e demande' : '') + '</small></div><button class="linkbtn" data-xt="annuler" style="display:block;margin:8px auto">Annuler l’extra</button>';
+    if (live.statut === 'non') return done + '<div class="lvPay" style="margin-top:8px;background:#3f1d1d;border-color:#7f1d1d;color:#fecaca">❌ Pas reçu · ' + esc(q) + ' · ' + m + '<small>Quand le client dit « envoyé » :</small></div><button class="btn lvBig" data-xt="redemander" style="margin-top:8px">🔁 Redemander</button><button class="linkbtn" data-xt="annuler" style="display:block;margin:8px auto">Annuler l’extra</button>';
+    return done + '<div class="lvPay lvDone" style="margin-top:8px">✅ ' + (live.mode === 'cry' ? 'Crypto' : 'EMT') + ' reçu — tu peux donner ' + esc(q) + '<small>enregistrement…</small></div>';
+  }
+  if (XT.open && XT.cid === c.id) {
+    const left = xtLeft(c), tot = xtTot(XT.L, XT.XL);
+    const ctr = (k) => '<div class="lvCtr"><button data-xt="q|' + k + '|-1">−</button><div><span>' + XT[k] + '</span> ' + k + '</div><button data-xt="q|' + k + '|1"' + (XT[k] >= left[k] ? ' style="opacity:.3"' : '') + '>+</button></div>';
+    const seg = '<div class="seg" style="margin:8px 0">' + [['cash', '💵 Cash'], ['int', '🟡 EMT'], ['cry', '🟣 Crypto']].map((x) => '<button data-xt="m|' + x[0] + '" class="' + (XT.mode === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>';
+    return '<div class="lvQ" style="margin-top:8px">Extra pour ' + esc(c.client) + '</div>' + ctr('L') + ctr('XL') +
+      '<div class="small" style="text-align:center">Sur toi (sans cette commande) : ' + left.L + ' L · ' + left.XL + ' XL</div><div class="lvPrice">Prix<b>' + (XT.L + XT.XL ? money(tot) : '—') + '</b></div>' + seg +
+      '<div class="err" style="text-align:center">' + esc(XT.err) + '</div>' +
+      '<button class="btn lvBig ok" data-xt="go"' + (XT.L + XT.XL && !XT.busy ? '' : ' disabled') + '>' + (XT.busy ? '…' : XT.mode === 'cash' ? '💵 ' + money(tot) + ' cash reçu — enregistrer' : 'Demander au dispatch') + '</button>' +
+      '<button class="linkbtn" data-xt="fermer" style="display:block;margin:8px auto">Fermer</button>';
+  }
+  return done + ask(XT.ok && XT.cid === c.id ? 'Le client veut encore autre chose ?' : 'Le client veut autre chose ?');
+}
+// Écrit la vente de l'extra (comme « Ajouter une vente »). id fixe pour un extra EMT/crypto accepté (x + id) : jamais 2 fois.
+async function xtVente(o) {
+  const s = mySoiree; if (!s || s.statut !== 'ouverte') throw new Error('Ta soirée doit être ouverte.');
+  const tot = xtTot(o.L, o.XL), cash = o.mode === 'cash';
+  const ref = o.xid ? doc(db, 'commandes', 'x' + o.xid) : doc(collection(db, 'commandes')), b = writeBatch(db);
+  b.set(ref, Object.assign({ client: String(o.client || 'Client').slice(0, 60), adresse: '', L: o.L, XL: o.XL, frais: 0, encaisser: cash ? tot : 0, paieMode: o.mode, crypto: null, paye: !cash, bloque: false,
+    livreur: me.mid, livreurNom: me.nom, statut: 'livree', livreeLe: serverTimestamp(), creeLe: serverTimestamp(), cashRecu: cash ? tot : 0, soiree: s.id, vente: true, venteJour: dayKey(soirStart()), nonRecu: false },
+    o.xid ? { extra: o.xid } : {}, o.emtRef ? { emtRef: o.emtRef } : {}, { extraDe: o.cid, paie: 0 })); // même livraison : pas de paye en plus
+  b.set(doc(db, 'stocks', me.mid), { L: increment(-o.L), XL: increment(-o.XL), cmd: ref.id }, { merge: true });
+  if (o.xid) b.update(doc(db, 'extras', o.xid), { statut: 'fait', venteId: ref.id });
+  await b.commit();
+  notifyDispatch('🛒 ' + me.nom + ' · extra ' + (o.client || '') + ' : ' + qtyTxt(o) + ' · ' + (cash ? tot + ' $ cash' : tot + ' $ ' + (o.mode === 'cry' ? 'crypto' : 'EMT') + ' ✓'));
+}
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest && e.target.closest('[data-xt]'); if (!t || !me) return;
+  const c = myCmds[0]; if (!c) return;
+  const a = t.dataset.xt.split('|'), rr = () => renderSoiree();
+  if (a[0] === 'oui') { Object.assign(XT, { open: true, cid: c.id, L: 0, XL: 0, mode: 'cash', err: '', busy: false }); return rr(); }
+  if (a[0] === 'fermer') { XT.open = false; return rr(); }
+  if (a[0] === 'q') { const left = xtLeft(c), k = a[1]; XT[k] = Math.max(0, Math.min(left[k], XT[k] + Number(a[2]))); XT.err = ''; return rr(); }
+  if (a[0] === 'm') { XT.mode = a[1]; XT.err = ''; return rr(); }
+  const live = XT.list.find((x) => x.cid === c.id && ['attente', 'non'].includes(x.statut));
+  if (a[0] === 'annuler' && live) { try { await deleteDoc(doc(db, 'extras', live.id)); } catch (err) { alertBar(msg(err)); } return; }
+  if (a[0] === 'redemander' && live) { try { await v72Up(doc(db, 'extras', live.id), { statut: 'attente', essai: (live.essai || 1) + 1, le: serverTimestamp() }); notifyDispatch('🔁 ' + me.nom + ' redemande : extra ' + (live.mode === 'cry' ? 'crypto' : 'EMT') + ' ' + money(live.montant || 0) + ' (' + live.client + ')'); } catch (err) { alertBar(msg(err)); } return; }
+  if (a[0] !== 'go' || XT.busy) return;
+  const L = XT.L, XL = XT.XL, left = xtLeft(c);
+  if (!(L + XL > 0)) { XT.err = 'Mets au moins 1 L ou 1 XL.'; return rr(); }
+  if (L > left.L || XL > left.XL) { XT.err = 'Pas assez de stock sur toi.'; return rr(); }
+  XT.busy = true; rr();
+  try {
+    if (XT.mode === 'cash') { await xtVente({ L, XL, mode: 'cash', client: c.client, cid: c.id }); Object.assign(XT, { open: false, ok: 'Extra enregistré : ' + qtyTxt({ L, XL }) + ' · ' + money(xtTot(L, XL)) + ' cash' }); }
+    else {
+      await setDoc(doc(collection(db, 'extras')), { mid: me.mid, nom: me.nom || me.mid, cid: c.id, client: String(c.client || 'Client').slice(0, 60), L, XL, mode: XT.mode, montant: xtTot(L, XL), statut: 'attente', essai: 1, le: serverTimestamp() });
+      notifyDispatch('🟡 ' + me.nom + ' : extra ' + (XT.mode === 'cry' ? 'crypto' : 'EMT') + ' ' + money(xtTot(L, XL)) + ' (' + c.client + ') — reçu ?');
+      XT.open = false;
+    }
+  } catch (err) { XT.err = msg(err); }
+  XT.busy = false; rr();
+});
+// Le livreur : suit ses extras ; accepté → enregistre la vente tout de suite.
+const XT_DONE = {};
+function xtMine(a) {
+  XT.list = a;
+  a.filter((x) => x.statut === 'ok' && !XT_DONE[x.id]).forEach((x) => {
+    XT_DONE[x.id] = 1;
+    xtVente({ L: x.L || 0, XL: x.XL || 0, mode: x.mode, client: x.client, xid: x.id, emtRef: x.emtRef || '', cid: x.cid })
+      .then(() => { Object.assign(XT, { cid: x.cid, ok: 'Extra ' + qtyTxt(x) + ' · ' + money(x.montant || 0) + ' ' + (x.mode === 'cry' ? 'crypto' : 'EMT') + ' reçu — tu peux le donner' }); renderSoiree(); })
+      .catch((err) => { delete XT_DONE[x.id]; alertBar(msg(err)); });
+  });
+  renderSoiree();
+}
+// Wayne + dispatch en service : bloc au milieu de l'écran.
+function xtDraw() {
+  let ov = $('xtOv'); const x = XT.disp[0];
+  if (!x) { if (ov) ov.remove(); return; }
+  if (!ov) { ov = document.createElement('div'); ov.id = 'xtOv'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;padding:16px;z-index:8100'; document.body.appendChild(ov); }
+  if (ov.dataset.k !== x.id + '|' + x.essai) { XT.refTxt = ''; XT.dErr = ''; }
+  ov.dataset.k = x.id + '|' + x.essai;
+  const emt = x.mode !== 'cry';
+  ov.innerHTML = '<div style="background:#1f2937;border:2px solid #f59e0b;border-radius:18px;padding:18px;width:100%;max-width:420px;text-align:center"><div style="font-size:34px">' + (emt ? '🟡' : '🟣') + '</div>' +
+    '<div style="font-size:19px;font-weight:800;margin:4px 0">' + esc(x.nom || nomDe(x.mid)) + ' · extra ' + (emt ? 'EMT' : 'crypto') + ' ' + money(x.montant || 0) + '</div>' +
+    '<div class="small" style="font-size:14px">' + esc(x.client || '') + ' · ' + esc(qtyTxt(x)) + (x.essai > 1 ? ' · <b>' + x.essai + 'e demande</b>' : '') + '</div>' +
+    (emt ? refInput('xtRef', XT.refTxt) : '') + '<div class="err">' + esc(XT.dErr) + '</div>' +
+    '<button class="btn ok big" id="xtOk" style="margin-top:8px"' + (XT.dBusy ? ' disabled' : '') + '>✅ Reçu</button><button class="btn red" id="xtNo" style="margin-top:8px"' + (XT.dBusy ? ' disabled' : '') + '>❌ Pas reçu</button>' +
+    (XT.disp.length > 1 ? '<div class="small" style="margin-top:8px">+ ' + (XT.disp.length - 1) + ' autre(s)</div>' : '') + '</div>';
+  if ($('xtRef')) $('xtRef').oninput = (e) => { XT.refTxt = e.target.value; };
+  const rep = async (ok) => {
+    XT.dErr = ''; XT.dBusy = true; xtDraw();
+    try {
+      const up = { statut: ok ? 'ok' : 'non', repPar: myMid(), repNom: me.nom || OWNER, repLe: serverTimestamp() }, b = writeBatch(db);
+      if (ok && emt) {
+        const R = normRef($('xtRef') ? $('xtRef').value : XT.refTxt); const bad = await refCheck(R); if (bad) throw new Error(bad);
+        up.emtRef = R; refSet(b, R, { id: 'x' + x.id, client: x.client, livreur: x.mid, livreurNom: x.nom });
+      }
+      b.update(doc(db, 'extras', x.id), up); await b.commit();
+    } catch (e) { XT.dErr = /permission/i.test(String(e && e.message)) ? 'Quelqu’un a déjà répondu.' : String(e && e.message || e).replace(/^⛔\s*/, ''); }
+    XT.dBusy = false; xtDraw();
+  };
+  $('xtOk').onclick = () => rep(true); $('xtNo').onclick = () => rep(false);
+}
+function startV78() {
+  if (!me) return;
+  if (isOwner() || isStaff()) stops.push(onSnapshot(query(collection(db, 'extras'), where('statut', '==', 'attente')), (qs) => {
+    const a = []; qs.forEach((d) => { const x = Object.assign({ id: d.id }, d.data()); if (!hidDoc(x)) a.push(x); });
+    a.sort((p, q) => tsMs(p.le) - tsMs(q.le)); XT.disp = (isOwner() || isStaff()) ? a : []; xtDraw();
+  }, (e) => console.warn('v78', e)));
+  if (!isOwner()) stops.push(onSnapshot(query(collection(db, 'extras'), where('mid', '==', me.mid)), (qs) => {
+    const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); xtMine(a);
+  }, (e) => console.warn('v78m', e)));
 }
