@@ -809,7 +809,8 @@ function planOf(list) {
   const out = []; let t = null;
   list.forEach((c, i) => {
     if (c.statut === 'ici') { t = tsMs(c.iciLe); out.push(t); t += SUR_PLACE * 60000; return; }
-    if (i === 0) t = tsMs(c.depart) + MARGE1 * 60000;
+    // v83 : 1re commande — en route : depuis le départ réel ; pas encore parti : « s'il part maintenant ».
+    if (i === 0) t = c.enRouteLe ? tsMs(c.enRouteLe) : c.statut === 'assignee' ? Math.max(tsMs(c.depart) + MARGE1 * 60000, Date.now()) : tsMs(c.depart) + MARGE1 * 60000;
     else t += MARGE * 60000;
     t += ((c.trajet || 15) + (c.retard || 0)) * 60000;
     out.push(t); t += SUR_PLACE * 60000;
@@ -1322,7 +1323,7 @@ function myOrdersHtml(s) {
     '<p class="small" style="margin-bottom:0">Départ : ' + esc(s.adresse || '') + '</p></details>';
   if (!myCmds.length) return '<div class="card center" style="padding:28px 14px"><div style="font-size:38px">🌙</div><div style="font-size:18px;font-weight:700;margin:8px 0 4px">Pas de commande pour l’instant</div><div class="small">Le dispatch t’en enverra une ici.</div></div>' + soir + venteHtml(s) + finCard(s);
   const c = myCmds[0];
-  if (lv.for !== c.id) { const x = lvLoad(c.id); Object.assign(lv, { for: c.id, panel: null, step: 'cmd', L: c.L || 0, XL: c.XL || 0, pay: '', p: null, cashOk: false, ok: false, err: '', busy: false, waitDig: false }, x || {}); }
+  if (lv.for !== c.id) { const x = lvLoad(c.id); Object.assign(lv, { for: c.id, tOk: false, panel: null, step: 'cmd', L: c.L || 0, XL: c.XL || 0, pay: '', p: null, cashOk: false, ok: false, err: '', busy: false, waitDig: false }, x || {}); }
   const dp = c.demandePaie;
   // Le dispatch vient de répondre à l'EMT / crypto ?
   if (dp) lv.waitDig = true;
@@ -1332,8 +1333,13 @@ function myOrdersHtml(s) {
   const more = '<div class="lvMore"><button class="linkbtn" id="lvMore">⋯ Autre</button></div>' + lvPanel(c);
   let h = '<div class="card now lvFull">' + top;
   if (c.statut !== 'ici' && !c.enRouteLe) {
-    h += '<div class="lvLbl">Nouvelle commande</div>' + addr + '<div class="lvGrow"></div><div class="lvCmd"><div class="lvCmdT">📦 Commande</div><div class="lvTiles"><div><b>' + (c.L || 0) + '</b><span>L</span></div><div><b>' + (c.XL || 0) + '</b><span>XL</span></div></div></div><div class="lvGrow"></div>' +
-      '<div class="err" id="mcErr"></div><button class="btn lvBig lvGo" id="lvRoute">🚗 Je suis en route</button>' + more;
+    // v83 : heure choisie par le livreur AVANT de partir (+5 / −5), case « Temps bien calculé ? », puis « en route ».
+    const r0 = c.retard || 0;
+    h += '<div class="lvLbl">Nouvelle commande</div>' + addr + '<div class="lvCmdLine" style="margin-top:6px">📦 Commande : <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div><div class="lvGrow"></div>' +
+      '<div class="lvEta" style="font-size:44px"><small style="display:block;margin:0 0 2px">Si tu pars maintenant, arrivée vers</small><span id="lvEta0">' + hm(plan[0]) + '</span><small>trajet ' + (c.trajet || 15) + ' min' + (r0 ? ' · <b style="color:' + (r0 < 0 ? '#4ade80">−' + (-r0) : '#fbbf24">+' + r0) + ' min</b> (ton choix)' : '') + '</small></div>' +
+      '<div class="lvTwo"><button class="btn lvBig lvGrey" id="mcEarly">⏱ −5 min</button><button class="btn lvBig lvGrey" id="mcLate">⏱ +5 min</button></div>' +
+      '<label class="v83ok" style="display:flex;align-items:center;gap:10px;padding:12px;margin:8px 0;border:1px solid ' + (lv.tOk ? '#16a34a' : '#334155') + ';border-radius:12px;font-size:17px;font-weight:700;cursor:pointer"><input type="checkbox" id="lvTok" style="width:24px;height:24px"' + (lv.tOk ? ' checked' : '') + '> Temps bien calculé ?</label>' +
+      '<div class="err" id="mcErr"></div><button class="btn lvBig lvGo" id="lvRoute"' + (lv.tOk ? '' : ' disabled style="opacity:.45"') + '>🚗 Je suis en route</button>' + more;
   } else if (c.statut !== 'ici') {
     h += '<span class="lvState">🚗 En route</span>' + addr + '<div class="lvGrow"></div><div class="lvEta">' + hm(plan[0]) + '<small>arrivée prévue' + (c.retard ? ' · <b style="color:' + (c.retard < 0 ? '#4ade80">−' + (-c.retard) : '#fbbf24">+' + c.retard) + ' min</b>' : '') + '</small></div><div class="lvGrow"></div>' +
       '<div class="lvCmdLine">📦 Commande : <b>' + esc(qtyTxt(c).replace(' · ', ' + ')) + '</b></div><div class="err" id="mcErr"></div>' +
@@ -1389,11 +1395,17 @@ function bindMyOrders(s) {
   document.querySelectorAll('#soiree [data-lp]').forEach((b) => { b.onclick = () => { lv.panel = null; renderSoiree(); }; });
   document.querySelectorAll('#soiree [data-lm]').forEach((b) => { b.onclick = () => { lv.panel = null; const t = b.dataset.lm === 'rep' ? c.client + ' répond pas à la porte' : 'Je ne peux pas livrer ' + c.client; act(() => sendMsg(me.mid, 'livreur', t)); }; });
   // 1 → 2
-  if ($('lvRoute')) $('lvRoute').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { enRouteLe: serverTimestamp() }).commit().then(() => notifyDispatch('🚗 ' + me.nom + ' est en route chez ' + c.client)));
+  // v83 : l'heure part avec « en route » : maintenant + trajet + son choix (même lot → le site reçoit la bonne heure).
+  if ($('lvTok')) $('lvTok').onchange = (e) => { lv.tOk = e.target.checked; renderSoiree(); };
+  clearInterval(window.__v83T); if ($('lvEta0')) window.__v83T = setInterval(() => { const el = $('lvEta0'); if (!el) return clearInterval(window.__v83T); el.textContent = hm(planOf(myCmds)[0]); }, 20000);
+  const v83Eta = (dr) => { const p = planOf(myCmds)[0] || Date.now(); return Math.round(p + dr * 60000); };
+  const v83Up = (b, eta) => { if (c.suivi) { b.update(doc(db, 'suivi', c.suivi), { eta, statut: 'assignee' }); etaSent[c.id] = eta; } };
+  if ($('lvRoute')) $('lvRoute').onclick = () => { if (!lv.tOk) { if ($('mcErr')) $('mcErr').textContent = 'Coche « Temps bien calculé ? » d’abord.'; return; }
+    act(() => { const b = writeBatch(db), eta = Math.round(Date.now() + ((c.trajet || 15) + (c.retard || 0)) * 60000); b.update(doc(db, 'commandes', c.id), { enRouteLe: serverTimestamp() }); v83Up(b, eta); return b.commit().then(() => notifyDispatch('🚗 ' + me.nom + ' est en route chez ' + c.client)); }); };
   // 2 : +5 min (le dispatch voit juste la nouvelle heure) · arrivé (le dispatch est averti)
   // v66 : −5 min (il arrive plus tôt) — jamais avant maintenant
-  if ($('mcEarly')) $('mcEarly').onclick = () => { const eta = planOf(myCmds)[0] || 0; if (eta - 5 * 60000 < Date.now()) { if ($('mcErr')) $('mcErr').textContent = 'L’heure d’arrivée ne peut pas être avant maintenant.'; return; } act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) - 5 }).commit()); };
-  if ($('mcLate')) $('mcLate').onclick = () => act(() => writeBatch(db).update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }).commit());
+  if ($('mcEarly')) $('mcEarly').onclick = () => { const eta = planOf(myCmds)[0] || 0; if (eta - 5 * 60000 < Date.now()) { if ($('mcErr')) $('mcErr').textContent = 'L’heure d’arrivée ne peut pas être avant maintenant.'; return; } act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) - 5 }); v83Up(b, v83Eta(-5)); return b.commit(); }); };
+  if ($('mcLate')) $('mcLate').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { retard: (c.retard || 0) + 5 }); v83Up(b, v83Eta(5)); return b.commit(); });
   if ($('mcHere')) $('mcHere').onclick = () => act(() => { const b = writeBatch(db); b.update(doc(db, 'commandes', c.id), { statut: 'ici', iciLe: serverTimestamp() }); if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { statut: 'ici' }); return b.commit().then(() => notifyDispatch('📍 ' + me.nom + ' est arrivé chez ' + c.client)); });
   // 3 : la commande
   document.querySelectorAll('#soiree [data-lq]').forEach((b) => { b.onclick = () => {
@@ -4198,7 +4210,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 82;
+const APP_V = 83;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
