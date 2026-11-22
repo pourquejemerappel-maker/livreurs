@@ -24,9 +24,10 @@
   .sys{background:#e9f8ef;color:#167a43;font-weight:700}
   .t{font-size:11px;opacity:.6;margin-top:3px}
   .quick{display:flex;gap:8px;margin-bottom:8px}
-  .quick button{flex:1 1 45%;padding:12px 6px;border-radius:12px;border:1px solid #ddd;background:#f2f2f5;font-weight:700;font-size:15px;color:#111;font-family:inherit}
+  .quick button{padding:9px 12px!important;font-size:14px!important}
+  .quick button{flex:1 1 0;white-space:nowrap;padding:12px 6px;border-radius:12px;border:1px solid #ddd;background:#f2f2f5;font-weight:700;font-size:15px;color:#111;font-family:inherit}
   .row{display:flex;gap:8px}
-  .row input{flex:1;padding:12px;border-radius:12px;border:1px solid #ddd;font-size:16px;font-family:inherit;outline:none}
+  .row input{flex:1;min-width:0;padding:12px;border-radius:12px;border:1px solid #ddd;font-size:16px;font-family:inherit;outline:none}
   .row button,.row label{padding:0 14px;border-radius:12px;border:none;background:#2f6fed;color:#fff;font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;font-family:inherit;cursor:pointer}
   .row label{background:#e9e9ee;color:#111;font-size:20px}
   .hide{display:none!important}
@@ -44,7 +45,7 @@
   <div class="card hide" id="chat">
     <div class="small" style="margin-bottom:4px">Messages avec ton livreur <span style="opacity:.7">(ton numéro reste privé)</span></div>
     <div class="feed" id="feed"></div>
-    <div id="write"><div class="quick" style="margin-top:8px;flex-wrap:wrap"><button data-q="👍 J’arrive">👍 J’arrive</button><button data-q="📦 Laisse-le à la porte">📦 Laisse-le à la porte</button><button data-pre="🔔 Sonne au ">🔔 Sonne au…</button><button data-q="⏳ En retard 5 min">⏳ En retard 5 min</button></div>
+    <div id="write"><div class="quick" style="margin-top:8px"><button data-q="👍 J’arrive">👍 J’arrive</button><button data-q="⏳ J’arrive dans 2 minutes">⏳ J’arrive dans 2 minutes</button></div>
     <div class="row"><input id="txt" maxlength="300" placeholder="Écris au livreur…"><label title="Photo">📷<input type="file" id="pic" accept="image/*" class="hide"></label><button id="send">➤</button></div></div>
     <div class="err" id="err"></div>
   </div>
@@ -102,8 +103,9 @@ function paint(d) {
   } else { $('eta').textContent = 'Reçue'; $('stat').textContent = 'Ta commande est reçue, on te trouve un livreur.'; $('prog').style.width = '10%'; }
 }
 
+let nMsg = 0;
 onSnapshot(query(collection(db, 'suivi', tok, 'msgs'), orderBy('le', 'asc'), limit(60)), (qs) => {
-  const box = $('feed'); const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const box = $('feed'); let n0 = 0; qs.forEach(() => { n0++; }); const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30 || n0 > nMsg; nMsg = n0; // v81 : un nouveau message se montre toujours
   let h = '';
   qs.forEach((m) => {
     const d = m.data(); const t = d.le && d.le.toDate ? d.le.toDate() : new Date();
@@ -112,7 +114,7 @@ onSnapshot(query(collection(db, 'suivi', tok, 'msgs'), orderBy('le', 'asc'), lim
     h += '<div class="m ' + cls + '">' + esc(d.txt || '') + (d.img ? '<img src="' + esc(d.img) + '" alt="photo">' : '') + '<div class="t">' + (d.de === 'client' ? 'Toi' : 'Livreur') + ' · ' + t.getHours() + ':' + String(t.getMinutes()).padStart(2, '0') + '</div></div>';
   });
   box.innerHTML = h || '<div class="small">Ton livreur peut t’écrire ici quand il arrive.</div>';
-  if (atEnd || porteVue) box.scrollTop = box.scrollHeight;
+  if (atEnd || porteVue) { box.scrollTop = box.scrollHeight; requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; }); }
   if (laisse && porteVue && last && !last.photoVue && !vueEnv) marqueVue();
 }, () => {});
 let porteVue = false, vueEnv = false;
