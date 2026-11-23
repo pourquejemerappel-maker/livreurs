@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#06140f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ottawa">
+<link rel="apple-touch-icon" href="icon-180.png?v=2">
+<title>Ottawa</title>
+<!-- Ottawa : interface séparée de Gotham, seulement pour Wayne et le livreur d'Ottawa (Fafa).
+     Une vente = un toucher (P ou L) ; Wayne voit seulement SA part (P 35 $, L 115 $) et le stock. -->
+<style>
+  :root{--bg:#06140f;--card:#0d1f18;--card2:#132a21;--line:#1f3b30;--text:#eefcf5;--muted:#8fb3a3;--green:#22c55e;--gold:#fbbf24;--red:#f87171}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif}
+  body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  .wrap{max-width:480px;margin:0 auto;padding:16px 14px 50px}
+  .hd{display:flex;align-items:center;gap:10px;margin-bottom:14px}.hd .ic{width:42px;height:42px;border-radius:12px;background:#064e3b;display:flex;align-items:center;justify-content:center;font-size:22px}
+  .hd small{display:block;color:var(--muted);font-size:11px;letter-spacing:.14em}.hd b{font-size:18px}.hd .out{margin-left:auto;background:none;color:var(--muted);text-decoration:underline;font-size:13px;padding:6px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px}
+  .c{text-align:center}.sm{color:var(--muted);font-size:13px}.big{font-size:42px;font-weight:800;line-height:1.1}.gold{color:var(--gold)}.grn{color:var(--green)}.red{color:var(--red)}
+  .two{display:flex;gap:10px}.two>*{flex:1}
+  .stk{display:flex;justify-content:center;gap:38px;margin-top:6px}.stk span{display:block;color:var(--muted);font-size:14px}
+  input{width:100%;background:var(--card2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:13px;font-size:17px;font-family:inherit;outline:none;margin:4px 0 8px}
+  button{font-family:inherit;cursor:pointer;border:none;border-radius:14px;font-weight:800;color:var(--text);background:#1e3a2f;padding:14px;font-size:16px;width:100%}
+  button:disabled{opacity:.35}
+  .go{background:var(--green);color:#03150c}.sell{padding:26px 0;font-size:21px}.ghost{background:none;border:1px solid var(--line)}
+  .link{background:none;color:var(--muted);text-decoration:underline;font-weight:600;font-size:14px;padding:8px;width:auto}
+  .row{display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid var(--line);font-size:15px}.row:first-of-type{border-top:0}
+  .err{color:var(--red);font-size:14px;min-height:18px;margin:4px 0}
+  .ctr{display:flex;align-items:center;justify-content:space-between;margin:12px 0}.ctr b{font-size:22px}.ctr div{display:flex;align-items:center;gap:12px}
+  .ctr button{width:56px;padding:12px 0;font-size:22px}.ctr .n{font-size:32px;font-weight:800;width:48px;text-align:center}
+  .warn{border-color:#a16207;background:#1c1606}.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="card c sm" style="margin-top:40px">Chargement…</div></div>
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, onSnapshot, serverTimestamp, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey: '',
+  authDomain: 'livreurs-app-6dafd.firebaseapp.com',
+  projectId: 'livreurs-app-6dafd',
+  storageBucket: 'livreurs-app-6dafd.firebasestorage.app',
+  messagingSenderId: '279678565038',
+  appId: '1:279678565038:web:d1155d66ea0abaee450b3f'
+};
+// La clé publique du projet est lue dans app.js (même site) : elle n'est écrite qu'à un seul endroit.
+try { const t = await (await fetch('app.js')).text(); const k = t.match(/apiKey:\s*'([^']+)'/); if (k) firebaseConfig.apiKey = k[1]; } catch (e) {}
+const app = initializeApp(firebaseConfig), auth = getAuth(app), db = getFirestore(app);
+const DOM = '@livreurs-app-6dafd.firebaseapp.com';
+const slug = (n) => String(n || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '');
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (n) => (Math.round(n * 100) / 100).toLocaleString('fr-CA') + ' $';
+const ms = (t) => (t && t.toMillis ? t.toMillis() : typeof t === 'number' ? t : Date.now());
+const hm = (t) => new Date(t).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' });
+const jourDe = (t) => { const d = new Date(t); if (d.getHours() < 6) d.setDate(d.getDate() - 1); d.setHours(6, 0, 0, 0); return d.getTime(); };
+const jourTxt = (k) => new Date(k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' });
+const errTxt = (e) => { const c = (e && e.code) || ''; if (/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)) return 'Nom ou mot de passe incorrect.'; if (/too-many/.test(c)) return 'Trop d’essais. Réessaie plus tard.'; if (/weak-password/.test(c)) return 'Mot de passe : 6 caractères au moins.'; if (/email-already/.test(c)) return 'Ce compte existe déjà.'; if (/permission/.test(c)) return 'Pas la permission.'; return (e && e.message) || String(e); };
+
+const S = { role: null, nom: '', conf: { partP: 35, partL: 115 }, ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, err: '', busy: false, form: null, open: {} };
+let stops = [];
+const stopAll = () => { stops.forEach((f) => { try { f(); } catch (e) {} }); stops = []; };
+
+// ---------- calculs ----------
+function calc() {
+  const v = S.ventes.filter((x) => !x.annulee), P = (a, k) => a.reduce((s, x) => s + (Number(x[k]) || 0), 0);
+  const stockP = P(S.dons, 'P') - P(v, 'P'), stockL = P(S.dons, 'L') - P(v, 'L');
+  const rok = S.remises.filter((r) => r.statut === 'recue').reduce((a, r) => a + (r.montantDit != null ? Number(r.montantDit) : Number(r.montant)) || 0, 0);
+  const att = S.remises.filter((r) => r.statut === 'attente').reduce((a, r) => a + (Number(r.montant) || 0), 0);
+  const part = P(v, 'part'), recu = P(S.recus, 'montant') + rok;
+  const today = jourDe(Date.now()), vt = v.filter((x) => jourDe(ms(x.le)) === today), all = S.ventes.filter((x) => jourDe(ms(x.le)) === today);
+  return { stockP, stockL, du: part - recu, att, part, recu, today: all, tP: P(vt, 'P'), tL: P(vt, 'L'), tPart: P(vt, 'part') };
+}
+
+// ---------- écrans ----------
+function draw() {
+  const box = $('app');
+  if (!S.role) return;
+  if (S.role === 'login') return drawLogin(box);
+  if (S.role === 'aucun') { box.innerHTML = head('Ottawa') + '<div class="card c">Ce compte n’a pas accès à Ottawa.</div>'; return bindHead(); }
+  if (S.role === 'fafa') drawFafa(box); else drawWayne(box);
+  bindHead();
+}
+const head = (t) => '<div class="hd"><div class="ic">🍁</div><div><small>OTTAWA</small><b>' + esc(t) + '</b></div><button class="out" id="out">Sortir</button></div>';
+function bindHead() { if ($('out')) $('out').onclick = () => { stopAll(); signOut(auth); }; }
+
+function drawLogin(box) {
+  box.innerHTML = '<div class="hd"><div class="ic">🍁</div><div><small>OTTAWA</small><b>Connexion</b></div></div><div class="card"><div class="sm">Nom</div><input id="lN" autocomplete="username" autocapitalize="none"><div class="sm">Mot de passe</div><input id="lP" type="password" autocomplete="current-password"><div class="err">' + esc(S.err) + '</div><button class="go" id="lGo">Entrer</button></div>';
+  $('lGo').onclick = async () => {
+    const n = slug($('lN').value), p = $('lP').value; if (!n || !p) return;
+    $('lGo').disabled = true; S.err = '';
+    try { await signInWithEmailAndPassword(auth, 'ottawa.' + n + DOM, p); }
+    catch (e) { try { await signInWithEmailAndPassword(auth, n + DOM, p); } catch (e2) { S.err = errTxt(e); draw(); } }
+  };
+}
+
+function drawFafa(box) {
+  const k = calc(), dem = S.conf.compteDemande && (!S.comptes.length || ms(S.comptes[S.comptes.length - 1].le) < ms(S.conf.compteDemande));
+  let h = head('Bonjour ' + S.nom);
+  if (dem) h += '<div class="card warn c"><b class="gold">🔢 Wayne te demande de compter ton stock</b></div>';
+  if (S.cnt) return drawCount(box, h, k);
+  h += '<div class="card c"><div class="sm">📦 Mon stock</div><div class="stk"><div><div class="big">' + k.stockP + '</div><span>P</span></div><div><div class="big">' + k.stockL + '</div><span>L</span></div></div></div>';
+  h += '<div class="two"><button class="go sell" id="vP"' + (k.stockP < 1 || S.busy ? ' disabled' : '') + '>➕ 1 P vendue</button><button class="go sell" id="vL"' + (k.stockL < 1 || S.busy ? ' disabled' : '') + '>➕ 1 L vendue</button></div>';
+  h += '<div class="err c">' + esc(S.err) + '</div>';
+  h += '<div class="card c" style="margin-top:6px"><div class="sm">À remettre à Wayne (tout ce qui s’accumule)</div><div class="big gold" style="font-size:34px">' + money(Math.max(0, k.du)) + '</div>';
+  S.remises.filter((r) => Date.now() - ms(r.le) < 3 * 86400000).slice(-3).forEach((r) => {
+    h += '<div class="sm grn" style="margin-top:6px">✅ ' + money(r.montant) + ' donné à Wayne · ' + jourTxt(jourDe(ms(r.le))) + ' ' + hm(ms(r.le)) + '</div>'; });
+  if (S.give) h += '<div style="text-align:left;margin-top:10px"><div class="sm">Montant donné à Wayne ($)</div><input id="gM" type="number" inputmode="decimal" value="' + esc(S.give.m) + '"><div class="two"><button class="ghost" id="gX">Retour</button><button class="go" id="gGo">Donné</button></div></div>';
+  else if (k.du > 0) h += '<button class="go" id="gOpen" style="margin-top:10px">💵 Donner de l’argent à Wayne</button>';
+  h += '</div>';
+  h += '<button class="ghost" id="cnt">📦 Compter mon stock</button>';
+  // Ses ventes (7 derniers jours) : toucher → changer P/L ou annuler (remet au stock). Il ne peut jamais changer le stock donné.
+  const mine = S.ventes.filter((x) => x.par === auth.currentUser.uid && true).slice(-40).reverse();
+  if (mine.length) h += '<div class="card" style="margin-top:12px"><b>Mes ventes</b><div class="sm" style="margin-bottom:4px">Touche une vente pour la changer.</div>' + mine.map((x) => {
+    const t = x.P ? 'P' : 'L', o = t === 'P' ? 'L' : 'P', when = (jourDe(ms(x.le)) === jourDe(Date.now()) ? '' : jourTxt(jourDe(ms(x.le))) + ' · ') + hm(ms(x.le));
+    if (x.annulee) return '<div class="row" style="opacity:.7"><span><s>' + when + '</s></span><span><s>1 ' + t + '</s> <span class="red">annulée ' + hm(ms(x.annuleLe)) + ' · remise au stock</span></span></div>';
+    if (S.open.v === x.id) return '<div style="background:var(--card2);border-radius:12px;padding:10px;margin:4px 0"><div class="row" style="border:0"><b>' + when + '</b><b>1 ' + t + '</b></div><div class="two"><button class="ghost" data-mod="chg|' + x.id + '"' + ((o === 'P' ? k.stockP : k.stockL) < 1 ? ' disabled' : '') + '>✏️ Changer en ' + o + '</button><button class="ghost red" data-mod="ann|' + x.id + '">❌ Annuler</button></div><div class="sm c" style="margin-top:6px">Annuler remet 1 ' + t + ' dans ton stock.</div></div>';
+    return '<div class="row" data-op="' + x.id + '" style="cursor:pointer"><span>' + when + '</span><span>1 ' + t + ' ›</span></div>';
+  }).join('') + '</div>';
+  box.innerHTML = h;
+  const sell = async (t) => {
+    if (S.busy) return; S.busy = true; S.err = ''; draw();
+    try { await setDoc(doc(collection(db, 'ot_ventes')), { par: auth.currentUser.uid, nom: S.nom, P: t === 'P' ? 1 : 0, L: t === 'L' ? 1 : 0, part: t === 'P' ? S.conf.partP : S.conf.partL, le: serverTimestamp() }); if (navigator.vibrate) navigator.vibrate(60); }
+    catch (e) { S.err = errTxt(e); }
+    S.busy = false; draw();
+  };
+  if ($('vP')) $('vP').onclick = () => sell('P');
+  if ($('vL')) $('vL').onclick = () => sell('L');
+  box.querySelectorAll('[data-op]').forEach((el) => { el.onclick = () => { S.open.v = S.open.v === el.dataset.op ? null : el.dataset.op; draw(); }; });
+  box.querySelectorAll('[data-mod]').forEach((el) => { el.onclick = async () => {
+    const [m, id] = el.dataset.mod.split('|'), x = S.ventes.find((y) => y.id === id); if (!x || S.busy) return;
+    const t = x.P ? 'P' : 'L', o = t === 'P' ? 'L' : 'P', modifs = (x.modifs || []).concat([{ le: Date.now(), type: m === 'ann' ? 'annule' : 'chg', de: t, a: m === 'ann' ? '' : o }]);
+    const up = m === 'ann' ? { annulee: true, annuleLe: Date.now(), modifs } : { P: o === 'P' ? 1 : 0, L: o === 'L' ? 1 : 0, part: o === 'P' ? S.conf.partP : S.conf.partL, modifs };
+    S.busy = true; el.disabled = true;
+    try { await setDoc(doc(db, 'ot_ventes', id), up, { merge: true }); S.open.v = null; S.err = ''; } catch (e) { S.err = errTxt(e); }
+    S.busy = false; draw();
+  }; });
+  if ($('gOpen')) $('gOpen').onclick = () => { S.give = { m: '' }; draw(); };
+  if ($('gX')) $('gX').onclick = () => { S.give = null; draw(); };
+  if ($('gM')) $('gM').oninput = (e) => { S.give.m = e.target.value; };
+  if ($('gGo')) $('gGo').onclick = async () => {
+    const m = Math.round(Number(S.give.m) * 100) / 100; if (!(m > 0 && m <= 100000)) { S.err = 'Montant invalide.'; return draw(); }
+    $('gGo').disabled = true;
+    try { await setDoc(doc(collection(db, 'ot_remises')), { par: auth.currentUser.uid, nom: S.nom, montant: m, statut: 'recue', le: serverTimestamp() }); S.give = null; S.err = ''; } catch (e) { S.err = errTxt(e); }
+    draw();
+  };
+  $('cnt').onclick = () => { S.cnt = { P: Math.max(0, k.stockP), L: Math.max(0, k.stockL) }; draw(); };
+}
+function drawCount(box, h, k) {
+  h += '<div class="card"><b style="font-size:18px">Combien tu en as vraiment ?</b><div class="sm">Compte ce que tu as dans les mains.</div>' +
+    ['P', 'L'].map((t) => '<div class="ctr"><b>' + t + '</b><div><button data-c="' + t + '|-1">−</button><span class="n">' + S.cnt[t] + '</span><button data-c="' + t + '|1">+</button></div></div>').join('') +
+    '<div class="err">' + esc(S.err) + '</div><button class="go" id="cGo">✅ Envoyer le compte</button><div class="c"><button class="link" id="cX">Retour</button></div></div>';
+  box.innerHTML = h;
+  box.querySelectorAll('[data-c]').forEach((b) => { b.onclick = () => { const [t, d] = b.dataset.c.split('|'); S.cnt[t] = Math.max(0, S.cnt[t] + Number(d)); draw(); }; });
+  $('cX').onclick = () => { S.cnt = null; draw(); };
+  $('cGo').onclick = async () => {
+    $('cGo').disabled = true;
+    try { await setDoc(doc(collection(db, 'ot_comptes')), { par: auth.currentUser.uid, nom: S.nom, P: S.cnt.P, L: S.cnt.L, appP: k.stockP, appL: k.stockL, le: serverTimestamp() }); S.cnt = null; S.err = ''; }
+    catch (e) { S.err = errTxt(e); }
+    draw();
+  };
+}
+
+function drawWayne(box) {
+  const k = calc(), f = S.form;
+  let h = head('Ma part');
+  if (!S.users.length) {
+    h += '<div class="card"><b>Créer le compte de Fafa</b><div class="sm" style="margin:6px 0">Nom de connexion : <b>fafa</b>. Choisis son mot de passe (6 caractères au moins) et donne-le-lui toi-même.</div><input id="uP" type="password" autocomplete="new-password" placeholder="Mot de passe de Fafa"><div class="err">' + esc(S.err) + '</div><button class="go" id="uGo">Créer</button></div>';
+    box.innerHTML = h;
+    $('uGo').onclick = async () => {
+      const p = $('uP').value; if (p.length < 6) { S.err = 'Mot de passe : 6 caractères au moins.'; return draw(); }
+      $('uGo').disabled = true;
+      try {
+        const a2 = initializeApp(firebaseConfig, 'ot2-' + Date.now()), au2 = initializeAuth(a2, { persistence: inMemoryPersistence });
+        const cr = await createUserWithEmailAndPassword(au2, 'ottawa.fafa' + DOM, p); await signOut(au2);
+        await setDoc(doc(db, 'ot_users', cr.user.uid), { nom: 'Fafa', actif: true, le: serverTimestamp() }); S.err = '';
+      } catch (e) { S.err = errTxt(e); }
+      draw();
+    };
+    return;
+  }
+  // comptes avec différence pas encore vus
+  S.comptes.filter((c) => !c.vu && (c.P !== c.appP || c.L !== c.appL)).forEach((c) => {
+    const d = (a, b) => (a === b ? '<b class="grn">✓</b>' : '<b class="red">' + (a - b > 0 ? '+' : '') + (a - b) + '</b>');
+    h += '<div class="card warn"><b class="gold">🔢 Compte de ' + esc(c.nom || 'Fafa') + ' · ' + jourTxt(ms(c.le)) + ' ' + hm(ms(c.le)) + '</b>' +
+      '<div class="row"><span>P</span><span>app ' + c.appP + ' · compté ' + c.P + '</span>' + d(c.P, c.appP) + '</div><div class="row"><span>L</span><span>app ' + c.appL + ' · compté ' + c.L + '</span>' + d(c.L, c.appL) + '</div>' +
+      '<button class="ghost" data-vu="' + c.id + '" style="margin-top:8px">OK, vu</button></div>';
+  });
+  if (false) S.remises.forEach((r) => {
+    const d = S.form && S.form.t === 'diff' && S.form.id === r.id;
+    h += '<div class="card c" style="border:2px solid var(--green)"><b style="font-size:17px">💵 ' + esc(r.nom || 'Fafa') + ' t’a donné ' + money(r.montant) + '</b><div class="sm">' + jourTxt(jourDe(ms(r.le))) + ' · ' + hm(ms(r.le)) + '</div>' +
+      (d ? '<div style="text-align:left;margin-top:8px"><div class="sm">Montant reçu ($)</div><input id="rD" type="number" inputmode="decimal" value="' + esc(S.form.m) + '"><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" data-rok2="' + r.id + '">Confirmer</button></div></div>'
+        : '<button class="go" style="margin-top:8px" data-rok="' + r.id + '">✅ Reçu</button><div class="two" style="margin-top:6px"><button class="ghost" data-rdf="' + r.id + '">✏️ Montant différent</button><button class="ghost" data-rno="' + r.id + '">❌ Pas reçu</button></div>') + '</div>';
+  });
+  h += '<div class="card c"><div class="sm">💰 Ma part pas encore reçue</div><div class="big gold">' + money(k.du) + '</div><div class="sm">' + money(S.conf.partP) + ' par P · ' + money(S.conf.partL) + ' par L</div>';
+  if (f && f.t === 'recu') h += '<div style="text-align:left;margin-top:10px"><div class="sm">Montant reçu ($)</div><input id="fM" type="number" inputmode="decimal" value="' + esc(f.m) + '"><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Confirmer</button></div></div>';
+  else h += '<button class="go" id="bRecu" style="margin-top:10px">✅ J’ai reçu de l’argent</button>';
+  h += '</div>';
+  h += '<div class="card c"><div class="sm">📦 Stock chez Fafa</div><div class="stk"><div><div class="big">' + k.stockP + '</div><span>P</span></div><div><div class="big">' + k.stockL + '</div><span>L</span></div></div>';
+  if (f && f.t === 'don') h += '<div style="text-align:left;margin-top:10px"><div class="sm">Stock que tu lui donnes (− pour reprendre)</div><div class="two"><div><div class="sm">P</div><input id="dP" type="number" inputmode="numeric" value="' + esc(f.P) + '"></div><div><div class="sm">L</div><input id="dL" type="number" inputmode="numeric" value="' + esc(f.L) + '"></div></div><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Confirmer</button></div></div>';
+  else {
+    const dem = S.conf.compteDemande && (!S.comptes.length || ms(S.comptes[S.comptes.length - 1].le) < ms(S.conf.compteDemande));
+    h += '<div class="two" style="margin-top:10px"><button class="ghost" id="bDon">📦 Donner du stock</button><button class="ghost" id="bDem"' + (dem ? ' disabled' : '') + '>' + (dem ? '⏳ Compte demandé' : '🔢 Demander un compte') + '</button></div>';
+  }
+  h += '</div>';
+  // jour par jour
+  const ev = {}; const add = (t, o) => { const j = jourDe(t); (ev[j] = ev[j] || { P: 0, L: 0, part: 0, recu: [], dons: [], mods: [] }); Object.keys(o).forEach((x) => { if (Array.isArray(ev[j][x])) ev[j][x].push(o[x]); else ev[j][x] += o[x]; }); };
+  S.ventes.forEach((v) => { if (!v.annulee) add(ms(v.le), { P: v.P || 0, L: v.L || 0, part: v.part || 0 }); (v.modifs || []).forEach((m) => add(m.le, { mods: Object.assign({ v }, m) })); });
+  S.recus.forEach((r) => add(ms(r.le), { recu: r }));
+  S.remises.filter((r) => r.statut === 'recue').forEach((r) => add(ms(r.le), { recu: { le: r.le, montant: r.montantDit != null ? r.montantDit : r.montant, fafa: r.nom || 'Fafa' } }));
+  S.dons.forEach((d) => add(ms(d.le), { dons: d }));
+  const js = Object.keys(ev).map(Number).sort((a, b) => b - a).slice(0, 21);
+  h += '<div class="card"><b>Jour par jour</b>' + (js.map((j) => { const e = ev[j]; let r = '';
+    if (e.P || e.L) r += '<div class="row"><span>' + jourTxt(j) + ' · ' + [e.P ? e.P + ' P' : '', e.L ? e.L + ' L' : ''].filter(Boolean).join(' + ') + '</span><b>+' + money(e.part) + '</b></div>';
+    e.recu.forEach((x) => { r += '<div class="row"><span>' + jourTxt(j) + ' · ' + (x.fafa ? esc(x.fafa) + ' t’a donné' : 'reçu') + ' ' + hm(ms(x.le)) + '</span><b class="grn">−' + money(x.montant) + ' ✓</b></div>'; });
+    e.mods.sort((a, b) => a.le - b.le);
+    if (e.mods.length) r += '<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="sm"><b style="color:var(--text)">✏️ Modifications de ' + esc(S.users[0] ? S.users[0].nom : 'Fafa') + '</b></div>' + e.mods.map((m) => '<div class="sm" style="padding:3px 0">' + hm(m.le) + ' · vente de ' + hm(ms(m.v.le)) + (m.type === 'annule' ? ' <b class="red">annulée</b> (1 ' + m.de + ' remise au stock)' : ' changée <b>' + m.de + ' → ' + m.a + '</b>') + '</div>').join('') + '</div>';
+    e.dons.forEach((x) => { r += '<div class="row sm"><span>' + jourTxt(j) + ' · 📦 stock ' + hm(ms(x.le)) + '</span><span>' + [x.P ? (x.P > 0 ? '+' : '') + x.P + ' P' : '', x.L ? (x.L > 0 ? '+' : '') + x.L + ' L' : ''].filter(Boolean).join(' ') + '</span></div>'; });
+    return r; }).join('') || '<div class="sm" style="margin-top:6px">Rien encore.</div>') + '</div>';
+  h += '<div class="c"><button class="link" id="bConf">⚙️ Changer ma part (P ' + money(S.conf.partP) + ' · L ' + money(S.conf.partL) + ')</button></div>';
+  if (f && f.t === 'conf') h += '<div class="card"><div class="two"><div><div class="sm">Ma part par P</div><input id="cP" type="number" inputmode="decimal" value="' + esc(f.P) + '"></div><div><div class="sm">Ma part par L</div><input id="cL" type="number" inputmode="decimal" value="' + esc(f.L) + '"></div></div><div class="sm">Les ventes déjà faites gardent leur montant.</div><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Enregistrer</button></div></div>';
+  box.innerHTML = h;
+  const run = async (fn) => { if (S.busy) return; S.busy = true; try { await fn(); S.form = null; S.err = ''; } catch (e) { S.err = errTxt(e); } S.busy = false; draw(); };
+  const rep = (id, o) => run(() => setDoc(doc(db, 'ot_remises', id), Object.assign({ repLe: serverTimestamp() }, o), { merge: true }));
+  box.querySelectorAll('[data-rok]').forEach((b) => { b.onclick = () => rep(b.dataset.rok, { statut: 'recue' }); });
+  box.querySelectorAll('[data-rno]').forEach((b) => { b.onclick = () => rep(b.dataset.rno, { statut: 'non' }); });
+  box.querySelectorAll('[data-rdf]').forEach((b) => { b.onclick = () => { const r = S.remises.find((x) => x.id === b.dataset.rdf); S.form = { t: 'diff', id: r.id, m: String(r.montant) }; draw(); }; });
+  if ($('rD')) $('rD').oninput = (e) => { S.form.m = e.target.value; };
+  box.querySelectorAll('[data-rok2]').forEach((b) => { b.onclick = () => { const m = Math.round(Number(S.form.m) * 100) / 100; if (!(m >= 0 && m <= 100000)) { S.err = 'Montant invalide.'; return draw(); } rep(b.dataset.rok2, { statut: 'recue', montantDit: m }); }; });
+  box.querySelectorAll('[data-vu]').forEach((b) => { b.onclick = () => run(() => setDoc(doc(db, 'ot_comptes', b.dataset.vu), { vu: true }, { merge: true })); });
+  if ($('bRecu')) $('bRecu').onclick = () => { S.form = { t: 'recu', m: String(Math.max(0, Math.round(k.du * 100) / 100)) }; S.err = ''; draw(); };
+  if ($('bDon')) $('bDon').onclick = () => { S.form = { t: 'don', P: '', L: '' }; S.err = ''; draw(); };
+  if ($('bConf')) $('bConf').onclick = () => { S.form = { t: 'conf', P: String(S.conf.partP), L: String(S.conf.partL) }; S.err = ''; draw(); };
+  if ($('bDem')) $('bDem').onclick = () => run(() => setDoc(doc(db, 'ot_conf', 'app'), { compteDemande: serverTimestamp() }, { merge: true }));
+  if ($('fX')) $('fX').onclick = () => { S.form = null; S.err = ''; draw(); };
+  if ($('fGo')) $('fGo').onclick = () => {
+    if (f.t === 'recu') { const m = Math.round(Number($('fM').value) * 100) / 100; if (!(m > 0 && m <= 100000)) { S.err = 'Montant invalide.'; return draw(); } return run(() => setDoc(doc(collection(db, 'ot_recus')), { montant: m, le: serverTimestamp() })); }
+    if (f.t === 'don') { const P = Math.round(Number($('dP').value) || 0), L = Math.round(Number($('dL').value) || 0); if (!P && !L) { S.err = 'Écris au moins un nombre.'; return draw(); } if (Math.abs(P) > 500 || Math.abs(L) > 500) { S.err = 'Trop grand.'; return draw(); } return run(() => setDoc(doc(collection(db, 'ot_dons')), { P, L, le: serverTimestamp() })); }
+    if (f.t === 'conf') { const P = Number($('cP').value), L = Number($('cL').value); if (!(P >= 0 && L >= 0 && P <= 10000 && L <= 10000)) { S.err = 'Montants invalides.'; return draw(); } return run(() => setDoc(doc(db, 'ot_conf', 'app'), { partP: P, partL: L }, { merge: true })); }
+  };
+  ['fM', 'dP', 'dL', 'cP', 'cL'].forEach((id) => { if ($(id)) $(id).oninput = (e) => { const key = { fM: 'm', dP: 'P', dL: 'L', cP: 'P', cL: 'L' }[id]; S.form[key] = e.target.value; }; });
+}
+
+// ---------- données ----------
+function listen(name, key, sortKey) {
+  stops.push(onSnapshot(collection(db, name), (qs) => { const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); a.sort((x, y) => ms(x[sortKey || 'le']) - ms(y[sortKey || 'le'])); S[key] = a; draw(); }, (e) => { S.err = errTxt(e); draw(); }));
+}
+function start() {
+  stops.push(onSnapshot(doc(db, 'ot_conf', 'app'), (s) => { if (s.exists()) S.conf = Object.assign({ partP: 35, partL: 115 }, s.data()); draw(); }, () => {}));
+  listen('ot_ventes', 'ventes'); listen('ot_dons', 'dons'); listen('ot_recus', 'recus'); listen('ot_remises', 'remises'); listen('ot_comptes', 'comptes');
+  if (S.role === 'wayne') listen('ot_users', 'users');
+}
+
+onAuthStateChanged(auth, async (u) => {
+  stopAll(); Object.assign(S, { ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, form: null, err: '' });
+  if (!u) { S.role = 'login'; return draw(); }
+  try {
+    const ot = await getDoc(doc(db, 'ot_users', u.uid)).catch(() => null);
+    if (ot && ot.exists() && ot.data().actif === true) { S.role = 'fafa'; S.nom = ot.data().nom || 'Fafa'; }
+    else { const us = await getDoc(doc(db, 'users', u.uid)).catch(() => null); S.role = us && us.exists() && us.data().role === 'proprio' && us.data().actif === true ? 'wayne' : 'aucun'; }
+  } catch (e) { S.role = 'aucun'; }
+  if (S.role !== 'aucun') start();
+  draw();
+});
+</script>
+</body>
+</html>
