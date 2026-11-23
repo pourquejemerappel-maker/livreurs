@@ -4051,10 +4051,28 @@ const ms0 = (t) => (t ? tsMs(t) : 0); // tsMs(vide) = maintenant ; ici on veut 0
 async function soirLoad(list) {
   const ids = [...new Set((list || []).map((c) => c.soiree).filter((id) => id && !(id in SOIR_T)))];
   await Promise.all(ids.map((id) => getDoc(doc(db, 'soirees', id)).then((d) => { const x = d.exists() ? d.data() : null; SOIR_T[id] = x ? (ms0(x.ouverteLe) || ms0(x.creeLe)) : 0; }).catch(() => { SOIR_T[id] = 0; })));
+  try { nuitIndex(list); } catch (e) { console.warn('v84', e); } // v84
 }
 const cmdT = (c) => tsMs(c.livreeLe) || tsMs(c.creeLe);
 // Jusqu'au lendemain 14 h au plus (si la soirée est restée ouverte plus longtemps, on revient à l'heure).
-function cmdDay(c) { const t = cmdT(c), s0 = c.soiree && SOIR_T[c.soiree]; if (s0 && t >= s0 - 3600000) { const k = soirOf(s0).getTime(); if (t < k + 32 * 3600000) return k; } return soirOf(t).getTime(); }
+// v84 : « nuit de travail » — livraisons d'un même livreur sans pause de 6 h ou plus = même nuit ; la nuit compte pour le jour
+// de son début (1re livraison, ou début de la soirée s'il est dans les 6 h avant). Corrige les soirées sur 2 nuits (Jabari 22 nov.).
+const NUIT = {}, NUIT_GAP = 6 * 3600000;
+const nuitKey = (c) => (c.livreur || '') + '|' + cmdT(c) + '|' + (c.client || '');
+function nuitIndex(list) {
+  const by = {};
+  (list || []).forEach((c) => { if (c && c.statut === 'livree' && c.livreur && cmdT(c)) (by[c.livreur] = by[c.livreur] || []).push(c); });
+  Object.values(by).forEach((a) => {
+    a.sort((x, y) => cmdT(x) - cmdT(y));
+    let prev = 0, day = 0;
+    a.forEach((c) => {
+      const t = cmdT(c);
+      if (!prev || t - prev >= NUIT_GAP) { const s0 = c.soiree && SOIR_T[c.soiree]; day = soirOf(s0 && s0 <= t && t - s0 < NUIT_GAP ? s0 : t).getTime(); }
+      NUIT[nuitKey(c)] = day; prev = t;
+    });
+  });
+}
+function cmdDay(c) { if (c && c.statut === 'livree') { const n = NUIT[nuitKey(c)]; if (n) return n; } const t = cmdT(c), s0 = c.soiree && SOIR_T[c.soiree]; if (s0 && t >= s0 - 3600000) { const k = soirOf(s0).getTime(); if (t < k + 32 * 3600000) return k; } return soirOf(t).getTime(); }
 // Remise (cash donné) : même jour que la dernière livraison de cette personne dans les 10 h avant ; sinon l'heure.
 function remDayOf(t, cms) { let b = null; (cms || []).forEach((c) => { const ct = cmdT(c); if (ct <= t && t - ct < 36000000 && (!b || ct > cmdT(b))) b = c; }); return b ? cmdDay(b) : soirOf(t).getTime(); }
 const remWho = (r) => (r.rend ? r.vers : r.de);
@@ -4210,7 +4228,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 83;
+const APP_V = 84;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
