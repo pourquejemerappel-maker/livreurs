@@ -2648,7 +2648,7 @@ async function loadHisto() {
   const rems = remsW.filter((r) => inR(remDayOf(tsMs(r.le), byP[remWho(r)])));
   hs.rems = rems.filter((r) => r.statut === 'recue' || r.statut === 'attente');
   const livrees = cmdsH.filter((c) => c.statut === 'livree');
-  const remis = {}; rems.forEach((r) => { if (r.statut === 'recue') remis[r.de] = (remis[r.de] || 0) + (r.montant || 0); });
+  const remis = {}; rems.forEach((r) => { if (r.statut === 'recue' && !remDispW(r)) remis[r.de] = (remis[r.de] || 0) + (r.montant || 0); }); // v85
   const dtt = {}; dts.forEach((x) => { if (x.statut !== 'refusee') dtt[x.livreur] = (dtt[x.livreur] || 0) + (x.montant || 0); });
   const rows = withDettes(sumUp(livrees, remis), dtt);
   let t = teamText(rows, a);
@@ -4076,7 +4076,10 @@ function cmdDay(c) { if (c && c.statut === 'livree') { const n = NUIT[nuitKey(c)
 // Remise (cash donné) : même jour que la dernière livraison de cette personne dans les 10 h avant ; sinon l'heure.
 function remDayOf(t, cms) { let b = null; (cms || []).forEach((c) => { const ct = cmdT(c); if (ct <= t && t - ct < 36000000 && (!b || ct > cmdT(b))) b = c; }); return b ? cmdDay(b) : soirOf(t).getTime(); }
 const remWho = (r) => (r.rend ? r.vers : r.de);
+// v85 : argent qu'un dispatch complet (MOUSSE) remet à Wayne = argent ramassé avant → pas soustrait de sa journée, encadré à part.
+const remDispW = (r) => !!r && r.vers === 'proprietaire' && !r.rend && !!(team[r.de] && team[r.de].role === 'complet');
 function v75RemLine(r, k, drv) {
+  if (!drv && remDispW(r) && r.de === k) return '<div style="margin:6px 14px;padding:10px;border-radius:12px;background:#0f2a1a;border:1px solid #166534"><b style="color:#86efac">💵 Remis à Wayne : ' + money(r.montant || 0) + '</b><div class="small">' + hm(tsMs(r.le)) + (r.statut === 'recue' ? ' ✓' : ' ⏳') + ' · argent ramassé avant — pas compté dans cette journée</div></div>'; // v85
   const give = r.de === k, ok = r.statut === 'recue', m = '<b>' + money(r.montant || 0) + '</b>';
   const qui = drv ? 'dispatch' : esc(give ? (r.versNom || nomDe(r.vers)) : (r.deNom || nomDe(r.de)));
   return '<div class="v75g' + (give ? '' : ' in') + '">' + (give ? '💵 ' : '💜 ') + hm(tsMs(r.le)) + ' · ' + (give ? (drv ? 'donné ' : 'a donné ') + m + (drv ? ' au ' : ' à ') + qui : (drv ? 'reçu ' : 'a reçu ') + m + ' ' + (drv ? 'du dispatch' : 'de ' + qui)) +
@@ -4228,7 +4231,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 84;
+const APP_V = 85;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
