@@ -383,6 +383,7 @@ function startLive() {
   setTimeout(startV75, 0); // v75
   setTimeout(startV78, 0); // v78
   setTimeout(startV82, 0); // v82
+  setTimeout(startV86, 0); // v86
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   sortis = {}; setTimeout(startSortis, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { if (!hidId(d.id)) team[d.id] = d.data(); }); renderTeam(); limStocks(); renderAll(); }, () => {}));
@@ -4146,6 +4147,7 @@ async function loadCash() {
         if (cash) p.solde += x.montant || 0; }
     });
     cs.data = Object.values(P).sort((a, b) => b.solde - a.solde); cs.raw = { cm, rems, dts }; cs.err = '';
+    v86Load(cm); // v86 : crypto chez MOUSSE
   } catch (e) { cs.err = msg(e); }
   cs.busy = false; drawCash();
 }
@@ -4155,6 +4157,7 @@ function drawCash() {
   let h = '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div class="label" style="margin:0">💵 Cash pas encore rendu à ' + OWNER + '</div><button class="linkbtn" id="csReload">↻</button></div>' +
     '<div style="font-size:26px;font-weight:900;margin:6px 0 2px">' + (cs.busy && !cs.data ? '…' : money(tot)) + '</div><div class="small">Le solde de chacun continue d’un jour à l’autre (depuis la soirée du 18 nov.).</div>' + (cs.err ? '<div class="err">' + esc(cs.err) + '</div>' : '') + '</div>';
   h += v82Html(); // v82 : bonus de Lost à valider
+  h += v86Html(); // v86 : crypto chez MOUSSE
   // v58 : le fil privé avec chaque dispatch complet (MOUSSE), pour Wayne.
   if (isOwner()) Object.keys(team).filter((id) => team[id].role === 'complet' && team[id].actif !== false).forEach((id) => {
     const p = L.find((x) => x.id === id), att = (rm.toMe || []).some((r) => r.de === id && r.statut === 'attente');
@@ -4186,6 +4189,7 @@ function drawCash() {
   if ($('csReload')) $('csReload').onclick = () => loadCash();
   v73BindBon(box); // v73
   v82Bind(box); // v82
+  v86Bind(box); // v86
   box.querySelectorAll('[data-rend]').forEach((el) => { el.onclick = async () => {
     const id = el.dataset.rend, p = (cs.data || []).find((x) => x.id === id); if (!p) return;
     if (cs.rend !== id) { cs.rend = id; return drawCash(); }
@@ -4231,7 +4235,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 85;
+const APP_V = 86;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5465,4 +5469,99 @@ function v82Alerts(q) {
     (v82.chg || []).filter((b) => !b.vuPar).forEach((b) => q.push({ ic: '❌', cls: 'no', t: esc(b.nom || 'Lost') + ' a refusé le changement', x: esc(b.raison || '') + ' (' + esc(v82Jour(b.soir)) + ') : le bonus reste <b>' + money(b.montant || 0) + '</b>.<br><span class="small">« ' + esc(b.raisonChg || '') + ' »</span>',
       b: [['OK', 'bg', null]], done: () => v72Up(doc(db, 'bonus', b.id), { vuPar: true }) }));
   }
+}
+
+// =====================================================================
+// v86 : 🟣 crypto — c'est MOUSSE qui la reçoit (toute crypto confirmée, peu importe le livreur ou qui confirme).
+// MOUSSE : « Crypto reçue, pas encore envoyée à Wayne : X $ » + d'où elle vient + « J'ai envoyé de la crypto à Wayne » (montant $).
+// Wayne : ✅ Reçu / ✏️ Montant différent / ❌ Pas reçu ; tout s'accumule (reçu, remis, encore chez lui, jour par jour).
+// En dollars (prix des commandes). Collection cryptoEnvois {de, deNom, montant, statut attente/recue/non, montantDit, le, repLe}.
+// Départ du compte : config/app.cryptoDepuis (ms) sinon CASH_START. Maquettes approuvées 22 nov. : cr6.png, cr7.png.
+// =====================================================================
+const v86 = { rec: [], env: [], open: false, day: null, m: '', err: '', busy: false, diff: null, ok: false };
+const v86On = () => isOwner() || (me && me.role === 'complet');
+const v86Who = () => Object.keys(team).find((id) => team[id].actif !== false && team[id].role === 'complet') || 'mousse';
+const v86Dep = () => Number(cfg.cryptoDepuis) || CASH_START.getTime();
+const v86Mt = (e) => (e.montantDit != null ? Number(e.montantDit) : Number(e.montant)) || 0;
+function startV86() {
+  if (!me || !v86On()) return;
+  stops.push(onSnapshot(collection(db, 'cryptoEnvois'), (qs) => { const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); v86.env = a.sort((x, y) => tsMs(x.le) - tsMs(y.le)); if ($('cashTab')) drawCash(); }, (e) => console.warn('v86', e)));
+}
+async function v86Load(cm) {
+  if (!v86On()) return;
+  try {
+    const t0 = v86Dep(), liv = (cm || []).filter((c) => c.statut === 'livree' && !c.test && !c.annuleTest && !c.dette && !c.nonRecu && tsMs(c.livreeLe) >= t0);
+    const pv = {}; const qs = await getDocs(query(collection(db, 'cmdPrive'), where('mode', 'in', ['cry', 'mixc'])));
+    qs.forEach((d) => { pv[d.id] = d.data(); });
+    const save = hs.prv, rec = [];
+    liv.forEach((c) => { if (!pv[c.id] && !['cry', 'mixc'].includes(c.paieMode)) return; hs.prv = { [c.id]: pv[c.id] || {} }; const q = payOf(c); if (q.cry > 0) rec.push({ id: c.id, t: tsMs(c.livreeLe), d: cmdDay(c), m: q.cry, client: c.client, liv: c.livreurNom || nomDe(c.livreur), coin: q.coin }); });
+    hs.prv = save; v86.rec = rec.sort((a, b) => a.t - b.t);
+  } catch (e) { console.warn('v86', e); }
+  if ($('cashTab')) drawCash();
+}
+function v86Sum() {
+  const recu = v86.rec.reduce((a, r) => a + r.m, 0), env = v86.env.filter((e) => tsMs(e.le) >= v86Dep() || e.statut === 'attente');
+  const remis = env.filter((e) => e.statut === 'recue').reduce((a, e) => a + v86Mt(e), 0), att = env.filter((e) => e.statut === 'attente').reduce((a, e) => a + (Number(e.montant) || 0), 0);
+  return { recu, remis, att, chez: recu - remis, aEnv: recu - remis - att, env };
+}
+const v86D = (ms) => new Date(ms).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' });
+function v86Html() {
+  if (!v86On()) return '';
+  const S = v86Sum(), P = '#a78bfa', box = 'border-color:#6d28d9;background:#1a1033';
+  let h = '';
+  if (me.role === 'complet') {
+    h += '<div class="card" style="' + box + ';text-align:center"><div class="small">🟣 Crypto reçue, pas encore envoyée à Wayne</div><div style="font-size:34px;font-weight:800;color:' + P + '">' + money(S.aEnv) + '</div>' +
+      '<button class="linkbtn" data-v86="open">' + (v86.open ? 'Cacher ▴' : 'D’où elle vient ▾') + '</button></div>';
+    if (v86.open) h += '<div class="card"><b>D’où elle vient</b>' + (v86.rec.slice(-30).reverse().map((r) => '<div style="display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)"><span>' + esc(r.client || '') + ' · ' + esc(r.liv || '') + ' <span class="small">' + v86D(r.t) + ' ' + hm(r.t) + '</span></span><b style="color:' + P + '">' + money(r.m) + '</b></div>').join('') || '<div class="small">Rien encore.</div>') + '</div>';
+    S.env.filter((e) => e.statut !== 'recue' || Date.now() - tsMs(e.repLe) < 86400000).slice(-3).forEach((e) => {
+      h += '<div class="card small" style="' + (e.statut === 'non' ? 'border-color:#7f1d1d' : '') + '">' + (e.statut === 'attente' ? '⏳ ' + money(e.montant) + ' envoyé ' + v86D(tsMs(e.le)) + ' ' + hm(tsMs(e.le)) + ' · attend que Wayne confirme'
+        : e.statut === 'non' ? '❌ Wayne dit qu’il n’a pas reçu les ' + money(e.montant) + ' (' + v86D(tsMs(e.le)) + ')' : '✅ Wayne a reçu ' + money(v86Mt(e)) + (e.montantDit != null && Number(e.montantDit) !== Number(e.montant) ? ' (tu avais écrit ' + money(e.montant) + ')' : '')) + '</div>';
+    });
+    if (S.aEnv > 0 || v86.m) h += '<div class="card"><b>🟣 J’ai envoyé de la crypto à Wayne</b><div class="small" style="margin-top:8px">Montant ($)</div><input id="v86M" type="number" inputmode="numeric" placeholder="' + Math.max(0, S.aEnv) + '" value="' + esc(v86.m) + '">' +
+      '<div class="err">' + esc(v86.err) + '</div><button class="btn ok" id="v86Go"' + (v86.busy ? ' disabled' : '') + '>' + (v86.busy ? '…' : 'Envoyé') + '</button></div>';
+    return h;
+  }
+  // Wayne
+  S.env.filter((e) => e.statut === 'attente').forEach((e) => {
+    const d = v86.diff && v86.diff.id === e.id;
+    h += '<div class="card" style="border:2px solid #6d28d9;background:#1a1033;text-align:center"><b style="font-size:16px">🟣 ' + esc(e.deNom || 'MOUSSE') + ' t’a envoyé ' + money(e.montant) + ' en crypto</b><div class="small">' + v86D(tsMs(e.le)) + ' ' + hm(tsMs(e.le)) + '</div>' +
+      (d ? '<div class="small" style="margin-top:8px">Montant reçu ($)</div><input id="v86D" type="number" inputmode="numeric" value="' + esc(v86.diff.m) + '"><div class="err">' + esc(v86.err) + '</div><div class="two"><button class="btn ghost sm" data-v86="dx">Retour</button><button class="btn ok sm" data-v86ok2="' + e.id + '">Confirmer</button></div>'
+        : '<button class="btn ok" style="margin-top:8px" data-v86ok="' + e.id + '">✅ Reçu</button><div class="two" style="margin-top:6px"><button class="btn ghost sm" data-v86df="' + e.id + '">✏️ Montant différent</button><button class="btn ghost sm" data-v86no="' + e.id + '">❌ Pas reçu</button></div>') + '</div>';
+  });
+  h += '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center" data-v86="open"><b>🟣 Crypto de ' + esc(nomDe(v86Who())) + '</b><span class="small">' + (v86.open ? '▴' : '▾') + '</span></div>' +
+    '<div style="display:flex;text-align:center;gap:6px;margin-top:8px"><div style="flex:1"><div class="small">Reçu en tout</div><b style="font-size:18px;color:' + P + '">' + money(S.recu) + '</b></div><div style="flex:1"><div class="small">Remis à toi</div><b style="font-size:18px;color:#4ade80">' + money(S.remis) + '</b></div><div style="flex:1"><div class="small">Encore chez lui</div><b style="font-size:18px;color:#fbbf24">' + money(S.chez) + '</b></div></div>';
+  if (v86.open) {
+    const ev = []; const byD = {};
+    v86.rec.forEach((r) => { (byD[r.d] = byD[r.d] || []).push(r); });
+    Object.keys(byD).forEach((d) => ev.push({ t: Number(d) + 1, kind: 'r', d: Number(d), m: byD[d].reduce((a, r) => a + r.m, 0) }));
+    S.env.filter((e) => e.statut !== 'non').forEach((e) => ev.push({ t: tsMs(e.le), kind: 'e', e, m: e.statut === 'recue' ? v86Mt(e) : Number(e.montant) || 0 }));
+    ev.sort((a, b) => a.t - b.t); let bal = 0;
+    h += '<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:8px"><tr class="small"><td>Jour</td><td style="text-align:right">Reçu</td><td style="text-align:right">Remis à toi</td><td style="text-align:right">Chez lui</td></tr>' + ev.map((x) => {
+      if (x.kind === 'r') { bal += x.m; return '<tr data-v86d="' + x.d + '" style="border-top:1px solid var(--line);cursor:pointer"><td style="padding:8px 0">' + v86D(x.d) + ' ›</td><td style="text-align:right;color:' + P + '">+' + money(x.m) + '</td><td></td><td style="text-align:right"><b>' + money(bal) + '</b></td></tr>' + (v86.day === x.d ? '<tr><td colspan="4">' + byD[x.d].map((r) => '<div class="small" style="display:flex;justify-content:space-between;padding:3px 0 3px 10px"><span>' + esc(r.client || '') + ' · ' + esc(r.liv || '') + ' · ' + hm(r.t) + '</span><span style="color:' + P + '">' + money(r.m) + '</span></div>').join('') + '</td></tr>' : ''); }
+      const ok = x.e.statut === 'recue'; if (ok) bal -= x.m;
+      return '<tr style="border-top:1px solid var(--line)"><td style="padding:8px 0">' + v86D(x.t) + ' · ' + hm(x.t) + '</td><td></td><td style="text-align:right;color:' + (ok ? '#4ade80' : '#fbbf24') + '">−' + money(x.m) + (ok ? ' ✓' : ' ⏳') + '</td><td style="text-align:right"><b>' + money(bal) + '</b></td></tr>';
+    }).join('') + '</table>';
+    if (!ev.length) h += '<div class="small" style="margin-top:8px">Rien encore.</div>';
+  }
+  return h + '</div>';
+}
+function v86Bind(box) {
+  if (!v86On()) return;
+  const up = async (id, data) => { v86.busy = true; try { await writeBatch(db).update(doc(db, 'cryptoEnvois', id), Object.assign({ repLe: serverTimestamp() }, data)).commit(); v86.diff = null; v86.err = ''; } catch (e) { v86.err = msg(e); } v86.busy = false; drawCash(); };
+  box.querySelectorAll('[data-v86="open"]').forEach((el) => { el.onclick = () => { v86.open = !v86.open; drawCash(); }; });
+  box.querySelectorAll('[data-v86d]').forEach((el) => { el.onclick = () => { const d = Number(el.dataset.v86d); v86.day = v86.day === d ? null : d; drawCash(); }; });
+  box.querySelectorAll('[data-v86ok]').forEach((el) => { el.onclick = () => { el.disabled = true; up(el.dataset.v86ok, { statut: 'recue' }); }; });
+  box.querySelectorAll('[data-v86no]').forEach((el) => { el.onclick = () => { el.disabled = true; up(el.dataset.v86no, { statut: 'non' }); }; });
+  box.querySelectorAll('[data-v86df]').forEach((el) => { el.onclick = () => { const e = v86.env.find((x) => x.id === el.dataset.v86df); v86.diff = { id: el.dataset.v86df, m: String((e && e.montant) || '') }; v86.err = ''; drawCash(); }; });
+  box.querySelectorAll('[data-v86="dx"]').forEach((el) => { el.onclick = () => { v86.diff = null; drawCash(); }; });
+  if ($('v86D')) $('v86D').oninput = (e) => { v86.diff.m = e.target.value; };
+  box.querySelectorAll('[data-v86ok2]').forEach((el) => { el.onclick = () => { const n = Math.round(Number(v86.diff && v86.diff.m)); if (!(n >= 0 && n <= 100000)) { v86.err = 'Montant entre 0 et 100 000 $.'; return drawCash(); } up(el.dataset.v86ok2, { statut: 'recue', montantDit: n }); }; });
+  if ($('v86M')) $('v86M').oninput = (e) => { v86.m = e.target.value; };
+  if ($('v86Go')) $('v86Go').onclick = async () => {
+    const n = Math.round(Number(v86.m)); if (!(n > 0 && n <= 100000)) { v86.err = 'Écris le montant envoyé (en $).'; return drawCash(); }
+    v86.busy = true; v86.err = ''; drawCash();
+    try { await setDoc(doc(collection(db, 'cryptoEnvois')), { de: me.mid, deNom: String(me.nom || '').slice(0, 60), montant: n, statut: 'attente', le: serverTimestamp() }); v86.m = '';
+      notifyMsg('proprietaire', '🟣 ' + (me.nom || 'MOUSSE') + ' t’a envoyé ' + n + ' $ en crypto. Ouvre Gotham › Cash pour confirmer.'); } catch (e) { v86.err = msg(e); }
+    v86.busy = false; drawCash();
+  };
 }
