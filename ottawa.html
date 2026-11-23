@@ -171,7 +171,7 @@ function drawCount(box, h, k) {
 
 function drawWayne(box) {
   const k = calc(), f = S.form;
-  let h = head('Ma part');
+  let h = '<a href="./" style="display:inline-block;color:var(--muted);font-size:14px;margin-bottom:8px">← Gotham</a>' + head('Ma part');
   if (!S.users.length) {
     h += '<div class="card"><b>Créer le compte de Fafa</b><div class="sm" style="margin:6px 0">Nom de connexion : <b>fafa</b>. Choisis son mot de passe (6 caractères au moins) et donne-le-lui toi-même.</div><input id="uP" type="password" autocomplete="new-password" placeholder="Mot de passe de Fafa"><div class="err">' + esc(S.err) + '</div><button class="go" id="uGo">Créer</button></div>';
     box.innerHTML = h;
