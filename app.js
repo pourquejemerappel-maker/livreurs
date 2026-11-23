@@ -3505,12 +3505,12 @@ function payOf(c) {
   // v37 : « paie plus tard » (dette) — pas encaissé : on le montre à part, il ne compte pas dans les totaux
   if (c.dette) return { cash, int: 0, cry: 0, coin: '', dette: Math.max(0, (mode === 'cash' ? (c.encaisser || total) : total) - cash) };
   if (c.nonRecu) return { cash, int: 0, cry: 0, coin: c.crypto || p.crypto || '', no: int + cryv, noKind: cryv ? 'cry' : 'int' }; // v41
-  return { cash, int, cry: cryv, coin: c.crypto || p.crypto || '' };
+  return { cash, int, cry: cryv, coin: c.crypto || p.crypto || '', carte: !!(c.carte || p.carte) }; // v87 : carte (Stripe, site) = prépayé, affiché 💳
 }
 function payHtml(q) {
   const parts = [];
   if (q.cash) parts.push('<span style="color:' + PCOL.cash + '">🔵 ' + money(q.cash) + '</span>');
-  if (q.int) parts.push('<span style="color:' + PCOL.int + '">🟡 ' + money(q.int) + '</span>');
+  if (q.int) parts.push('<span style="color:' + PCOL.int + '">' + (q.carte ? '💳 ' + money(q.int) + ' carte' : '🟡 ' + money(q.int)) + '</span>');
   if (q.cry) parts.push('<span style="color:' + PCOL.cry + '">🟣 ' + money(q.cry) + (q.coin ? ' ' + esc(q.coin) : '') + '</span>');
   if (q.no) parts.push('<span style="color:#f87171">🔴 ' + money(q.no) + ' ' + (q.noKind === 'cry' ? 'crypto' : 'EMT') + ' pas reçu</span>');
   if (q.dette) parts.push('<span style="color:#f87171">📒 ' + money(q.dette) + ' dette</span>');
@@ -4235,7 +4235,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 86;
+const APP_V = 87;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5069,8 +5069,9 @@ function parseMongo(t) {
   if (/^INTERAC-OK\b/.test(up)) { mode = 'int'; ref = normRef(pm.slice(10)); if (pm.slice(10).trim() && !ref) return { err: 'Le numéro après INTERAC-OK n’est pas valide (6 à 40 lettres/chiffres).' }; }
   else if (/^ETH-OK\b/.test(up)) mode = 'cry';
   else if (/^COMPTANT\b/.test(up)) mode = 'cash';
-  else return { err: 'PAIE doit commencer par INTERAC-OK, ETH-OK ou COMPTANT.' };
-  return { cmd, cmdTxt: f.CMD.trim(), client: f.CLIENT.slice(0, 80), tel: (f.TEL || '').slice(0, 40), adr: f.ADR.slice(0, 200), L, XL, tot, mode, ref, note: (f.NOTE || '').slice(0, 300) };
+  else if (/^CARTE-OK\b/.test(up)) { mode = 'int'; ref = ''; f.CARTE = 1; } // v87 : carte (Stripe) = prépayé
+  else return { err: 'PAIE doit commencer par INTERAC-OK, ETH-OK, COMPTANT ou CARTE-OK.' };
+  return { cmd, cmdTxt: f.CMD.trim(), client: f.CLIENT.slice(0, 80), tel: (f.TEL || '').slice(0, 40), adr: f.ADR.slice(0, 200), L, XL, tot, mode, ref, note: (f.NOTE || '').slice(0, 300), carte: !!f.CARTE };
 }
 function openSite() {
   if (!(isOwner() && siteOn())) return;
@@ -5140,13 +5141,13 @@ async function siteCreate() {
     const ref = doc(collection(db, 'commandes')), code = newCode(), cash = p.mode === 'cash';
     const data = { test: false, source: 'site', siteCmd: p.cmd, siteTot: p.tot, suivi: code, client: p.client || 'Client', tel: p.tel, adresse: SITE.hit.l1 + ', ' + SITE.hit.l2, L: p.L, XL: p.XL, frais: 0, note: p.note,
       encaisser: cash ? p.tot : 0, paye: !cash, bloque: false, statut: 'attente', livreur: null, retard: 0, creeLe: serverTimestamp(), creePar: myMid(), paieMode: p.mode };
-    if (!cash) Object.assign(data, { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, p.mode === 'cry' ? { crypto: 'ETH' } : {}, p.ref ? { emtRef: p.ref } : {});
+    if (!cash) Object.assign(data, { confirmePar: myMid(), confirmeNom: me.nom || OWNER, confirmeLe: serverTimestamp() }, p.mode === 'cry' ? { crypto: 'ETH' } : {}, p.carte ? { carte: true } : {}, p.ref ? { emtRef: p.ref } : {});
     if (SITE.hit.lat != null) { data.lat = SITE.hit.lat; data.lon = SITE.hit.lon; }
     const b = writeBatch(db);
     b.set(ref, data);
     b.set(doc(db, 'siteCmds', p.cmd), { cid: ref.id, suivi: code, le: serverTimestamp() });
     b.set(doc(db, 'suivi', code), { actif: true, statut: 'attente', eta: null, luid: null, prenom: prenom(data.client), source: 'site', le: serverTimestamp() });
-    b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: p.tot, mode: p.mode, cash: cash ? p.tot : 0, interac: cash ? 0 : p.tot, recu: true, prixL: cfg.prixL, prixXL: cfg.prixXL, source: 'site', le: serverTimestamp() });
+    b.set(doc(db, 'cmdPrive', ref.id), { actif: true, total: p.tot, mode: p.mode, cash: cash ? p.tot : 0, interac: cash ? 0 : p.tot, recu: true, prixL: cfg.prixL, prixXL: cfg.prixXL, source: 'site', le: serverTimestamp(), ...(p.carte ? { carte: true } : {}) });
     if (p.ref) refSet(b, p.ref, Object.assign({ id: ref.id }, data));
     await b.commit();
     const cmd = p.cmd; Object.assign(SITE, { txt: '', p: null, hit: null, sugs: [], busy: false, ok: 'Commande ' + esc(cmd) + ' créée. Elle est dans En direct, à assigner à Alpha.' }); drawSite();
