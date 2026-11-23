@@ -4235,7 +4235,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 87;
+const APP_V = 88;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4542,6 +4542,7 @@ function mnItems() {
     if (isOwner() && siteOn()) out.push({ ic: '🌐', lab: 'Coller une commande (test)', go: () => openSite() }); // v76
     if (document.querySelector('.card.notif')) out.push({ ic: '🔔', lab: 'Notifications', go: () => { const d = mnTabs().find((x) => x.t === 'direct'); if (d) d.b.click(); mnScroll('.card.notif'); } });
   }
+  if (isOwner() && !(me.role === 'limite')) out.push({ sec: 'Autres équipes' }, { ic: '🍁', lab: 'Ottawa', go: () => { location.href = 'ottawa.html'; } }); // v88 : raccourci, Wayne seulement
   out.push({ ic: '⏻', lab: 'Déconnexion', out: true, go: () => $('logout').click() });
   return out;
 }
