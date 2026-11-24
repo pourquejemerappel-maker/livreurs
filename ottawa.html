@@ -87,7 +87,7 @@ function draw() {
   const box = $('app');
   if (!S.role) return;
   if (S.role === 'login') return drawLogin(box);
-  if (S.role === 'aucun') { box.innerHTML = head('Ottawa') + '<div class="card c">Ce compte n’a pas accès à Ottawa.</div>'; return bindHead(); }
+  if (S.role === 'aucun') { box.innerHTML = head('Ottawa') + '<div class="card c">Ce compte n’a pas accès à Ottawa.<div class="sm" style="margin-top:8px">Compte : ' + esc(((auth.currentUser && auth.currentUser.email) || '').split('@')[0]) + (S.why ? ' · ' + esc(S.why) : '') + '</div><button class="go" id="retry" style="margin-top:12px">🔄 Réessayer</button></div>'; if ($('retry')) $('retry').onclick = () => location.reload(); return bindHead(); }
   if (S.role === 'fafa') drawFafa(box); else drawWayne(box);
   bindHead();
 }
@@ -264,11 +264,14 @@ function start() {
 onAuthStateChanged(auth, async (u) => {
   stopAll(); Object.assign(S, { ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, form: null, err: '' });
   if (!u) { S.role = 'login'; return draw(); }
+  S.why = '';
   try {
-    const ot = await getDoc(doc(db, 'ot_users', u.uid)).catch(() => null);
-    if (ot && ot.exists() && ot.data().actif === true) { S.role = 'fafa'; S.nom = ot.data().nom || 'Fafa'; }
-    else { const us = await getDoc(doc(db, 'users', u.uid)).catch(() => null); S.role = us && us.exists() && us.data().role === 'proprio' && us.data().actif === true ? 'wayne' : 'aucun'; }
-  } catch (e) { S.role = 'aucun'; }
+    // Fafa : son document ot_users (3 essais : la connexion peut être lente au premier lancement de l'app).
+    let ot = null;
+    for (let i = 0; i < 3 && !ot; i++) { ot = await getDoc(doc(db, 'ot_users', u.uid)).catch((e) => { S.why = (e && e.code) || 'erreur'; return null; }); if (!ot) await new Promise((r) => setTimeout(r, 1500)); }
+    if (ot && ot.exists() && ot.data().actif === true) { S.role = 'fafa'; S.nom = ot.data().nom || 'Fafa'; S.why = ''; }
+    else { const us = await getDoc(doc(db, 'users', u.uid)).catch(() => null); S.role = us && us.exists() && us.data().role === 'proprio' && us.data().actif === true ? 'wayne' : 'aucun'; if (ot && !S.why) S.why = ot.exists() ? 'compte désactivé' : 'pas dans Ottawa'; }
+  } catch (e) { S.role = 'aucun'; S.why = (e && e.code) || 'erreur'; }
   if (S.role !== 'aucun') start();
   draw();
 });
