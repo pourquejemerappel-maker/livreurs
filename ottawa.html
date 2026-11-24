@@ -44,6 +44,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, onSnapshot, serverTimestamp, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { getMessaging, getToken, isSupported as msgSupported } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
 
 const firebaseConfig = {
   apiKey: '',
@@ -57,6 +58,43 @@ const firebaseConfig = {
 try { const t = await (await fetch('app.js')).text(); const k = t.match(/apiKey:\s*'([^']+)'/); if (k) firebaseConfig.apiKey = k[1]; } catch (e) {}
 const app = initializeApp(firebaseConfig), auth = getAuth(app), db = getFirestore(app);
 const DOM = '@livreurs-app-6dafd.firebaseapp.com';
+// v90 : stock à accepter par Fafa + notifications (même service « notifier » que Gotham).
+const NOTIFIER = 'https://notifier-279678565038.northamerica-northeast1.run.app';
+const VAPID = 'BKNZDBuUNQgPklKK0vtk_AlQH7eapf1NSdowusdoSsYW1frQp8_Q0pYNk_iGkgedZG3zSFn2gGgmUVVT0cy2YTo';
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const donOk = (d) => !d.statut || d.statut === 'ok';
+const qTxt = (d) => [d.P ? d.P + ' P' : '', d.L ? d.L + ' L' : ''].filter(Boolean).join(' + ');
+let notif = 'inconnu';
+async function pushOk() { try { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && (await msgSupported()); } catch (e) { return false; } }
+async function saveTok(ask) {
+  if (!(await pushOk())) { notif = isIOS() && !isStandalone() ? 'installer' : 'impossible'; return draw(); }
+  if (Notification.permission === 'denied') { notif = 'refuse'; return draw(); }
+  if (Notification.permission !== 'granted') {
+    if (!ask) { notif = 'a-activer'; return draw(); }
+    const p = await Notification.requestPermission();
+    if (p !== 'granted') { notif = p === 'denied' ? 'refuse' : 'a-activer'; return draw(); }
+  }
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready;
+    const tok = await getToken(getMessaging(app), { vapidKey: VAPID, serviceWorkerRegistration: reg });
+    if (tok) { await setDoc(doc(db, 'ot_tokens', tok), { uid: auth.currentUser.uid, le: serverTimestamp(), appareil: isIOS() ? 'iphone' : 'autre' }); notif = 'ok'; }
+  } catch (e) { console.warn('notif', e); notif = 'erreur'; }
+  draw();
+}
+function notifCard() {
+  if (notif === 'ok' || notif === 'inconnu' || notif === 'impossible') return '';
+  if (notif === 'installer') return '<div class="card"><b>🔔 Pour recevoir les notifications</b><div class="sm" style="margin-top:6px">1. Dans Safari, touche Partager → « Sur l’écran d’accueil ».<br>2. Ouvre l’app Ottawa avec la nouvelle icône, puis active les notifications ici.</div></div>';
+  if (notif === 'refuse') return '<div class="card"><b>🔕 Notifications bloquées</b><div class="sm" style="margin-top:6px">Va dans Réglages du téléphone → Notifications → Ottawa, et autorise-les.</div></div>';
+  return '<div class="card c"><button class="go" id="nOn">🔔 Activer les notifications</button>' + (notif === 'erreur' ? '<div class="err">Ça n’a pas marché. Réessaie.</div>' : '') + '</div>';
+}
+async function notifyDon(id) {
+  try {
+    const t = await auth.currentUser.getIdToken();
+    const r = await fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t }, body: JSON.stringify({ type: 'ot_don', id }) });
+    const j = r.ok ? await r.json() : null; return j ? j.envoye || 0 : -1;
+  } catch (e) { return -1; }
+}
 const slug = (n) => String(n || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '');
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -67,14 +105,14 @@ const jourDe = (t) => { const d = new Date(t); if (d.getHours() < 6) d.setDate(d
 const jourTxt = (k) => new Date(k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' });
 const errTxt = (e) => { const c = (e && e.code) || ''; if (/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)) return 'Nom ou mot de passe incorrect.'; if (/too-many/.test(c)) return 'Trop d’essais. Réessaie plus tard.'; if (/weak-password/.test(c)) return 'Mot de passe : 6 caractères au moins.'; if (/email-already/.test(c)) return 'Ce compte existe déjà.'; if (/permission/.test(c)) return 'Pas la permission.'; return (e && e.message) || String(e); };
 
-const S = { role: null, nom: '', conf: { partP: 35, partL: 115 }, ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, err: '', busy: false, form: null, open: {} };
+const S = { role: null, nom: '', donMsg: {}, refus: null, conf: { partP: 35, partL: 115 }, ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, err: '', busy: false, form: null, open: {} };
 let stops = [];
 const stopAll = () => { stops.forEach((f) => { try { f(); } catch (e) {} }); stops = []; };
 
 // ---------- calculs ----------
 function calc() {
   const v = S.ventes.filter((x) => !x.annulee), P = (a, k) => a.reduce((s, x) => s + (Number(x[k]) || 0), 0);
-  const stockP = P(S.dons, 'P') - P(v, 'P'), stockL = P(S.dons, 'L') - P(v, 'L');
+  const dk = S.dons.filter(donOk), stockP = P(dk, 'P') - P(v, 'P'), stockL = P(dk, 'L') - P(v, 'L');
   const rok = S.remises.filter((r) => r.statut === 'recue').reduce((a, r) => a + (r.montantDit != null ? Number(r.montantDit) : Number(r.montant)) || 0, 0);
   const att = S.remises.filter((r) => r.statut === 'attente').reduce((a, r) => a + (Number(r.montant) || 0), 0);
   const part = P(v, 'part'), recu = P(S.recus, 'montant') + rok;
@@ -109,6 +147,13 @@ function drawFafa(box) {
   let h = head('Bonjour ' + S.nom);
   if (dem) h += '<div class="card warn c"><b class="gold">🔢 Wayne te demande de compter ton stock</b></div>';
   if (S.cnt) return drawCount(box, h, k);
+  S.dons.filter((d) => d.statut === 'attente').forEach((d) => {
+    const r = S.refus && S.refus.id === d.id;
+    h += '<div class="card c" style="border:2px solid var(--green)"><b style="font-size:19px">📦 Wayne t’envoie ' + esc(qTxt(d)) + '</b><div class="sm">' + jourTxt(jourDe(ms(d.le))) + ' · ' + hm(ms(d.le)) + '</div>' +
+      (r ? '<div style="text-align:left;margin-top:8px"><div class="sm">Pourquoi ? (facultatif)</div><input id="rfR" value="' + esc(S.refus.r) + '"><div class="two"><button class="ghost" id="rfX">Retour</button><button class="ghost red" data-dno2="' + d.id + '">❌ Refuser</button></div></div>'
+        : '<button class="go" style="margin-top:10px" data-dok="' + d.id + '">✅ Accepter</button><button class="link" data-dno="' + d.id + '">Refuser</button>') + '</div>';
+  });
+  h += notifCard();
   h += '<div class="card c"><div class="sm">📦 Mon stock</div><div class="stk"><div><div class="big">' + k.stockP + '</div><span>P</span></div><div><div class="big">' + k.stockL + '</div><span>L</span></div></div></div>';
   h += '<div class="two"><button class="go sell" id="vP"' + (k.stockP < 1 || S.busy ? ' disabled' : '') + '>➕ 1 P vendue</button><button class="go sell" id="vL"' + (k.stockL < 1 || S.busy ? ' disabled' : '') + '>➕ 1 L vendue</button></div>';
   h += '<div class="err c">' + esc(S.err) + '</div>';
@@ -134,6 +179,13 @@ function drawFafa(box) {
     catch (e) { S.err = errTxt(e); }
     S.busy = false; draw();
   };
+  const repDon = async (id, o) => { if (S.busy) return; S.busy = true; try { await setDoc(doc(db, 'ot_dons', id), Object.assign({ repLe: serverTimestamp() }, o), { merge: true }); S.refus = null; S.err = ''; if (navigator.vibrate) navigator.vibrate(60); } catch (e) { S.err = errTxt(e); } S.busy = false; draw(); };
+  box.querySelectorAll('[data-dok]').forEach((b) => { b.onclick = () => repDon(b.dataset.dok, { statut: 'ok' }); });
+  box.querySelectorAll('[data-dno]').forEach((b) => { b.onclick = () => { S.refus = { id: b.dataset.dno, r: '' }; draw(); }; });
+  if ($('rfR')) $('rfR').oninput = (e) => { S.refus.r = e.target.value; };
+  if ($('rfX')) $('rfX').onclick = () => { S.refus = null; draw(); };
+  box.querySelectorAll('[data-dno2]').forEach((b) => { b.onclick = () => { const o = { statut: 'refuse' }; const r = String(S.refus.r || '').trim().slice(0, 200); if (r) o.raison = r; repDon(b.dataset.dno2, o); }; });
+  if ($('nOn')) $('nOn').onclick = () => saveTok(true);
   if ($('vP')) $('vP').onclick = () => sell('P');
   if ($('vL')) $('vL').onclick = () => sell('L');
   box.querySelectorAll('[data-op]').forEach((el) => { el.onclick = () => { S.open.v = S.open.v === el.dataset.op ? null : el.dataset.op; draw(); }; });
@@ -207,7 +259,15 @@ function drawWayne(box) {
   else h += '<button class="go" id="bRecu" style="margin-top:10px">✅ J’ai reçu de l’argent</button>';
   h += '</div>';
   h += '<div class="card c"><div class="sm">📦 Stock chez Fafa</div><div class="stk"><div><div class="big">' + k.stockP + '</div><span>P</span></div><div><div class="big">' + k.stockL + '</div><span>L</span></div></div>';
-  if (f && f.t === 'don') h += '<div style="text-align:left;margin-top:10px"><div class="sm">Stock que tu lui donnes (− pour reprendre)</div><div class="two"><div><div class="sm">P</div><input id="dP" type="number" inputmode="numeric" value="' + esc(f.P) + '"></div><div><div class="sm">L</div><input id="dL" type="number" inputmode="numeric" value="' + esc(f.L) + '"></div></div><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Confirmer</button></div></div>';
+  S.dons.filter((d) => d.statut === 'attente').forEach((d) => {
+    const m = S.donMsg[d.id];
+    h += '<div style="background:var(--card2);border-radius:12px;padding:10px;margin-top:10px"><div class="gold"><b>⏳ ' + esc(qTxt(d)) + ' · attend que Fafa accepte</b></div><div class="sm">envoyé ' + jourTxt(jourDe(ms(d.le))) + ' · ' + hm(ms(d.le)) + ' · pas encore dans son stock</div>' +
+      '<button class="ghost" style="margin-top:8px;padding:10px" data-dnot="' + d.id + '">🔔 Renvoyer la notification</button>' + (m ? '<div class="sm" style="margin-top:6px">' + esc(m) + '</div>' : '') + '</div>';
+  });
+  S.dons.filter((d) => d.statut === 'refuse' && !d.vuW).forEach((d) => {
+    h += '<div style="background:#2a0f0f;border-radius:12px;padding:10px;margin-top:10px"><b class="red">❌ Fafa a refusé ' + esc(qTxt(d)) + '</b><div class="sm">' + (d.raison ? '« ' + esc(d.raison) + ' » · ' : '') + 'pas ajouté à son stock</div><button class="ghost" style="margin-top:8px;padding:10px" data-dvu="' + d.id + '">OK, vu</button></div>';
+  });
+  if (f && f.t === 'don') h += '<div style="text-align:left;margin-top:10px"><div class="sm">Stock que tu lui donnes — Fafa devra accepter (− pour reprendre)</div><div class="two"><div><div class="sm">P</div><input id="dP" type="number" inputmode="numeric" value="' + esc(f.P) + '"></div><div><div class="sm">L</div><input id="dL" type="number" inputmode="numeric" value="' + esc(f.L) + '"></div></div><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Confirmer</button></div></div>';
   else {
     const dem = S.conf.compteDemande && (!S.comptes.length || ms(S.comptes[S.comptes.length - 1].le) < ms(S.conf.compteDemande));
     h += '<div class="two" style="margin-top:10px"><button class="ghost" id="bDon">📦 Donner du stock</button><button class="ghost" id="bDem"' + (dem ? ' disabled' : '') + '>' + (dem ? '⏳ Compte demandé' : '🔢 Demander un compte') + '</button></div>';
@@ -225,7 +285,7 @@ function drawWayne(box) {
     e.recu.forEach((x) => { r += '<div class="row"><span>' + jourTxt(j) + ' · ' + (x.fafa ? esc(x.fafa) + ' t’a donné' : 'reçu') + ' ' + hm(ms(x.le)) + '</span><b class="grn">−' + money(x.montant) + ' ✓</b></div>'; });
     e.mods.sort((a, b) => a.le - b.le);
     if (e.mods.length) r += '<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="sm"><b style="color:var(--text)">✏️ Modifications de ' + esc(S.users[0] ? S.users[0].nom : 'Fafa') + '</b></div>' + e.mods.map((m) => '<div class="sm" style="padding:3px 0">' + hm(m.le) + ' · vente de ' + hm(ms(m.v.le)) + (m.type === 'annule' ? ' <b class="red">annulée</b> (1 ' + m.de + ' remise au stock)' : ' changée <b>' + m.de + ' → ' + m.a + '</b>') + '</div>').join('') + '</div>';
-    e.dons.forEach((x) => { r += '<div class="row sm"><span>' + jourTxt(j) + ' · 📦 stock ' + hm(ms(x.le)) + '</span><span>' + [x.P ? (x.P > 0 ? '+' : '') + x.P + ' P' : '', x.L ? (x.L > 0 ? '+' : '') + x.L + ' L' : ''].filter(Boolean).join(' ') + '</span></div>'; });
+    e.dons.forEach((x) => { const st = x.statut === 'attente' ? ' ⏳' : x.statut === 'ok' ? ' ✓ accepté' : x.statut === 'refuse' ? ' ❌ refusé' : ''; r += '<div class="row sm"><span>' + jourTxt(j) + ' · 📦 stock ' + hm(ms(x.le)) + '</span><span' + (x.statut === 'refuse' ? ' style="text-decoration:line-through"' : '') + '>' + [x.P ? (x.P > 0 ? '+' : '') + x.P + ' P' : '', x.L ? (x.L > 0 ? '+' : '') + x.L + ' L' : ''].filter(Boolean).join(' ') + '</span><span>' + st + '</span></div>'; });
     return r; }).join('') || '<div class="sm" style="margin-top:6px">Rien encore.</div>') + '</div>';
   h += '<div class="c"><button class="link" id="bConf">⚙️ Changer ma part (P ' + money(S.conf.partP) + ' · L ' + money(S.conf.partL) + ')</button></div>';
   if (f && f.t === 'conf') h += '<div class="card"><div class="two"><div><div class="sm">Ma part par P</div><input id="cP" type="number" inputmode="decimal" value="' + esc(f.P) + '"></div><div><div class="sm">Ma part par L</div><input id="cL" type="number" inputmode="decimal" value="' + esc(f.L) + '"></div></div><div class="sm">Les ventes déjà faites gardent leur montant.</div><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Enregistrer</button></div></div>';
@@ -237,6 +297,8 @@ function drawWayne(box) {
   box.querySelectorAll('[data-rdf]').forEach((b) => { b.onclick = () => { const r = S.remises.find((x) => x.id === b.dataset.rdf); S.form = { t: 'diff', id: r.id, m: String(r.montant) }; draw(); }; });
   if ($('rD')) $('rD').oninput = (e) => { S.form.m = e.target.value; };
   box.querySelectorAll('[data-rok2]').forEach((b) => { b.onclick = () => { const m = Math.round(Number(S.form.m) * 100) / 100; if (!(m >= 0 && m <= 100000)) { S.err = 'Montant invalide.'; return draw(); } rep(b.dataset.rok2, { statut: 'recue', montantDit: m }); }; });
+  box.querySelectorAll('[data-dvu]').forEach((b) => { b.onclick = () => run(() => setDoc(doc(db, 'ot_dons', b.dataset.dvu), { vuW: true }, { merge: true })); });
+  box.querySelectorAll('[data-dnot]').forEach((b) => { b.onclick = async () => { b.disabled = true; const id = b.dataset.dnot, n = await notifyDon(id); S.donMsg[id] = n > 0 ? '✅ Notification envoyée ' + hm(Date.now()) : n === 0 ? 'Fafa n’a pas encore activé les notifications sur son téléphone. Il verra la demande en ouvrant l’app.' : 'Erreur d’envoi. Réessaie.'; draw(); }; });
   box.querySelectorAll('[data-vu]').forEach((b) => { b.onclick = () => run(() => setDoc(doc(db, 'ot_comptes', b.dataset.vu), { vu: true }, { merge: true })); });
   if ($('bRecu')) $('bRecu').onclick = () => { S.form = { t: 'recu', m: String(Math.max(0, Math.round(k.du * 100) / 100)) }; S.err = ''; draw(); };
   if ($('bDon')) $('bDon').onclick = () => { S.form = { t: 'don', P: '', L: '' }; S.err = ''; draw(); };
@@ -245,7 +307,7 @@ function drawWayne(box) {
   if ($('fX')) $('fX').onclick = () => { S.form = null; S.err = ''; draw(); };
   if ($('fGo')) $('fGo').onclick = () => {
     if (f.t === 'recu') { const m = Math.round(Number($('fM').value) * 100) / 100; if (!(m > 0 && m <= 100000)) { S.err = 'Montant invalide.'; return draw(); } return run(() => setDoc(doc(collection(db, 'ot_recus')), { montant: m, le: serverTimestamp() })); }
-    if (f.t === 'don') { const P = Math.round(Number($('dP').value) || 0), L = Math.round(Number($('dL').value) || 0); if (!P && !L) { S.err = 'Écris au moins un nombre.'; return draw(); } if (Math.abs(P) > 500 || Math.abs(L) > 500) { S.err = 'Trop grand.'; return draw(); } return run(() => setDoc(doc(collection(db, 'ot_dons')), { P, L, le: serverTimestamp() })); }
+    if (f.t === 'don') { const P = Math.round(Number($('dP').value) || 0), L = Math.round(Number($('dL').value) || 0); if (!P && !L) { S.err = 'Écris au moins un nombre.'; return draw(); } if (Math.abs(P) > 500 || Math.abs(L) > 500) { S.err = 'Trop grand.'; return draw(); } const ref = doc(collection(db, 'ot_dons')), att = P >= 0 && L >= 0; return run(async () => { await setDoc(ref, att ? { P, L, statut: 'attente', le: serverTimestamp() } : { P, L, le: serverTimestamp() }); if (att) { const n = await notifyDon(ref.id); S.donMsg[ref.id] = n > 0 ? '✅ Notification envoyée ' + hm(Date.now()) : n === 0 ? 'Fafa n’a pas encore activé les notifications sur son téléphone. Il verra la demande en ouvrant l’app.' : 'Notification pas envoyée (erreur).'; } }); }
     if (f.t === 'conf') { const P = Number($('cP').value), L = Number($('cL').value); if (!(P >= 0 && L >= 0 && P <= 10000 && L <= 10000)) { S.err = 'Montants invalides.'; return draw(); } return run(() => setDoc(doc(db, 'ot_conf', 'app'), { partP: P, partL: L }, { merge: true })); }
   };
   ['fM', 'dP', 'dL', 'cP', 'cL'].forEach((id) => { if ($(id)) $(id).oninput = (e) => { const key = { fM: 'm', dP: 'P', dL: 'L', cP: 'P', cL: 'L' }[id]; S.form[key] = e.target.value; }; });
@@ -273,6 +335,7 @@ onAuthStateChanged(auth, async (u) => {
     else { const us = await getDoc(doc(db, 'users', u.uid)).catch(() => null); S.role = us && us.exists() && us.data().role === 'proprio' && us.data().actif === true ? 'wayne' : 'aucun'; if (ot && !S.why) S.why = ot.exists() ? 'compte désactivé' : 'pas dans Ottawa'; }
   } catch (e) { S.role = 'aucun'; S.why = (e && e.code) || 'erreur'; }
   if (S.role !== 'aucun') start();
+  if (S.role === 'fafa') saveTok(false);
   draw();
 });
 </script>
