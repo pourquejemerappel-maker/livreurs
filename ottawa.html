@@ -64,6 +64,13 @@ const VAPID = 'BKNZDBuUNQgPklKK0vtk_AlQH7eapf1NSdowusdoSsYW1frQp8_Q0pYNk_iGkgedZ
 const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const donOk = (d) => !d.statut || d.statut === 'ok';
+// v91 : dépenses de Fafa (« Achat ballon »), 150 $ max par 7 jours, photo de facture obligatoire, Wayne approuve plus tard.
+const DEP_MAX = 150, DEP_RAISON = 'Achat ballon';
+const depVal = (d) => (d.statut === 'refuse' ? 0 : Number(d.montantDit != null ? d.montantDit : d.montant) || 0);
+const dep7 = () => S.deps.filter((d) => Date.now() - ms(d.le) < 7 * 86400000).reduce((a, d) => a + depVal(d), 0);
+function shrink(file) { return new Promise((ok, ko) => { const img = new Image(), u = URL.createObjectURL(file); img.onload = () => { let w = img.width, h = img.height; const k = Math.min(1, 1400 / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k); const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); let q = 0.8, d = c.toDataURL('image/jpeg', q); while (d.length > 800000 && q > 0.3) { q -= 0.1; d = c.toDataURL('image/jpeg', q); } URL.revokeObjectURL(u); d.length > 800000 ? ko(new Error('Photo trop lourde.')) : ok(d); }; img.onerror = () => ko(new Error('Photo illisible.')); img.src = u; }); }
+async function photoOf(id) { if (S.photos[id] !== undefined) return; S.photos[id] = null; try { const x = await getDoc(doc(db, 'ot_depPhotos', id)); S.photos[id] = x.exists() ? x.data().photo : ''; } catch (e) { S.photos[id] = ''; } draw(); }
+function bigPhoto(src) { const o = document.createElement('div'); o.style = 'position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:99;display:flex;align-items:center;justify-content:center;padding:10px'; o.innerHTML = '<img src="' + src + '" style="max-width:100%;max-height:100%;border-radius:8px">'; o.onclick = () => o.remove(); document.body.appendChild(o); }
 const qTxt = (d) => [d.P ? d.P + ' P' : '', d.L ? d.L + ' L' : ''].filter(Boolean).join(' + ');
 let notif = 'inconnu';
 async function pushOk() { try { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && (await msgSupported()); } catch (e) { return false; } }
@@ -105,7 +112,7 @@ const jourDe = (t) => { const d = new Date(t); if (d.getHours() < 6) d.setDate(d
 const jourTxt = (k) => new Date(k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' });
 const errTxt = (e) => { const c = (e && e.code) || ''; if (/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)) return 'Nom ou mot de passe incorrect.'; if (/too-many/.test(c)) return 'Trop d’essais. Réessaie plus tard.'; if (/weak-password/.test(c)) return 'Mot de passe : 6 caractères au moins.'; if (/email-already/.test(c)) return 'Ce compte existe déjà.'; if (/permission/.test(c)) return 'Pas la permission.'; return (e && e.message) || String(e); };
 
-const S = { role: null, nom: '', donMsg: {}, refus: null, conf: { partP: 35, partL: 115 }, ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, err: '', busy: false, form: null, open: {} };
+const S = { role: null, nom: '', donMsg: {}, refus: null, deps: [], dep: null, photos: {}, conf: { partP: 35, partL: 115 }, ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, err: '', busy: false, form: null, open: {} };
 let stops = [];
 const stopAll = () => { stops.forEach((f) => { try { f(); } catch (e) {} }); stops = []; };
 
@@ -117,7 +124,8 @@ function calc() {
   const att = S.remises.filter((r) => r.statut === 'attente').reduce((a, r) => a + (Number(r.montant) || 0), 0);
   const part = P(v, 'part'), recu = P(S.recus, 'montant') + rok;
   const today = jourDe(Date.now()), vt = v.filter((x) => jourDe(ms(x.le)) === today), all = S.ventes.filter((x) => jourDe(ms(x.le)) === today);
-  return { stockP, stockL, du: part - recu, att, part, recu, today: all, tP: P(vt, 'P'), tL: P(vt, 'L'), tPart: P(vt, 'part') };
+  const depT = S.deps.reduce((a, d) => a + depVal(d), 0), depAtt = S.deps.filter((d) => d.statut === 'attente').reduce((a, d) => a + depVal(d), 0);
+  return { depT, depAtt, stockP, stockL, du: part - recu - depT, att, part, recu, today: all, tP: P(vt, 'P'), tL: P(vt, 'L'), tPart: P(vt, 'part') };
 }
 
 // ---------- écrans ----------
@@ -153,6 +161,12 @@ function drawFafa(box) {
       (r ? '<div style="text-align:left;margin-top:8px"><div class="sm">Pourquoi ? (facultatif)</div><input id="rfR" value="' + esc(S.refus.r) + '"><div class="two"><button class="ghost" id="rfX">Retour</button><button class="ghost red" data-dno2="' + d.id + '">❌ Refuser</button></div></div>'
         : '<button class="go" style="margin-top:10px" data-dok="' + d.id + '">✅ Accepter</button><button class="link" data-dno="' + d.id + '">Refuser</button>') + '</div>';
   });
+  S.deps.filter((d) => d.statut === 'refuse' && !d.vuF).forEach((d) => {
+    h += '<div class="card" style="background:#2a0f0f;border-color:#7f1d1d"><b class="red">❌ Wayne a refusé ta dépense de ' + money(d.montant) + '</b><div class="sm">' + (d.raisonRefus ? '« ' + esc(d.raisonRefus) + ' » · ' : '') + money(d.montant) + ' remis dans « À remettre »</div><button class="ghost" style="margin-top:8px;padding:10px" data-dfvu="' + d.id + '">OK, vu</button></div>';
+  });
+  S.deps.filter((d) => d.statut === 'ok' && d.montantDit != null && d.montantDit !== d.montant && !d.vuF).forEach((d) => {
+    h += '<div class="card warn"><b class="gold">✏️ Wayne a approuvé ta dépense à ' + money(d.montantDit) + ' (au lieu de ' + money(d.montant) + ')</b><button class="ghost" style="margin-top:8px;padding:10px" data-dfvu="' + d.id + '">OK, vu</button></div>';
+  });
   h += notifCard();
   h += '<div class="card c"><div class="sm">📦 Mon stock</div><div class="stk"><div><div class="big">' + k.stockP + '</div><span>P</span></div><div><div class="big">' + k.stockL + '</div><span>L</span></div></div></div>';
   h += '<div class="two"><button class="go sell" id="vP"' + (k.stockP < 1 || S.busy ? ' disabled' : '') + '>➕ 1 P vendue</button><button class="go sell" id="vL"' + (k.stockL < 1 || S.busy ? ' disabled' : '') + '>➕ 1 L vendue</button></div>';
@@ -163,6 +177,18 @@ function drawFafa(box) {
   if (S.give) h += '<div style="text-align:left;margin-top:10px"><div class="sm">Montant donné à Wayne ($)</div><input id="gM" type="number" inputmode="decimal" value="' + esc(S.give.m) + '"><div class="two"><button class="ghost" id="gX">Retour</button><button class="go" id="gGo">Donné</button></div></div>';
   else if (k.du > 0) h += '<button class="go" id="gOpen" style="margin-top:10px">💵 Donner de l’argent à Wayne</button>';
   h += '</div>';
+  { const reste = Math.max(0, DEP_MAX - dep7()), mineD = S.deps.filter((d) => Date.now() - ms(d.le) < 7 * 86400000).slice().reverse();
+    h += '<div class="card c" style="border:2px solid var(--gold)"><div class="sm">🧾 Dépenses · il te reste <b class="gold">' + money(reste) + '</b> sur ' + DEP_MAX + ' $ (7 derniers jours)</div>';
+    mineD.forEach((d) => { const st = d.statut === 'attente' ? '<b class="gold">' + money(d.montant) + ' ⏳</b>' : d.statut === 'ok' ? '<b class="grn">' + money(depVal(d)) + ' ✓</b>' : '<b class="red"><s>' + money(d.montant) + '</s> ❌</b>';
+      h += '<div class="row" style="text-align:left"><span>🎈 ' + DEP_RAISON + ' · ' + (jourDe(ms(d.le)) === jourDe(Date.now()) ? '' : jourTxt(jourDe(ms(d.le))) + ' ') + hm(ms(d.le)) + '</span>' + st + '</div>'; });
+    if (mineD.some((d) => d.statut === 'attente')) h += '<div class="sm" style="text-align:left">⏳ = en attente que Wayne approuve · tu peux continuer à travailler</div>';
+    if (S.dep) {
+      h += '<div style="text-align:left;margin-top:10px"><b style="font-size:17px">🧾 Nouvelle dépense</b><div class="sm" style="margin-top:8px">1. Montant ($) — ' + money(reste) + ' maximum</div><input id="dpM" type="text" inputmode="decimal" value="' + esc(S.dep.m) + '">' +
+        '<div class="sm">2. C’est pour quoi ?</div><div style="display:inline-block;background:var(--green);color:#03150c;border-radius:999px;padding:10px 14px;font-weight:800;margin:4px 0 8px">🎈 ' + DEP_RAISON + '</div>' +
+        '<div class="sm">3. Photo de la facture (obligatoire)</div>' + (S.dep.photo ? '<img src="' + S.dep.photo + '" style="width:100%;max-height:220px;object-fit:contain;border-radius:12px;background:#000;margin-top:6px"><div class="sm grn">✓ Photo prise · <label for="dpF" style="text-decoration:underline">reprendre</label></div>' : '<label for="dpF" style="display:block;border:2px dashed var(--line);border-radius:14px;padding:22px;text-align:center;color:var(--muted);margin-top:6px">📷 Prendre la photo</label>') +
+        '<input id="dpF" type="file" accept="image/*" capture="environment" style="display:none"><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="dpX">Retour</button><button class="go" id="dpGo"' + (S.busy ? ' disabled' : '') + '>Envoyer</button></div></div>';
+    } else h += '<button class="go" id="dpOpen" style="margin-top:10px;background:var(--gold)"' + (reste <= 0 ? ' disabled' : '') + '>🧾 Dépense</button>' + (reste <= 0 ? '<div class="sm" style="margin-top:6px">Maximum de ' + DEP_MAX + ' $ atteint pour les 7 derniers jours.</div>' : '');
+    h += '</div>'; }
   h += '<button class="ghost" id="cnt">📦 Compter mon stock</button>';
   // Ses ventes (7 derniers jours) : toucher → changer P/L ou annuler (remet au stock). Il ne peut jamais changer le stock donné.
   const mine = S.ventes.filter((x) => x.par === auth.currentUser.uid && true).slice(-40).reverse();
@@ -186,6 +212,24 @@ function drawFafa(box) {
   if ($('rfX')) $('rfX').onclick = () => { S.refus = null; draw(); };
   box.querySelectorAll('[data-dno2]').forEach((b) => { b.onclick = () => { const o = { statut: 'refuse' }; const r = String(S.refus.r || '').trim().slice(0, 200); if (r) o.raison = r; repDon(b.dataset.dno2, o); }; });
   if ($('nOn')) $('nOn').onclick = () => saveTok(true);
+  box.querySelectorAll('[data-dfvu]').forEach((b) => { b.onclick = () => setDoc(doc(db, 'ot_depenses', b.dataset.dfvu), { vuF: true }, { merge: true }).catch((e) => { S.err = errTxt(e); draw(); }); });
+  if ($('dpOpen')) $('dpOpen').onclick = () => { S.dep = { m: '', photo: null }; S.err = ''; draw(); };
+  if ($('dpX')) $('dpX').onclick = () => { S.dep = null; S.err = ''; draw(); };
+  if ($('dpM')) $('dpM').oninput = (e) => { S.dep.m = e.target.value; };
+  if ($('dpF')) $('dpF').onchange = async (e) => { const fl = e.target.files && e.target.files[0]; if (!fl) return; try { S.dep.photo = await shrink(fl); S.err = ''; } catch (x) { S.err = x.message; } draw(); };
+  if ($('dpGo')) $('dpGo').onclick = async () => {
+    const m = Math.round(Number(String(S.dep.m).replace(',', '.')) * 100) / 100, reste = Math.max(0, DEP_MAX - dep7());
+    if (!(m > 0)) { S.err = 'Écris le montant.'; return draw(); }
+    if (m > reste) { S.err = 'Maximum ' + money(reste) + ' (150 $ par 7 jours).'; return draw(); }
+    if (!S.dep.photo) { S.err = 'Prends la photo de la facture.'; return draw(); }
+    S.busy = true; draw();
+    try { const ref = doc(collection(db, 'ot_depenses')), b = writeBatch(db);
+      b.set(doc(db, 'ot_depPhotos', ref.id), { par: auth.currentUser.uid, photo: S.dep.photo, le: serverTimestamp() });
+      b.set(ref, { par: auth.currentUser.uid, nom: S.nom, montant: m, raison: DEP_RAISON, statut: 'attente', le: serverTimestamp() });
+      await b.commit(); S.dep = null; S.err = ''; if (navigator.vibrate) navigator.vibrate(60); }
+    catch (e) { S.err = errTxt(e); }
+    S.busy = false; draw();
+  };
   if ($('vP')) $('vP').onclick = () => sell('P');
   if ($('vL')) $('vL').onclick = () => sell('L');
   box.querySelectorAll('[data-op]').forEach((el) => { el.onclick = () => { S.open.v = S.open.v === el.dataset.op ? null : el.dataset.op; draw(); }; });
@@ -254,7 +298,16 @@ function drawWayne(box) {
       (d ? '<div style="text-align:left;margin-top:8px"><div class="sm">Montant reçu ($)</div><input id="rD" type="number" inputmode="decimal" value="' + esc(S.form.m) + '"><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" data-rok2="' + r.id + '">Confirmer</button></div></div>'
         : '<button class="go" style="margin-top:8px" data-rok="' + r.id + '">✅ Reçu</button><div class="two" style="margin-top:6px"><button class="ghost" data-rdf="' + r.id + '">✏️ Montant différent</button><button class="ghost" data-rno="' + r.id + '">❌ Pas reçu</button></div>') + '</div>';
   });
-  h += '<div class="card c"><div class="sm">💰 Ma part pas encore reçue</div><div class="big gold">' + money(k.du) + '</div><div class="sm">' + money(S.conf.partP) + ' par P · ' + money(S.conf.partL) + ' par L</div>';
+  S.deps.filter((d) => d.statut === 'attente').forEach((d) => {
+    const ph = S.photos[d.id], fm = f && f.id === d.id ? f : null; if (ph === undefined) photoOf(d.id);
+    h += '<div class="card" style="border:2px solid var(--gold)"><b class="gold" style="font-size:17px">🧾 Dépense de ' + esc(d.nom || 'Fafa') + ' · ' + money(d.montant) + '</b><div class="sm">' + jourTxt(jourDe(ms(d.le))) + ' · ' + hm(ms(d.le)) + '</div><div class="row"><span>Raison</span><b>🎈 ' + esc(d.raison || DEP_RAISON) + '</b></div>' +
+      (ph ? '<img src="' + ph + '" data-big="' + d.id + '" style="width:100%;max-height:260px;object-fit:contain;border-radius:12px;background:#000;cursor:zoom-in"><div class="sm c">touche la photo pour l’agrandir</div>' : '<div class="sm c" style="padding:20px">' + (ph === '' ? 'Photo introuvable' : 'Chargement de la photo…') + '</div>');
+    if (fm && fm.t === 'depDiff') h += '<div style="margin-top:8px"><div class="sm">Montant approuvé ($)</div><input id="dwM" type="text" inputmode="decimal" value="' + esc(fm.m) + '"><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" data-dwok2="' + d.id + '">Approuver</button></div></div>';
+    else if (fm && fm.t === 'depNon') h += '<div style="margin-top:8px"><div class="sm">Pourquoi ? (facultatif)</div><input id="dwR" value="' + esc(fm.r) + '"><div class="two"><button class="ghost" id="fX">Retour</button><button class="ghost red" data-dwno2="' + d.id + '">❌ Refuser</button></div></div>';
+    else h += '<button class="go" style="margin-top:10px" data-dwok="' + d.id + '">✅ J’approuve</button><div class="two" style="margin-top:6px"><button class="ghost" data-dwdf="' + d.id + '">✏️ Montant différent</button><button class="ghost" data-dwno="' + d.id + '">❌ Refuser</button></div>';
+    h += '</div>';
+  });
+  h += '<div class="card c"><div class="sm">💰 Ma part pas encore reçue</div><div class="big gold">' + money(k.du) + '</div><div class="sm">' + money(S.conf.partP) + ' par P · ' + money(S.conf.partL) + ' par L' + (k.depT ? ' · dépenses de Fafa enlevées : ' + money(k.depT) + (k.depAtt ? ' (dont ' + money(k.depAtt) + ' en attente)' : '') : '') + '</div>';
   if (f && f.t === 'recu') h += '<div style="text-align:left;margin-top:10px"><div class="sm">Montant reçu ($)</div><input id="fM" type="number" inputmode="decimal" value="' + esc(f.m) + '"><div class="err">' + esc(S.err) + '</div><div class="two"><button class="ghost" id="fX">Retour</button><button class="go" id="fGo">Confirmer</button></div></div>';
   else h += '<button class="go" id="bRecu" style="margin-top:10px">✅ J’ai reçu de l’argent</button>';
   h += '</div>';
@@ -274,14 +327,16 @@ function drawWayne(box) {
   }
   h += '</div>';
   // jour par jour
-  const ev = {}; const add = (t, o) => { const j = jourDe(t); (ev[j] = ev[j] || { P: 0, L: 0, part: 0, recu: [], dons: [], mods: [] }); Object.keys(o).forEach((x) => { if (Array.isArray(ev[j][x])) ev[j][x].push(o[x]); else ev[j][x] += o[x]; }); };
+  const ev = {}; const add = (t, o) => { const j = jourDe(t); (ev[j] = ev[j] || { P: 0, L: 0, part: 0, recu: [], dons: [], mods: [], deps: [] }); Object.keys(o).forEach((x) => { if (Array.isArray(ev[j][x])) ev[j][x].push(o[x]); else ev[j][x] += o[x]; }); };
   S.ventes.forEach((v) => { if (!v.annulee) add(ms(v.le), { P: v.P || 0, L: v.L || 0, part: v.part || 0 }); (v.modifs || []).forEach((m) => add(m.le, { mods: Object.assign({ v }, m) })); });
   S.recus.forEach((r) => add(ms(r.le), { recu: r }));
   S.remises.filter((r) => r.statut === 'recue').forEach((r) => add(ms(r.le), { recu: { le: r.le, montant: r.montantDit != null ? r.montantDit : r.montant, fafa: r.nom || 'Fafa' } }));
   S.dons.forEach((d) => add(ms(d.le), { dons: d }));
+  S.deps.forEach((d) => add(ms(d.le), { deps: d }));
   const js = Object.keys(ev).map(Number).sort((a, b) => b - a).slice(0, 21);
   h += '<div class="card"><b>Jour par jour</b>' + (js.map((j) => { const e = ev[j]; let r = '';
     if (e.P || e.L) r += '<div class="row"><span>' + jourTxt(j) + ' · ' + [e.P ? e.P + ' P' : '', e.L ? e.L + ' L' : ''].filter(Boolean).join(' + ') + '</span><b>+' + money(e.part) + '</b></div>';
+    e.deps.forEach((x) => { const st = x.statut === 'attente' ? ' ⏳' : x.statut === 'ok' ? ' ✓' : ' ❌ refusée'; r += '<div class="row"><span>' + jourTxt(j) + ' · 🧾 dépense ' + hm(ms(x.le)) + '</span><b class="' + (x.statut === 'refuse' ? 'red' : 'gold') + '">' + (x.statut === 'refuse' ? '<s>−' + money(x.montant) + '</s>' : '−' + money(depVal(x))) + st + '</b></div>'; });
     e.recu.forEach((x) => { r += '<div class="row"><span>' + jourTxt(j) + ' · ' + (x.fafa ? esc(x.fafa) + ' t’a donné' : 'reçu') + ' ' + hm(ms(x.le)) + '</span><b class="grn">−' + money(x.montant) + ' ✓</b></div>'; });
     e.mods.sort((a, b) => a.le - b.le);
     if (e.mods.length) r += '<div style="padding:8px 0;border-top:1px solid var(--line)"><div class="sm"><b style="color:var(--text)">✏️ Modifications de ' + esc(S.users[0] ? S.users[0].nom : 'Fafa') + '</b></div>' + e.mods.map((m) => '<div class="sm" style="padding:3px 0">' + hm(m.le) + ' · vente de ' + hm(ms(m.v.le)) + (m.type === 'annule' ? ' <b class="red">annulée</b> (1 ' + m.de + ' remise au stock)' : ' changée <b>' + m.de + ' → ' + m.a + '</b>') + '</div>').join('') + '</div>';
@@ -297,6 +352,15 @@ function drawWayne(box) {
   box.querySelectorAll('[data-rdf]').forEach((b) => { b.onclick = () => { const r = S.remises.find((x) => x.id === b.dataset.rdf); S.form = { t: 'diff', id: r.id, m: String(r.montant) }; draw(); }; });
   if ($('rD')) $('rD').oninput = (e) => { S.form.m = e.target.value; };
   box.querySelectorAll('[data-rok2]').forEach((b) => { b.onclick = () => { const m = Math.round(Number(S.form.m) * 100) / 100; if (!(m >= 0 && m <= 100000)) { S.err = 'Montant invalide.'; return draw(); } rep(b.dataset.rok2, { statut: 'recue', montantDit: m }); }; });
+  const depRep = (id, o) => run(() => setDoc(doc(db, 'ot_depenses', id), Object.assign({ repLe: serverTimestamp() }, o), { merge: true }));
+  box.querySelectorAll('[data-big]').forEach((b) => { b.onclick = () => bigPhoto(S.photos[b.dataset.big]); });
+  box.querySelectorAll('[data-dwok]').forEach((b) => { b.onclick = () => depRep(b.dataset.dwok, { statut: 'ok' }); });
+  box.querySelectorAll('[data-dwdf]').forEach((b) => { b.onclick = () => { const d = S.deps.find((x) => x.id === b.dataset.dwdf); S.form = { t: 'depDiff', id: d.id, m: String(d.montant) }; S.err = ''; draw(); }; });
+  box.querySelectorAll('[data-dwno]').forEach((b) => { b.onclick = () => { S.form = { t: 'depNon', id: b.dataset.dwno, r: '' }; S.err = ''; draw(); }; });
+  if ($('dwM')) $('dwM').oninput = (e) => { S.form.m = e.target.value; };
+  if ($('dwR')) $('dwR').oninput = (e) => { S.form.r = e.target.value; };
+  box.querySelectorAll('[data-dwok2]').forEach((b) => { b.onclick = () => { const m = Math.round(Number(String(S.form.m).replace(',', '.')) * 100) / 100; if (!(m >= 0 && m <= 150)) { S.err = 'Montant invalide.'; return draw(); } depRep(b.dataset.dwok2, { statut: 'ok', montantDit: m }); }; });
+  box.querySelectorAll('[data-dwno2]').forEach((b) => { b.onclick = () => { const o = { statut: 'refuse' }, r = String(S.form.r || '').trim().slice(0, 200); if (r) o.raisonRefus = r; depRep(b.dataset.dwno2, o); }; });
   box.querySelectorAll('[data-dvu]').forEach((b) => { b.onclick = () => run(() => setDoc(doc(db, 'ot_dons', b.dataset.dvu), { vuW: true }, { merge: true })); });
   box.querySelectorAll('[data-dnot]').forEach((b) => { b.onclick = async () => { b.disabled = true; const id = b.dataset.dnot, n = await notifyDon(id); S.donMsg[id] = n > 0 ? '✅ Notification envoyée ' + hm(Date.now()) : n === 0 ? 'Fafa n’a pas encore activé les notifications sur son téléphone. Il verra la demande en ouvrant l’app.' : 'Erreur d’envoi. Réessaie.'; draw(); }; });
   box.querySelectorAll('[data-vu]').forEach((b) => { b.onclick = () => run(() => setDoc(doc(db, 'ot_comptes', b.dataset.vu), { vu: true }, { merge: true })); });
@@ -319,12 +383,12 @@ function listen(name, key, sortKey) {
 }
 function start() {
   stops.push(onSnapshot(doc(db, 'ot_conf', 'app'), (s) => { if (s.exists()) S.conf = Object.assign({ partP: 35, partL: 115 }, s.data()); draw(); }, () => {}));
-  listen('ot_ventes', 'ventes'); listen('ot_dons', 'dons'); listen('ot_recus', 'recus'); listen('ot_remises', 'remises'); listen('ot_comptes', 'comptes');
+  listen('ot_ventes', 'ventes'); listen('ot_dons', 'dons'); listen('ot_recus', 'recus'); listen('ot_remises', 'remises'); listen('ot_comptes', 'comptes'); listen('ot_depenses', 'deps');
   if (S.role === 'wayne') listen('ot_users', 'users');
 }
 
 onAuthStateChanged(auth, async (u) => {
-  stopAll(); Object.assign(S, { ventes: [], dons: [], recus: [], remises: [], comptes: [], give: null, users: [], cnt: null, form: null, err: '' });
+  stopAll(); Object.assign(S, { ventes: [], dons: [], recus: [], remises: [], comptes: [], deps: [], dep: null, photos: {}, give: null, users: [], cnt: null, form: null, err: '' });
   if (!u) { S.role = 'login'; return draw(); }
   S.why = '';
   try {
