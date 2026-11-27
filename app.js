@@ -4245,7 +4245,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 92;
+const APP_V = 93;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5608,7 +5608,7 @@ function v92Ov() {
   return o;
 }
 function v92Close() { v92.open = null; v92.form = null; v92.edit = null; v92.who = null; v92.err = ''; const o = $('v92Ov'); if (o) o.remove(); }
-const v92Head = (t) => '<div style="display:flex;align-items:center;gap:10px;padding:14px 14px 6px;position:sticky;top:0;background:var(--bg);z-index:2"><button class="btn ghost sm" style="width:auto" data-v92x="1">‹ Retour</button><b style="font-size:18px">' + t + '</b></div>';
+const v92Head = (t) => '<div style="display:flex;align-items:center;gap:12px;padding:calc(env(safe-area-inset-top, 0px) + 22px) 14px 10px;position:sticky;top:0;background:var(--bg);z-index:2;border-bottom:1px solid var(--line)"><button class="btn ghost" style="width:auto;padding:12px 18px;font-size:16px" data-v92x="1">‹ Retour</button><b style="font-size:18px">' + t + '</b></div>';
 function openDep() { v92.open = 'dep'; v92.err = ''; v92Draw(); }
 function v92Draw() {
   if (v92.open !== 'dep') return;
