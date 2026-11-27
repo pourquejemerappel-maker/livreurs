@@ -2,7 +2,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, setPersistence, browserLocalPersistence }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocs, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit, deleteDoc }
+import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocs, getDocFromServer, onSnapshot, writeBatch, setDoc, increment, serverTimestamp, collection, query, where, orderBy, limit, deleteDoc, deleteField }
   from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getMessaging, getToken, isSupported as msgSupported } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
 
@@ -384,6 +384,7 @@ function startLive() {
   setTimeout(startV78, 0); // v78
   setTimeout(startV82, 0); // v82
   setTimeout(startV86, 0); // v86
+  setTimeout(startV92, 0); // v92 : dépenses
   ss.list = null; ss.ask = null; lastPing = 0; setTimeout(startSessions, 0);
   sortis = {}; setTimeout(startSortis, 0);
   stops.push(onSnapshot(collection(db, 'members'), (qs) => { team = {}; qs.forEach((d) => { if (!hidId(d.id)) team[d.id] = d.data(); }); renderTeam(); limStocks(); renderAll(); }, () => {}));
@@ -1246,6 +1247,7 @@ async function qAct(a, id) {
       const b = writeBatch(db);
       b.update(doc(db, 'commandes', id), { statut: 'annulee', annuleePar: me.mid, finLe: serverTimestamp() });
       b.update(doc(db, 'cmdPrive', id), { actif: false });
+      if (await v92Promo(b, Object.assign({ id }, c)) && c.soiree) b.update(doc(db, 'soirees', c.soiree), { livrees: increment(1) }); // v92
       if (c.suivi) b.update(doc(db, 'suivi', c.suivi), { actif: false, statut: 'annulee' });
       return await b.commit();
     }
@@ -2642,6 +2644,7 @@ async function loadHisto() {
   const [cmdsW, remsW, dts, rets] = await Promise.all([
     rangeDocs('commandes', 'livreeLe', new Date(a.getTime() - H12), bW), rangeDocs('remises', 'le', new Date(a.getTime() - H12), bW),
     canDette() ? rangeDocs('dettes', 'creeLe', a, b) : Promise.resolve([]), rangeDocs('retours', 'le', a, b)]);
+  const depsW = await rangeDocs('depenses', 'le', new Date(a.getTime() - H12), bW); // v92
   await soirLoad(cmdsW);
   const inR = (k) => k >= a.getTime() && k < b.getTime(), byP = {};
   cmdsW.forEach((c) => { if (c.statut === 'livree' && c.livreur) (byP[c.livreur] = byP[c.livreur] || []).push(c); });
@@ -2650,6 +2653,7 @@ async function loadHisto() {
   hs.rems = rems.filter((r) => r.statut === 'recue' || r.statut === 'attente');
   const livrees = cmdsH.filter((c) => c.statut === 'livree');
   const remis = {}; rems.forEach((r) => { if (r.statut === 'recue' && !remDispW(r)) remis[r.de] = (remis[r.de] || 0) + (r.montant || 0); }); // v85
+  depsW.forEach((x) => { if (['ok', 'attente'].includes(x.statut) && inR(remDayOf(tsMs(x.le), byP[x.mid]))) remis[x.mid] = (remis[x.mid] || 0) + v92Val(x); }); // v92 : dépenses enlevées
   const dtt = {}; dts.forEach((x) => { if (x.statut !== 'refusee') dtt[x.livreur] = (dtt[x.livreur] || 0) + (x.montant || 0); });
   const rows = withDettes(sumUp(livrees, remis), dtt);
   let t = teamText(rows, a);
@@ -3382,7 +3386,8 @@ function bindHistoPeople() {
       bt.set(doc(db, 'stocks', c.livreur), { L: increment(c.L || 0), XL: increment(c.XL || 0) }, { merge: true });
       bt.set(doc(collection(db, 'mouvements')), { de: 'annulation', vers: c.livreur, L: c.L || 0, XL: c.XL || 0, type: 'annulation', client: c.client || '', cmd: c.id, par: myMid(), le: serverTimestamp() });
     }
-    if (c.soiree) bt.update(doc(db, 'soirees', c.soiree), { livrees: increment(-1) });
+    const promo = await v92Promo(bt, c); // v92 : l'« autre chose » devient la livraison
+    if (c.soiree && !promo) bt.update(doc(db, 'soirees', c.soiree), { livrees: increment(-1) });
     await bt.commit(); }); }; });
   box.querySelectorAll('[data-hsave]').forEach((el) => { el.onclick = () => { const c = C(el.dataset.hsave); if (!c) return;
     const L = Math.round(Number(hx.L)), XL = Math.round(Number(hx.XL)), cash = Math.round(Number(hx.cash));
@@ -4107,6 +4112,8 @@ async function soldeMoi() {
     dq.forEach((x) => { const r = x.data(), t = tsMs(r.regleLe); if (r.statut !== 'reglee' || r.regleMode !== 'cash' || t < d0.getTime()) return; inn += r.montant || 0; if (t >= t0.getTime()) innT += r.montant || 0; }); } catch (e) {}
   try { const bq = await getDocs(query(collection(db, 'bonus'), where('mid', '==', mid), where('statut', '==', 'ok'))); // v73 (v82 : statut filtré) : bonus acceptés = gardés du cash
     bq.forEach((x) => { const b = x.data(), t = tsMs(b.le); if (b.statut !== 'ok' || t < d0.getTime()) return; out += b.montant || 0; if (t >= t0.getTime()) outT += b.montant || 0; }); } catch (e) {}
+  try { const dq = await getDocs(query(collection(db, 'depenses'), where('mid', '==', mid))); // v92 : dépenses (en attente ou approuvées)
+    dq.forEach((x) => { const b = x.data(), t = tsMs(b.le); if (!['ok', 'attente'].includes(b.statut) || t < d0.getTime()) return; out += v92Val(b); if (t >= t0.getTime()) outT += v92Val(b); }); } catch (e) {}
   const tot = all - out + inn, ceSoir = tonight - outT + innT;
   return { tot, ceSoir, avant: tot - ceSoir };
 }
@@ -4115,7 +4122,7 @@ async function loadCash() {
   cs.busy = true; drawCash();
   try {
     const far = new Date(Date.now() + 2 * 86400000);
-    const [cm, rems, bons] = await Promise.all([rangeDocs('commandes', 'livreeLe', CASH_START, far), rangeDocs('remises', 'le', CASH_START, far), isOwner() || me.role === 'complet' ? rangeDocs('bonus', 'le', CASH_START, far) : Promise.resolve([])]);
+    const [cm, rems, bons, deps] = await Promise.all([rangeDocs('commandes', 'livreeLe', CASH_START, far), rangeDocs('remises', 'le', CASH_START, far), isOwner() || me.role === 'complet' ? rangeDocs('bonus', 'le', CASH_START, far) : Promise.resolve([]), rangeDocs('depenses', 'le', CASH_START, far)]);
     let dts = []; if (canDette()) { try { const q = await getDocs(collection(db, 'dettes')); q.forEach((x) => dts.push(Object.assign({ id: x.id }, x.data()))); } catch (e) {} }
     const P = {};
     const per = (id, nom) => P[id] || (P[id] = { id, nom: nom || nomDe(id), solde: 0, dette: 0, days: {} });
@@ -4125,7 +4132,7 @@ async function loadCash() {
     const skip = (id, t, rid) => { const k = cutOf(team[id]); return t < k.t || (rid && k.ex.includes(rid)); };
     cm.filter((c) => c.statut === 'livree' && !c.test && c.livreur && !skip(c.livreur, tsMs(c.livreeLe))).forEach((c) => {
       const p = per(c.livreur, c.livreurNom), d = dayK(p, cmdDay(c)), r = sumUp([c])[0]; if (!r) return;
-      d.n += 1; d.cash += r.cash; d.garde += r.cash - r.reste; p.solde += r.reste;
+      d.n += c.extraDe ? 0 : 1; d.cash += r.cash; d.garde += r.cash - r.reste; d.paie = (d.paie || 0) + (r.paie || 0); d.frais = (d.frais || 0) + (r.frais || 0); d.tips = (d.tips || 0) + (r.tips || 0); p.solde += r.reste;
     });
     rems.forEach((r) => {
       const t = tsMs(r.le), ok = r.statut === 'recue', att = r.statut === 'attente';
@@ -4137,6 +4144,9 @@ async function loadCash() {
     bons.forEach((b) => { if (!b.mid || !['ok', 'attente'].includes(b.statut) || !(b.montant > 0)) return; const t = tsMs(b.le); if (skip(b.mid, t)) return; const p = per(b.mid, b.nom);
       day(p, t).lines.push({ t, txt: '🎁 Bonus · ' + (b.raison || ''), m: -(b.montant || 0), ok: b.statut === 'ok', att: b.statut === 'attente', lab: b.statut === 'ok' ? '✓ accepté · de ' + (b.parNom || '') : '⏳ pas encore accepté · de ' + (b.parNom || '') });
       if (b.statut === 'ok') p.solde -= b.montant || 0; });
+    // v92 : dépenses (en attente ou approuvées) = enlevées tout de suite de ce qu'il doit remettre ; refusées = rien.
+    deps.forEach((x) => { if (!x.mid || !['ok', 'attente'].includes(x.statut)) return; const t = tsMs(x.le); if (skip(x.mid, t)) return; const p = per(x.mid, x.nom), v = v92Val(x);
+      day(p, t).lines.push({ t, txt: '🧾 Dépense · ' + v92Lab(x), m: -v, dep: true, ok: x.statut === 'ok', att: x.statut === 'attente', lab: x.statut === 'ok' ? '✓ approuvée par ' + (x.parNom || '') : '⏳ pas encore approuvée' }); p.solde -= v; });
     // Dettes : ouvertes = notées à part (pas encore de cash) ; réglées en cash = le cash s'ajoute au solde du responsable.
     dts.forEach((x) => {
       const rid = x.responsable; if (!rid || rid === 'dispatch' || rid === 'proprietaire') return;
@@ -4235,7 +4245,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 88;
+const APP_V = 92;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -4542,6 +4552,8 @@ function mnItems() {
     if (isOwner() && siteOn()) out.push({ ic: '🌐', lab: 'Coller une commande (test)', go: () => openSite() }); // v76
     if (document.querySelector('.card.notif')) out.push({ ic: '🔔', lab: 'Notifications', go: () => { const d = mnTabs().find((x) => x.t === 'direct'); if (d) d.b.click(); mnScroll('.card.notif'); } });
   }
+  { const n92 = v92Count(); out.push({ sec: 'Argent · dépenses' }, { ic: '🧾', lab: v92Appr() ? 'Dépenses' + (v92.att.length ? ' à approuver' : '') : 'Dépenses', n: n92, go: () => openDep() }); // v92
+    out.push({ ic: '🧮', lab: v92Appr() ? 'Maths' : 'Mes maths', go: () => openMaths() }); }
   if (isOwner() && !(me.role === 'limite')) out.push({ sec: 'Autres équipes' }, { ic: '🍁', lab: 'Ottawa', go: () => { location.href = 'ottawa.html'; } }); // v88 : raccourci, Wayne seulement
   out.push({ ic: '⏻', lab: 'Déconnexion', out: true, go: () => $('logout').click() });
   return out;
@@ -4567,7 +4579,7 @@ function mnHead() {
     hb.parentNode.insertBefore(b, hb);
     const t = document.createElement('span'); t.id = 'mnPg'; hb.appendChild(t);
   }
-  const tabs = mnTabs(), cur = tabs.find((x) => x.t === curTab), n = tabs.reduce((a, x) => a + x.n, 0) + (typeof v72Count === 'function' ? v72Count() : 0);
+  const tabs = mnTabs(), cur = tabs.find((x) => x.t === curTab), n = tabs.reduce((a, x) => a + x.n, 0) + (typeof v72Count === 'function' ? v72Count() : 0) + (typeof v92Count === 'function' ? v92Count() : 0);
   const liv = !(isOwner() || isStaff()) || (me.role === 'limite' && locked());
   b.innerHTML = '<i></i><i></i><i></i>' + (n ? '<em>' + n + '</em>' : '');
   const pg = $('mnPg'); if (pg) pg.textContent = cur ? (cur.t === 'soiree' && liv ? 'Ma livraison' : cur.lab) : 'Ma livraison';
@@ -4963,18 +4975,20 @@ async function v73Load() {
     const mid = me.mid, get = async (q) => { const a = []; (await getDocs(q)).forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); return a; };
     const [cm, de, vers, bon, sm] = await Promise.all([get(query(collection(db, 'commandes'), where('livreur', '==', mid))), get(query(collection(db, 'remises'), where('de', '==', mid))),
       get(query(collection(db, 'remises'), where('vers', '==', mid))), get(query(collection(db, 'bonus'), where('mid', '==', mid), where('statut', '==', 'ok'))), soldeMoi().catch(() => null)]);
+    const dps = await get(query(collection(db, 'depenses'), where('mid', '==', mid))).catch(() => []); // v92
     const lim = soirStart().getTime() - 6 * 86400000, D = {};
     await soirLoad(cm); const liv = cm.filter((c) => c.statut === 'livree' && !c.test); // v75 : jour de la soirée
-    const dayK = (k) => D[k] || (D[k] = { k, list: [], remis: [], recu: [], bon: [] }), day = (ms) => dayK(soirOf(ms).getTime());
+    const dayK = (k) => D[k] || (D[k] = { k, list: [], remis: [], recu: [], bon: [], dep: [] }), day = (ms) => dayK(soirOf(ms).getTime());
     liv.filter((c) => cmdDay(c) >= lim).forEach((c) => dayK(cmdDay(c)).list.push(c));
     de.filter((r) => r.statut === 'recue' && remDayOf(tsMs(r.le), liv) >= lim).forEach((r) => dayK(remDayOf(tsMs(r.le), liv)).remis.push(r));
     vers.filter((r) => r.statut === 'recue' && remDayOf(tsMs(r.le), liv) >= lim).forEach((r) => dayK(remDayOf(tsMs(r.le), liv)).recu.push(r));
     bon.filter((b) => b.statut === 'ok' && tsMs(b.le) >= lim).forEach((b) => day(tsMs(b.le)).bon.push(b));
+    dps.filter((b) => ['ok', 'attente'].includes(b.statut) && tsMs(b.le) >= lim).forEach((b) => day(tsMs(b.le)).dep.push(b));
     Object.values(D).forEach((d) => {
       const r = sumUp(d.list)[0] || { n: 0, cash: 0, frais: 0, tips: 0, paie: 0, reste: 0 };
       d.n = d.list.length; d.cash = r.cash; d.paie = r.paie || 0; d.frais = r.frais || 0; d.tips = r.tips || 0;
       d.remisT = d.remis.reduce((a, x) => a + (x.montant || 0), 0); d.recuT = d.recu.reduce((a, x) => a + (x.montant || 0), 0); d.bonT = d.bon.reduce((a, x) => a + (x.montant || 0), 0);
-      d.reste = (r.reste || 0) - d.remisT + d.recuT - d.bonT;
+      d.depT = d.dep.reduce((a, x) => a + v92Val(x), 0); d.reste = (r.reste || 0) - d.remisT + d.recuT - d.bonT - d.depT;
     });
     v73.data = { days: Object.values(D).sort((a, b) => b.k - a.k), now: sm ? sm.tot : null };
   } catch (e) { v73.data = { err: msg(e), days: [] }; }
@@ -4994,6 +5008,7 @@ function v73Draw() {
     if (v73.open === 'frais') h += '<div class="v73s">' + d.list.filter((c) => Number(c.frais)).map((c) => '<div class="v73l"><span>' + hm(tsMs(c.livreeLe)) + ' · ' + esc(c.client || '') + '</span><b>+' + money(c.frais) + '</b></div>').join('') + '</div>';
     h += R('🎁 Bonus', d.bonT ? money(d.bonT) : '—', '#fbbf24', d.bonT ? 'bonus' : null);
     if (v73.open === 'bonus') h += '<div class="v73s">' + d.bon.map((b) => '<div class="v73l"><span>' + esc(b.raison || '') + ' · ' + (b.type === 'auto' ? 'validé par ' : 'de ') + esc(b.parNom || '') + (b.raisonChg && !b.chgRefuse ? ' · « ' + esc(b.raisonChg) + ' »' : '') + '</span><b>+' + money(b.montant || 0) + '</b></div>').join('') + '</div>';
+    if (d.depT) { h += R('🧾 Dépenses', v92M(d.depT), '#fca5a5', 'dep'); if (v73.open === 'dep') h += '<div class="v73s">' + d.dep.map((x) => '<div class="v73l"><span>' + hm(tsMs(x.le)) + ' · ' + esc(v92Lab(x)) + (x.statut === 'attente' ? ' ⏳' : ' ✓') + '</span><b>' + v92M(v92Val(x)) + '</b></div>').join('') + '</div>'; } // v92
     h += R('📤 Donné au dispatch', money(d.remisT), '#93c5fd', d.remisT ? 'disp' : null);
     if (v73.open === 'disp') h += '<div class="v73s">' + d.remis.sort((a, b) => tsMs(a.le) - tsMs(b.le)).map((r) => '<div class="v73l"><span>' + hm(tsMs(r.le)) + '</span><b>' + money(r.montant || 0) + '</b></div>').join('') + '</div>';
     if (d.recuT) { h += R('💜 Reçu du dispatch', '+' + money(d.recuT), '#c4b5fd', 'recu'); if (v73.open === 'recu') h += '<div class="v73s">' + d.recu.map((r) => '<div class="v73l"><span>' + hm(tsMs(r.le)) + '</span><b>+' + money(r.montant || 0) + '</b></div>').join('') + '</div>'; }
@@ -5009,7 +5024,7 @@ function v73Draw() {
     v73.data.days.forEach((x) => {
       const ln = (lab, v, col) => '<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:' + (col || 'inherit') + '">' + lab + '</span><b style="color:' + (col || 'inherit') + ';white-space:nowrap">' + v + '</b></div>';
       h += '<div class="card" data-v73d="' + x.k + '" style="cursor:pointer' + (x.bonT ? ';border-color:#a16207' : '') + '"><div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:15px">' + esc(dt(x.k)) + '</b><span class="small">' + x.n + ' livraison' + (x.n > 1 ? 's' : '') + ' ›</span></div>' +
-        ln('💵 Cash ramassé', money(x.cash), '#60a5fa') + ln('− Ta paye' + (x.tips ? ' + pourboires' : ''), money(x.paie + x.tips)) + ln('− 🚗 Frais de livraison', x.frais ? money(x.frais) : '—', '#5eead4') + ln('− 🎁 Bonus', x.bonT ? money(x.bonT) : '—', '#fbbf24') +
+        ln('💵 Cash ramassé', money(x.cash), '#60a5fa') + ln('− Ta paye' + (x.tips ? ' + pourboires' : ''), money(x.paie + x.tips)) + ln('− 🚗 Frais de livraison', x.frais ? money(x.frais) : '—', '#5eead4') + ln('− 🎁 Bonus', x.bonT ? money(x.bonT) : '—', '#fbbf24') + (x.depT ? ln('− 🧾 Dépenses', v92M(x.depT), '#fca5a5') : '') +
         ln('− Donné au dispatch', money(x.remisT)) + (x.recuT ? ln('+ Reçu du dispatch', money(x.recuT), '#c4b5fd') : '') +
         '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--line);margin-top:4px;padding-top:6px;font-weight:800"><span>Reste</span><span style="color:' + (Math.round(x.reste) === 0 ? '#86efac' : x.reste < 0 ? '#c4b5fd' : '#fcd34d') + '">' + (Math.round(x.reste) === 0 ? '0 $ ✓' : x.reste < 0 ? '−' + money(-x.reste) + ' · on te devait' : money(x.reste)) + '</span></div></div>';
     });
@@ -5566,4 +5581,204 @@ function v86Bind(box) {
       notifyMsg('proprietaire', '🟣 ' + (me.nom || 'MOUSSE') + ' t’a envoyé ' + n + ' $ en crypto. Ouvre Gotham › Cash pour confirmer.'); } catch (e) { v86.err = msg(e); }
     v86.busy = false; drawCash();
   };
+}
+
+// ===== v92 (27 nov.) : 🧾 Dépenses (tout le monde ; approuvées par Wayne ou MOUSSE, celles de MOUSSE par Wayne seulement)
+// + 🧮 Maths (Wayne et MOUSSE) : toute l'addition du cash, jour par jour, par personne.
+// + un « autre chose » (extra) devient la livraison quand sa commande principale est annulée.
+const v92 = { mine: [], att: [], open: null, form: null, photos: {}, err: '', busy: false, edit: null, who: null, days: 4 };
+const v92Val = (d) => (d.statut === 'refuse' ? 0 : Number(d.montantDit != null ? d.montantDit : d.montant) || 0);
+const v92M = (n) => (Math.round(n * 100) % 100 ? (Math.round(n * 100) / 100).toFixed(2).replace('.', ',') + ' $' : money(n));
+const v92Lab = (d) => (d.raison === 'ballon' ? '🎈 Ballon' : '✏️ ' + (d.texte || 'Autre'));
+const v92Appr = () => !!me && (isOwner() || me.role === 'complet');
+const v92Unseen = () => v92.mine.filter((d) => !d.vuMoi && (d.statut === 'refuse' || (d.statut === 'ok' && d.montantDit != null && d.montantDit !== d.montant)));
+function v92Count() { try { return (v92Appr() ? v92.att.length : 0) + v92Unseen().length; } catch (e) { return 0; } }
+function startV92() {
+  if (!me) return;
+  const L = (q, f) => stops.push(onSnapshot(q, (qs) => { const a = []; qs.forEach((d) => a.push(Object.assign({ id: d.id }, d.data()))); f(a); if (v92.open === 'dep') v92Draw(); }, (e) => console.warn('v92', e)));
+  if (!isOwner()) L(query(collection(db, 'depenses'), where('mid', '==', me.mid)), (a) => { v92.mine = a.sort((x, y) => tsMs(y.le) - tsMs(x.le)); });
+  if (v92Appr()) L(query(collection(db, 'depenses'), where('statut', '==', 'attente')), (a) => { v92.att = a.filter((d) => isOwner() || (d.mid !== me.mid && d.role !== 'complet')).sort((x, y) => tsMs(x.le) - tsMs(y.le)); });
+}
+function v92Shrink(file) { return new Promise((ok, ko) => { const img = new Image(), u = URL.createObjectURL(file); img.onload = () => { let w = img.width, h = img.height; const k = Math.min(1, 1400 / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k); const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); let q = 0.8, d = c.toDataURL('image/jpeg', q); while (d.length > 800000 && q > 0.3) { q -= 0.1; d = c.toDataURL('image/jpeg', q); } URL.revokeObjectURL(u); d.length > 800000 ? ko(new Error('Photo trop lourde.')) : ok(d); }; img.onerror = () => ko(new Error('Photo illisible.')); img.src = u; }); }
+async function v92Photo(id) { if (v92.photos[id] !== undefined) return; v92.photos[id] = null; try { const x = await getDoc(doc(db, 'depPhotos', id)); v92.photos[id] = x.exists() ? x.data().photo : ''; } catch (e) { v92.photos[id] = ''; } if (v92.open === 'dep') v92Draw(); }
+function v92Big(src) { if (!src) return; const o = document.createElement('div'); o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9500;display:flex;align-items:center;justify-content:center;padding:10px'; o.innerHTML = '<img src="' + src + '" style="max-width:100%;max-height:100%;border-radius:8px">'; o.onclick = () => o.remove(); document.body.appendChild(o); }
+function v92Ov() {
+  let o = $('v92Ov');
+  if (!o) { o = document.createElement('div'); o.id = 'v92Ov'; o.style.cssText = 'position:fixed;inset:0;z-index:80;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch'; document.body.appendChild(o); }
+  return o;
+}
+function v92Close() { v92.open = null; v92.form = null; v92.edit = null; v92.who = null; v92.err = ''; const o = $('v92Ov'); if (o) o.remove(); }
+const v92Head = (t) => '<div style="display:flex;align-items:center;gap:10px;padding:14px 14px 6px;position:sticky;top:0;background:var(--bg);z-index:2"><button class="btn ghost sm" style="width:auto" data-v92x="1">‹ Retour</button><b style="font-size:18px">' + t + '</b></div>';
+function openDep() { v92.open = 'dep'; v92.err = ''; v92Draw(); }
+function v92Draw() {
+  if (v92.open !== 'dep') return;
+  const o = v92Ov(); let h = v92Head('🧾 Dépenses') + '<div style="padding:6px 14px 40px">';
+  if (v92Appr()) {
+    h += '<div class="label">À approuver' + (v92.att.length ? ' (' + v92.att.length + ')' : '') + '</div>';
+    if (!v92.att.length) h += '<div class="card small">Rien à approuver ✓</div>';
+    v92.att.forEach((d) => {
+      const ph = v92.photos[d.id], e = v92.edit && v92.edit.id === d.id ? v92.edit : null; if (ph === undefined) v92Photo(d.id);
+      h += '<div class="card" style="border:2px solid #f5b301"><b style="color:#fcd34d;font-size:17px">🧾 ' + esc(d.nom || nomDe(d.mid)) + ' · ' + v92M(d.montant) + '</b><div class="small">' + esc(new Date(tsMs(d.le)).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })) + ' · ' + hm(tsMs(d.le)) + '</div>' +
+        '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span>Raison</span><b>' + esc(v92Lab(d)) + '</b></div>' +
+        (ph ? '<img src="' + ph + '" data-v92big="' + d.id + '" style="width:100%;max-height:300px;object-fit:contain;background:#000;border-radius:12px;margin-top:8px;cursor:zoom-in"><div class="small center">touche la photo pour l’agrandir</div>' : '<div class="small center" style="padding:24px">' + (ph === '' ? 'Photo introuvable' : 'Chargement de la photo…') + '</div>');
+      if (e && e.t === 'diff') h += '<div class="small" style="margin-top:8px">Montant approuvé ($)</div><input id="v92M" type="text" inputmode="decimal" value="' + esc(e.m) + '"><div class="err">' + esc(v92.err) + '</div><div class="two"><button class="btn ghost" data-v92ex="1">Retour</button><button class="btn" style="background:var(--cash);color:#04150b" data-v92ok2="' + d.id + '">Approuver</button></div>';
+      else if (e && e.t === 'non') h += '<div class="small" style="margin-top:8px">Pourquoi ? (facultatif)</div><input id="v92R" value="' + esc(e.r) + '"><div class="two"><button class="btn ghost" data-v92ex="1">Retour</button><button class="btn" style="background:var(--danger);color:#fff" data-v92no2="' + d.id + '">❌ Refuser</button></div>';
+      else h += '<button class="btn" style="margin-top:10px;background:var(--cash);color:#04150b" data-v92ok="' + d.id + '">✅ J’approuve</button><div class="two" style="margin-top:6px"><button class="btn ghost" data-v92df="' + d.id + '">✏️ Montant différent</button><button class="btn ghost" data-v92no="' + d.id + '">❌ Refuser</button></div>';
+      h += '</div>';
+    });
+  }
+  if (!isOwner()) {
+    v92Unseen().forEach((d) => {
+      h += d.statut === 'refuse'
+        ? '<div class="card" style="background:#2a0f0f;border-color:#7f1d1d"><b style="color:var(--danger)">❌ Ta dépense de ' + v92M(d.montant) + ' a été refusée</b><div class="small">' + (d.parNom ? 'par ' + esc(d.parNom) + ' · ' : '') + (d.raisonRefus ? '« ' + esc(d.raisonRefus) + ' » · ' : '') + v92M(d.montant) + ' remis dans ce que tu dois remettre</div><button class="btn ghost" style="margin-top:8px" data-v92vu="' + d.id + '">OK, vu</button></div>'
+        : '<div class="card" style="border-color:#a16207"><b style="color:#fcd34d">✏️ Ta dépense est approuvée à ' + v92M(d.montantDit) + ' (au lieu de ' + v92M(d.montant) + ')</b><div class="small">' + (d.parNom ? 'par ' + esc(d.parNom) : '') + '</div><button class="btn ghost" style="margin-top:8px" data-v92vu="' + d.id + '">OK, vu</button></div>';
+    });
+    const f = v92.form;
+    h += '<div class="label" style="margin-top:14px">Mes dépenses</div><div class="card">';
+    if (f) {
+      h += '<b style="font-size:17px">🧾 Nouvelle dépense</b><div class="small" style="margin-top:10px">1. Montant ($)</div><input id="v92fM" type="text" inputmode="decimal" value="' + esc(f.m) + '" style="font-size:20px">' +
+        '<div class="small" style="margin-top:10px">2. C’est pour quoi ?</div><div class="seg" id="v92fR"><button data-r="ballon" class="' + (f.r === 'ballon' ? 'on' : '') + '">🎈 Ballon</button><button data-r="autre" class="' + (f.r === 'autre' ? 'on' : '') + '">✏️ Autre raison</button></div>' +
+        (f.r === 'autre' ? '<input id="v92fT" maxlength="120" placeholder="Écris la raison" value="' + esc(f.t) + '" style="margin-top:8px">' : '') +
+        '<div class="small" style="margin-top:10px">3. Photo de la facture (obligatoire)</div>' +
+        (f.photo ? '<img src="' + f.photo + '" style="width:100%;max-height:240px;object-fit:contain;background:#000;border-radius:12px;margin-top:6px"><div class="small" style="color:var(--cash)">✓ Photo prise · <label for="v92fF" style="text-decoration:underline">reprendre</label></div>'
+          : '<label for="v92fF" style="display:block;border:2px dashed var(--line);border-radius:14px;padding:24px;text-align:center;color:var(--muted);margin-top:6px">📷 Prendre la photo</label>') +
+        '<input id="v92fF" type="file" accept="image/*" capture="environment" style="display:none"><div class="err">' + esc(v92.err) + '</div>' +
+        '<div class="two" style="margin-top:10px"><button class="btn ghost" data-v92fx="1">Retour</button><button class="btn" style="background:var(--cash);color:#04150b" data-v92go="1"' + (v92.busy ? ' disabled' : '') + '>' + (v92.busy ? 'Envoi…' : 'Envoyer') + '</button></div>';
+    } else {
+      const lim = Date.now() - 30 * 86400000, L = v92.mine.filter((d) => tsMs(d.le) >= lim);
+      if (!L.length) h += '<div class="small">Aucune dépense depuis 30 jours.</div>';
+      L.forEach((d) => {
+        const st = d.statut === 'attente' ? '<b style="color:#fcd34d">' + v92M(d.montant) + ' ⏳</b>' : d.statut === 'ok' ? '<b style="color:#86efac">' + v92M(v92Val(d)) + ' ✓</b>' : '<b style="color:var(--danger)"><s>' + v92M(d.montant) + '</s> ❌</b>';
+        h += '<div style="display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--line)"><span>' + esc(v92Lab(d)) + ' <span class="small">· ' + esc(new Date(tsMs(d.le)).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric' })) + ' ' + hm(tsMs(d.le)) + '</span></span>' + st + '</div>';
+      });
+      if (L.some((d) => d.statut === 'attente')) h += '<div class="small" style="margin-top:6px">⏳ = en attente d’approbation · c’est déjà enlevé de ce que tu dois remettre · tu peux continuer à travailler</div>';
+      h += '<button class="btn" style="margin-top:12px;background:#f5b301;color:#1a1200" data-v92new="1">🧾 Nouvelle dépense</button>';
+    }
+    h += '</div>';
+  }
+  o.innerHTML = h + '</div>';
+  v92Bind(o);
+}
+function v92Bind(o) {
+  const Q = (s, f) => o.querySelectorAll(s).forEach((b) => { b.onclick = (e) => f(b, e); });
+  Q('[data-v92x]', () => v92Close());
+  Q('[data-v92big]', (b) => v92Big(v92.photos[b.dataset.v92big]));
+  const D = (id) => v92.att.find((x) => x.id === id);
+  const rep = async (id, o2, txt) => { if (v92.busy) return; v92.busy = true; v92.err = '';
+    try { await writeBatch(db).update(doc(db, 'depenses', id), Object.assign({ par: myMid(), parNom: String(me.nom || OWNER).slice(0, 60), repLe: serverTimestamp() }, o2)).commit(); const d = D(id); if (d && txt) notifyMsg(d.mid, txt); v92.edit = null; }
+    catch (e) { v92.err = msg(e); } v92.busy = false; v92Draw(); };
+  Q('[data-v92ok]', (b) => { const d = D(b.dataset.v92ok); rep(d.id, { statut: 'ok' }, '🧾 Ta dépense de ' + v92M(d.montant) + ' est approuvée ✓'); });
+  Q('[data-v92df]', (b) => { const d = D(b.dataset.v92df); v92.edit = { id: d.id, t: 'diff', m: String(d.montant).replace('.', ',') }; v92.err = ''; v92Draw(); });
+  Q('[data-v92no]', (b) => { v92.edit = { id: b.dataset.v92no, t: 'non', r: '' }; v92.err = ''; v92Draw(); });
+  Q('[data-v92ex]', () => { v92.edit = null; v92.err = ''; v92Draw(); });
+  if ($('v92M')) $('v92M').oninput = (e) => { v92.edit.m = e.target.value; };
+  if ($('v92R')) $('v92R').oninput = (e) => { v92.edit.r = e.target.value; };
+  Q('[data-v92ok2]', (b) => { const d = D(b.dataset.v92ok2), m = Math.round(Number(String(v92.edit.m).replace(',', '.')) * 100) / 100;
+    if (!(m >= 0 && m <= 5000)) { v92.err = 'Montant invalide.'; return v92Draw(); }
+    rep(d.id, { statut: 'ok', montantDit: m }, '🧾 Ta dépense de ' + v92M(d.montant) + ' est approuvée à ' + v92M(m)); });
+  Q('[data-v92no2]', (b) => { const d = D(b.dataset.v92no2), r = String(v92.edit.r || '').trim().slice(0, 200), o2 = { statut: 'refuse' }; if (r) o2.raisonRefus = r;
+    rep(d.id, o2, '❌ Ta dépense de ' + v92M(d.montant) + ' est refusée' + (r ? ' : ' + r : '')); });
+  Q('[data-v92vu]', (b) => { writeBatch(db).update(doc(db, 'depenses', b.dataset.v92vu), { vuMoi: true }).commit().catch((e) => { v92.err = msg(e); v92Draw(); }); });
+  Q('[data-v92new]', () => { v92.form = { m: '', r: 'ballon', t: '', photo: null }; v92.err = ''; v92Draw(); });
+  Q('[data-v92fx]', () => { v92.form = null; v92.err = ''; v92Draw(); });
+  if ($('v92fM')) $('v92fM').oninput = (e) => { v92.form.m = e.target.value; };
+  if ($('v92fT')) $('v92fT').oninput = (e) => { v92.form.t = e.target.value; };
+  o.querySelectorAll('#v92fR [data-r]').forEach((b) => { b.onclick = () => { v92.form.r = b.dataset.r; v92Draw(); }; });
+  if ($('v92fF')) $('v92fF').onchange = async (e) => { const fl = e.target.files && e.target.files[0]; if (!fl) return; try { v92.form.photo = await v92Shrink(fl); v92.err = ''; } catch (x) { v92.err = x.message; } v92Draw(); };
+  Q('[data-v92go]', async () => {
+    const f = v92.form, m = Math.round(Number(String(f.m).replace(',', '.')) * 100) / 100, t = String(f.t || '').trim().slice(0, 120);
+    if (!(m > 0 && m <= 5000)) { v92.err = 'Écris le montant.'; return v92Draw(); }
+    if (f.r === 'autre' && !t) { v92.err = 'Écris la raison.'; return v92Draw(); }
+    if (!f.photo) { v92.err = 'Prends la photo de la facture.'; return v92Draw(); }
+    v92.busy = true; v92Draw();
+    try {
+      const ref = doc(collection(db, 'depenses')), b = writeBatch(db);
+      b.set(doc(db, 'depPhotos', ref.id), { mid: me.mid, photo: f.photo, le: serverTimestamp() });
+      const d = { mid: me.mid, nom: String(me.nom || me.mid).slice(0, 60), role: me.role, montant: m, raison: f.r, statut: 'attente', le: serverTimestamp() }; if (f.r === 'autre') d.texte = t;
+      b.set(ref, d); await b.commit();
+      try { const tk = await auth.currentUser.getIdToken(); fetch(NOTIFIER, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: JSON.stringify({ type: 'depense', id: ref.id }) }).catch(() => {}); } catch (e) {}
+      v92.form = null; v92.err = ''; if (navigator.vibrate) navigator.vibrate(60);
+    } catch (e) { v92.err = msg(e); }
+    v92.busy = false; v92Draw();
+  });
+}
+// ---------- 🧮 Maths : Wayne et MOUSSE voient tout le monde ; les autres voient seulement leurs maths à eux ----------
+const V92N = [[2, '2 jours'], [5, '5 jours'], [7, '1 semaine']];
+async function openMaths() {
+  v92.open = 'maths'; v92.days = 7;
+  if (v92Appr()) { v92.who = null; v92Maths(); await loadCash(); }
+  else { v92.who = 'moi'; v92Maths(); await v73Load(); }
+  v92Maths();
+}
+// Jours à afficher, dans un même format : { k, n, cash, paie, frais, tips, items: [{ t, lab, m, cnt, st }] }
+function v92DaysCash(p) {
+  return Object.values(p.days).map((d) => ({ k: d.k, n: d.n || 0, cash: d.cash || 0, paie: d.paie || 0, frais: d.frais || 0, tips: d.tips || 0, garde: d.garde,
+    items: (d.lines || []).filter((l) => l.m || l.dm).map((l) => ({ t: l.t, m: l.m || 0, dm: l.dm || 0, cnt: !!(l.ok || l.dep), st: l.att ? ' ⏳' : ' ✓',
+      lab: /^→ /.test(l.txt) ? '📤 Donné à ' + l.txt.slice(2) : /^Reçu de /.test(l.txt) ? '💜 ' + l.txt : l.txt })) }));
+}
+function v92DaysMine() {
+  return ((v73.data && v73.data.days) || []).map((d) => ({ k: d.k, n: d.n || 0, cash: d.cash || 0, paie: d.paie || 0, frais: d.frais || 0, tips: d.tips || 0,
+    items: [].concat(
+      (d.remis || []).map((r) => ({ t: tsMs(r.le), lab: '📤 Donné au dispatch', m: -(r.montant || 0), cnt: true, st: ' ✓' })),
+      (d.recu || []).map((r) => ({ t: tsMs(r.le), lab: '💜 Reçu du dispatch', m: r.montant || 0, cnt: true, st: ' ✓' })),
+      (d.bon || []).map((b) => ({ t: tsMs(b.le), lab: '🎁 Bonus · ' + (b.raison || ''), m: -(b.montant || 0), cnt: true, st: ' ✓' })),
+      (d.dep || []).map((x) => ({ t: tsMs(x.le), lab: '🧾 Dépense · ' + v92Lab(x), m: -v92Val(x), cnt: true, st: x.statut === 'attente' ? ' ⏳' : ' ✓' }))) }));
+}
+function v92Maths() {
+  if (v92.open !== 'maths') return;
+  const o = v92Ov(), L = (cs.data || []).filter((p) => p.id !== 'proprietaire');
+  const col = (v) => (Math.round(v) === 0 ? '#86efac' : v > 0 ? '#fcd34d' : '#c4b5fd');
+  const amt = (v) => (Math.round(v) === 0 ? '0 $ ✓' : v < 0 ? '−' + money(-v) : money(v));
+  let h;
+  if (!v92.who) {
+    h = v92Head('🧮 Maths') + '<div style="padding:6px 14px 40px"><div class="small" style="margin-bottom:10px">Touche un nom pour voir toute l’addition.</div>';
+    if (!cs.data) h += '<div class="card small">Calcul…</div>';
+    L.forEach((p) => { h += '<div class="card" data-v92who="' + esc(p.id) + '" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer"><div><b style="font-size:18px">' + esc(p.nom || nomDe(p.id)) + '</b><div class="small">à remettre</div></div><div><b style="font-size:19px;color:' + col(p.solde) + '">' + amt(p.solde) + '</b> <span class="small">›</span></div></div>'; });
+    h += '</div>';
+  } else {
+    const mine = v92.who === 'moi', p = mine ? null : L.find((x) => x.id === v92.who);
+    if (!mine && !p) { v92.who = null; return v92Maths(); }
+    const total = mine ? (v73.data ? v73.data.now : null) : p.solde, all = mine ? v92DaysMine() : v92DaysCash(p);
+    const N = v92.days, k0 = soirStart().getTime() - (N - 1) * 86400000 - 3 * 3600000;
+    const days = all.filter((d) => d.k >= k0).sort((a, b) => b.k - a.k);
+    h = v92Head('🧮 ' + (mine ? 'Mes maths' : esc(p.nom || nomDe(p.id)))) + '<div style="padding:6px 14px 40px"><div class="seg" style="margin-bottom:12px">' + V92N.map(([n, t]) => '<button data-v92n="' + n + '" class="' + (n === N ? 'on' : '') + '">' + t + '</button>').join('') + '</div>';
+    const R = (lab, v, c, sub) => '<div style="display:flex;justify-content:space-between;gap:8px;padding:' + (sub ? '3px 0 3px 18px;font-size:14px;color:#cbd5e1' : '7px 0') + '"><span>' + lab + '</span><b style="color:' + c + ';white-space:nowrap">' + v + '</b></div>';
+    let somme = 0;
+    if (mine && !v73.data) h += '<div class="card small">Calcul…</div>';
+    else if (!days.length) h += '<div class="card small">Rien pendant cette période.</div>';
+    days.forEach((d) => {
+      const garde = d.garde != null ? d.garde : d.paie + d.frais + d.tips, its = d.items.slice().sort((a, b) => a.t - b.t);
+      const reste = d.cash - garde + its.reduce((a, x) => a + (x.cnt ? x.m : 0), 0); somme += reste;
+      h += '<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;justify-content:space-between;background:var(--card2);padding:10px 14px;font-weight:800;font-size:13px;letter-spacing:1px;color:#cbd5e1"><span>' + esc(new Date(d.k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' }).toUpperCase()) + '</span><span style="color:' + col(reste) + '">reste ' + amt(reste) + '</span></div><div style="padding:6px 14px 10px">';
+      if (d.n || d.cash) {
+        h += R('💵 Cash ramassé <span class="small">(' + d.n + ' livraison' + (d.n > 1 ? 's' : '') + ')</span>', '+' + money(d.cash), '#86efac');
+        if (garde) { h += R('− ' + (mine ? 'Ce que tu gardes' : 'Ce qu’il garde'), '−' + money(garde), '#fca5a5');
+          if (d.paie) h += R('• Paye (' + d.n + ' livraison' + (d.n > 1 ? 's' : '') + ')', money(d.paie), '#fcd34d', 1);
+          if (d.frais) h += R('• 🚗 Frais de livraison', money(d.frais), '#5eead4', 1);
+          if (d.tips) h += R('• 💵 Pourboires', money(d.tips), '#c4b5fd', 1); }
+      }
+      its.forEach((x) => { h += R((x.m > 0 ? '+ ' : '− ') + esc(x.lab) + ' <span class="small">· ' + hm(x.t) + (x.cnt ? x.st : ' ⏳ pas compté') + '</span>', x.m ? (x.m > 0 ? '+' : '−') + v92M(Math.abs(x.m)) : money(x.dm), x.cnt ? (x.m > 0 ? '#86efac' : '#93c5fd') : '#71717a'); });
+      h += '<div style="display:flex;justify-content:space-between;border-top:2px dashed #3f3f46;margin-top:6px;padding-top:8px;font-weight:900;font-size:17px"><span>= Reste du jour</span><span style="color:' + col(reste) + '">' + (reste < 0 ? '−' + v92M(-reste) + ' (en trop)' : Math.round(reste) === 0 ? '0 $ ✓' : v92M(reste)) + '</span></div></div></div>';
+    });
+    if (total != null) {
+      const avant = total - somme, per = N === 7 ? 'cette semaine' : 'ces ' + N + ' jours';
+      h += '<div class="card">' + R('Avant ' + per + ' (pas encore remis)', amt(avant), col(avant)) + R('+ Reste de ' + per, (somme < 0 ? '−' + money(-somme) : money(somme)), 'inherit') +
+        '<div style="display:flex;justify-content:space-between;border-top:2px dashed #3f3f46;margin-top:6px;padding-top:8px;font-weight:900;font-size:18px"><span>= ' + (mine ? 'Tu dois remettre' : 'À remettre maintenant') + '</span><span style="color:' + col(total) + ';font-size:22px">' + amt(total) + '</span></div><div class="small">' + (mine ? 'Même montant que dans 💰 Mon cash.' : 'Même montant que dans 💵 Cash.') + '</div></div>';
+    }
+    h += '</div>';
+  }
+  o.innerHTML = h;
+  o.querySelectorAll('[data-v92x]').forEach((b) => { b.onclick = () => { if (v92.who && v92.who !== 'moi') { v92.who = null; v92Maths(); } else v92Close(); }; });
+  o.querySelectorAll('[data-v92who]').forEach((b) => { b.onclick = () => { v92.who = b.dataset.v92who; o.scrollTop = 0; v92Maths(); }; });
+  o.querySelectorAll('[data-v92n]').forEach((b) => { b.onclick = () => { v92.days = Number(b.dataset.v92n); v92Maths(); }; });
+}
+// ---------- Extra → livraison quand la commande principale est annulée ----------
+async function v92Promo(b, c) {
+  const ex = []; try { const qs = await getDocs(query(collection(db, 'commandes'), where('extraDe', '==', c.id))); qs.forEach((d) => { const x = d.data(); if (x.statut === 'livree') ex.push(Object.assign({ id: d.id }, x)); }); } catch (e) { console.warn('v92Promo', e); }
+  if (!ex.length) return false;
+  ex.sort((a, b2) => tsMs(a.livreeLe) - tsMs(b2.livreeLe));
+  const p = ex[0], pay = c.paie != null ? c.paie : (paies[c.livreur] != null ? paies[c.livreur] : 0);
+  b.update(doc(db, 'commandes', p.id), { extraDe: deleteField(), extraDeAvant: c.id, paie: pay });
+  ex.slice(1).forEach((x) => b.update(doc(db, 'commandes', x.id), { extraDe: p.id }));
+  return true;
 }
