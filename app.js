@@ -4245,7 +4245,7 @@ async function detteSweep() {
 //       d'app.js dans index.html. Plus récente → bande bleue, mise à jour après 10 s (ou tout de suite),
 //       mais jamais pendant qu'on écrit dans une case.
 // =====================================================================
-const APP_V = 93;
+const APP_V = 94;
 const maj = { v: 0, t: null, left: 0 };
 const typingNow = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && String(a.value || '').length > 0; };
 async function majCheck() {
@@ -5710,19 +5710,48 @@ async function openMaths() {
   else { v92.who = 'moi'; v92Maths(); await v73Load(); }
   v92Maths();
 }
-// Jours à afficher, dans un même format : { k, n, cash, paie, frais, tips, items: [{ t, lab, m, cnt, st }] }
+// Jours dans un même format : { k, n, cash, paie, frais, tips, garde, items: [{ t, lab, m, kind: 'pay' | 'base' | 'info' }] }
+// v94 : 'pay' = argent remis (payé) ou reçu (m < 0 = argent qu'il a remis) → appliqué aux journées dans l'ordre (la plus vieille d'abord) ;
+// 'base' = bonus, dépenses, dettes réglées → restent sur la journée (journée sans travail → sa prochaine journée de travail).
 function v92DaysCash(p) {
   return Object.values(p.days).map((d) => ({ k: d.k, n: d.n || 0, cash: d.cash || 0, paie: d.paie || 0, frais: d.frais || 0, tips: d.tips || 0, garde: d.garde,
-    items: (d.lines || []).filter((l) => l.m || l.dm).map((l) => ({ t: l.t, m: l.m || 0, dm: l.dm || 0, cnt: !!(l.ok || l.dep), st: l.att ? ' ⏳' : ' ✓',
-      lab: /^→ /.test(l.txt) ? '📤 Donné à ' + l.txt.slice(2) : /^Reçu de /.test(l.txt) ? '💜 ' + l.txt : l.txt })) }));
+    items: (d.lines || []).filter((l) => l.m || l.dm).map((l) => {
+      const cnt = !!(l.ok || l.dep), giv = /^→ /.test(l.txt), rec = /^Reçu de /.test(l.txt);
+      return { t: l.t, m: l.m || 0, dm: l.dm || 0, kind: !cnt || !l.m ? 'info' : giv || rec ? 'pay' : 'base', st: l.att ? ' ⏳' : ' ✓',
+        lab: giv ? 'remise à ' + l.txt.slice(2) : rec ? '💜 ' + l.txt : l.txt };
+    }) }));
 }
 function v92DaysMine() {
   return ((v73.data && v73.data.days) || []).map((d) => ({ k: d.k, n: d.n || 0, cash: d.cash || 0, paie: d.paie || 0, frais: d.frais || 0, tips: d.tips || 0,
     items: [].concat(
-      (d.remis || []).map((r) => ({ t: tsMs(r.le), lab: '📤 Donné au dispatch', m: -(r.montant || 0), cnt: true, st: ' ✓' })),
-      (d.recu || []).map((r) => ({ t: tsMs(r.le), lab: '💜 Reçu du dispatch', m: r.montant || 0, cnt: true, st: ' ✓' })),
-      (d.bon || []).map((b) => ({ t: tsMs(b.le), lab: '🎁 Bonus · ' + (b.raison || ''), m: -(b.montant || 0), cnt: true, st: ' ✓' })),
-      (d.dep || []).map((x) => ({ t: tsMs(x.le), lab: '🧾 Dépense · ' + v92Lab(x), m: -v92Val(x), cnt: true, st: x.statut === 'attente' ? ' ⏳' : ' ✓' }))) }));
+      (d.remis || []).map((r) => ({ t: tsMs(r.le), lab: 'remise au dispatch', m: -(r.montant || 0), kind: 'pay', st: ' ✓' })),
+      (d.recu || []).map((r) => ({ t: tsMs(r.le), lab: '💜 Reçu du dispatch', m: r.montant || 0, kind: 'pay', st: ' ✓' })),
+      (d.bon || []).map((b) => ({ t: tsMs(b.le), lab: '🎁 Bonus · ' + (b.raison || ''), m: -(b.montant || 0), kind: 'base', st: ' ✓' })),
+      (d.dep || []).map((x) => ({ t: tsMs(x.le), lab: '🧾 Dépense · ' + v92Lab(x), m: -v92Val(x), kind: 'base', st: x.statut === 'attente' ? ' ⏳' : ' ✓' }))) }));
+}
+const v92Jour = (ms) => new Date(ms).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' });
+// Option B (27 nov.) : chaque journée est à part ; les remises paient les journées dans l'ordre.
+function v92Plan(all, total) {
+  const W = all.filter((d) => d.n || d.cash).sort((a, b) => a.k - b.k).map((d) => Object.assign({}, d, { base: [], paid: [] }));
+  const pays = [], info = [];
+  all.forEach((d) => d.items.forEach((x) => {
+    if (x.kind === 'pay') { pays.push(x); return; }
+    let w = W.find((y) => y.k === d.k);
+    if (!w) { w = W.find((y) => y.k > d.k) || W.slice().reverse().find((y) => y.k < d.k); if (w) x = Object.assign({}, x, { moved: d.k }); }
+    if (!w) return;
+    (x.kind === 'info' ? info : w.base).push(x); if (x.kind === 'info') x.w = w;
+  }));
+  W.forEach((w) => { w.garde2 = w.garde != null ? w.garde : w.paie + w.frais + w.tips; w.du = w.cash - w.garde2 + w.base.reduce((a, x) => a + x.m, 0); w.owe = w.du; });
+  // Ce qui reste d'avant la période (ou d'avant les 7 jours de Mon cash) = une « journée » plus vieille, payée en premier.
+  const sumDu = W.reduce((a, w) => a + w.du, 0), sumPay = pays.reduce((a, x) => a + x.m, 0), old = { k: -1, owe: total != null ? total - sumDu - sumPay : 0, paid: [] };
+  const Q = [old].concat(W);
+  pays.slice().sort((a, b) => a.t - b.t).forEach((x) => {
+    if (x.m > 0) { const w = W.slice().reverse().find((y) => y.k <= soirOf(x.t).getTime()) || W[W.length - 1] || old; w.owe += x.m; w.paid.push({ x, v: -x.m, rec: true }); return; }
+    let r = -x.m;
+    for (const w of Q) { if (r <= 0.004) break; if (w.owe <= 0.004) continue; const v = Math.min(w.owe, r); w.owe -= v; r -= v; w.paid.push({ x, v, av: x.t < w.k }); }
+    if (r > 0.004) { const w = W[W.length - 1] || old; w.owe -= r; w.paid.push({ x, v: r, trop: true }); }
+  });
+  return { W, old, info };
 }
 function v92Maths() {
   if (v92.open !== 'maths') return;
@@ -5731,7 +5760,7 @@ function v92Maths() {
   const amt = (v) => (Math.round(v) === 0 ? '0 $ ✓' : v < 0 ? '−' + money(-v) : money(v));
   let h;
   if (!v92.who) {
-    h = v92Head('🧮 Maths') + '<div style="padding:6px 14px 40px"><div class="small" style="margin-bottom:10px">Touche un nom pour voir toute l’addition.</div>';
+    h = v92Head('🧮 Maths') + '<div style="padding:6px 14px 40px"><div class="small" style="margin-bottom:10px">Touche un nom pour voir chaque journée.</div>';
     if (!cs.data) h += '<div class="card small">Calcul…</div>';
     L.forEach((p) => { h += '<div class="card" data-v92who="' + esc(p.id) + '" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer"><div><b style="font-size:18px">' + esc(p.nom || nomDe(p.id)) + '</b><div class="small">à remettre</div></div><div><b style="font-size:19px;color:' + col(p.solde) + '">' + amt(p.solde) + '</b> <span class="small">›</span></div></div>'; });
     h += '</div>';
@@ -5739,31 +5768,31 @@ function v92Maths() {
     const mine = v92.who === 'moi', p = mine ? null : L.find((x) => x.id === v92.who);
     if (!mine && !p) { v92.who = null; return v92Maths(); }
     const total = mine ? (v73.data ? v73.data.now : null) : p.solde, all = mine ? v92DaysMine() : v92DaysCash(p);
-    const N = v92.days, k0 = soirStart().getTime() - (N - 1) * 86400000 - 3 * 3600000;
-    const days = all.filter((d) => d.k >= k0).sort((a, b) => b.k - a.k);
+    const N = v92.days, today = soirStart().getTime();
     h = v92Head('🧮 ' + (mine ? 'Mes maths' : esc(p.nom || nomDe(p.id)))) + '<div style="padding:6px 14px 40px"><div class="seg" style="margin-bottom:12px">' + V92N.map(([n, t]) => '<button data-v92n="' + n + '" class="' + (n === N ? 'on' : '') + '">' + t + '</button>').join('') + '</div>';
     const R = (lab, v, c, sub) => '<div style="display:flex;justify-content:space-between;gap:8px;padding:' + (sub ? '3px 0 3px 18px;font-size:14px;color:#cbd5e1' : '7px 0') + '"><span>' + lab + '</span><b style="color:' + c + ';white-space:nowrap">' + v + '</b></div>';
-    let somme = 0;
+    const head = (k, right, c) => '<div style="display:flex;justify-content:space-between;background:var(--card2);padding:10px 14px;font-weight:800;font-size:13px;letter-spacing:1px;color:#cbd5e1"><span>' + esc(v92Jour(k).toUpperCase()) + '</span><span style="color:' + c + '">' + right + '</span></div>';
     if (mine && !v73.data) h += '<div class="card small">Calcul…</div>';
-    else if (!days.length) h += '<div class="card small">Rien pendant cette période.</div>';
-    days.forEach((d) => {
-      const garde = d.garde != null ? d.garde : d.paie + d.frais + d.tips, its = d.items.slice().sort((a, b) => a.t - b.t);
-      const reste = d.cash - garde + its.reduce((a, x) => a + (x.cnt ? x.m : 0), 0); somme += reste;
-      h += '<div class="card" style="padding:0;overflow:hidden"><div style="display:flex;justify-content:space-between;background:var(--card2);padding:10px 14px;font-weight:800;font-size:13px;letter-spacing:1px;color:#cbd5e1"><span>' + esc(new Date(d.k).toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' }).toUpperCase()) + '</span><span style="color:' + col(reste) + '">reste ' + amt(reste) + '</span></div><div style="padding:6px 14px 10px">';
-      if (d.n || d.cash) {
-        h += R('💵 Cash ramassé <span class="small">(' + d.n + ' livraison' + (d.n > 1 ? 's' : '') + ')</span>', '+' + money(d.cash), '#86efac');
-        if (garde) { h += R('− ' + (mine ? 'Ce que tu gardes' : 'Ce qu’il garde'), '−' + money(garde), '#fca5a5');
-          if (d.paie) h += R('• Paye (' + d.n + ' livraison' + (d.n > 1 ? 's' : '') + ')', money(d.paie), '#fcd34d', 1);
-          if (d.frais) h += R('• 🚗 Frais de livraison', money(d.frais), '#5eead4', 1);
-          if (d.tips) h += R('• 💵 Pourboires', money(d.tips), '#c4b5fd', 1); }
+    else {
+      const P = v92Plan(all, total), byDay = {}; P.W.forEach((w) => { byDay[new Date(w.k).toDateString()] = w; });
+      for (let i = 0; i < N; i++) {
+        const k = new Date(today); k.setDate(k.getDate() - i); const w = byDay[k.toDateString()];
+        if (!w) { h += '<div class="card" style="padding:0;overflow:hidden;opacity:.75">' + head(k.getTime(), '0 $', '#86efac') + '<div style="padding:12px 14px" class="small">😴 Pas travaillé · 0 $</div></div>'; continue; }
+        const reste = w.owe;
+        h += '<div class="card" style="padding:0;overflow:hidden">' + head(w.k, 'reste ' + amt(reste), col(reste)) + '<div style="padding:6px 14px 10px">';
+        h += R('💵 Cash ramassé <span class="small">(' + w.n + ' livraison' + (w.n > 1 ? 's' : '') + ')</span>', '+' + money(w.cash), '#86efac');
+        if (w.garde2) { h += R('− ' + (mine ? 'Ce que tu gardes' : 'Ce qu’il garde'), '−' + money(w.garde2), '#fca5a5');
+          if (w.paie) h += R('• Paye (' + w.n + ' livraison' + (w.n > 1 ? 's' : '') + ')', money(w.paie), '#fcd34d', 1);
+          if (w.frais) h += R('• 🚗 Frais de livraison', money(w.frais), '#5eead4', 1);
+          if (w.tips) h += R('• 💵 Pourboires', money(w.tips), '#c4b5fd', 1); }
+        w.base.slice().sort((a, b) => a.t - b.t).forEach((x) => { h += R((x.m > 0 ? '+ ' : '− ') + esc(x.lab) + ' <span class="small">· ' + (x.moved ? 'du ' + esc(v92Jour(x.moved)) + ', reporté' : hm(x.t)) + x.st + '</span>', (x.m > 0 ? '+' : '−') + v92M(Math.abs(x.m)), x.m > 0 ? '#86efac' : '#93c5fd'); });
+        w.paid.forEach((q) => { h += q.rec
+          ? R('+ ' + esc(q.x.lab) + ' <span class="small">· ' + esc(v92Jour(q.x.t)) + ' ' + hm(q.x.t) + '</span>', '+' + v92M(-q.v), '#86efac')
+          : R('− 📤 ' + (q.trop ? 'Remis en trop' : q.av ? 'Payé d’avance' : 'Payé') + ' <span class="small">· ' + esc(q.x.lab) + ' · ' + esc(v92Jour(q.x.t)) + ' ' + hm(q.x.t) + '</span>', '−' + v92M(q.v), '#93c5fd'); });
+        P.info.filter((x) => x.w === w).forEach((x) => { h += R(esc(x.lab) + ' <span class="small">· ' + hm(x.t) + ' ⏳ pas compté</span>', x.m ? v92M(Math.abs(x.m)) : money(x.dm), '#71717a'); });
+        h += '<div style="display:flex;justify-content:space-between;border-top:2px dashed #3f3f46;margin-top:6px;padding-top:8px;font-weight:900;font-size:17px"><span>= Reste du jour</span><span style="color:' + col(reste) + '">' + (reste < -0.004 ? '−' + v92M(-reste) + ' (en trop)' : Math.round(reste) === 0 ? '0 $ ✓' : v92M(reste)) + '</span></div></div></div>';
       }
-      its.forEach((x) => { h += R((x.m > 0 ? '+ ' : '− ') + esc(x.lab) + ' <span class="small">· ' + hm(x.t) + (x.cnt ? x.st : ' ⏳ pas compté') + '</span>', x.m ? (x.m > 0 ? '+' : '−') + v92M(Math.abs(x.m)) : money(x.dm), x.cnt ? (x.m > 0 ? '#86efac' : '#93c5fd') : '#71717a'); });
-      h += '<div style="display:flex;justify-content:space-between;border-top:2px dashed #3f3f46;margin-top:6px;padding-top:8px;font-weight:900;font-size:17px"><span>= Reste du jour</span><span style="color:' + col(reste) + '">' + (reste < 0 ? '−' + v92M(-reste) + ' (en trop)' : Math.round(reste) === 0 ? '0 $ ✓' : v92M(reste)) + '</span></div></div></div>';
-    });
-    if (total != null) {
-      const avant = total - somme, per = N === 7 ? 'cette semaine' : 'ces ' + N + ' jours';
-      h += '<div class="card">' + R('Avant ' + per + ' (pas encore remis)', amt(avant), col(avant)) + R('+ Reste de ' + per, (somme < 0 ? '−' + money(-somme) : money(somme)), 'inherit') +
-        '<div style="display:flex;justify-content:space-between;border-top:2px dashed #3f3f46;margin-top:6px;padding-top:8px;font-weight:900;font-size:18px"><span>= ' + (mine ? 'Tu dois remettre' : 'À remettre maintenant') + '</span><span style="color:' + col(total) + ';font-size:22px">' + amt(total) + '</span></div><div class="small">' + (mine ? 'Même montant que dans 💰 Mon cash.' : 'Même montant que dans 💵 Cash.') + '</div></div>';
+      h += '<div class="small" style="text-align:center;margin-top:6px">Chaque journée est à part. Le total à remettre est dans ' + (mine ? '💰 Mon cash' : '💵 Cash') + '.</div>';
     }
     h += '</div>';
   }
